@@ -18,6 +18,12 @@ is done by Claude in the conversation, using the candidates the server returns. 
 adding features, keep that split: the server generates candidates / stores / retrieves;
 the model decides. Don't add model calls, embeddings services, or NER inside the server.
 
+The same split governs the **trainer** and **drinking** features: the server stores
+workouts/drinks and computes deterministic aggregates (muscle recency, drink streaks),
+but deciding the next weight, what to rest, which exercises to program, and how to coach
+form is the *model's* job, done in conversation from the data the retrieval tools return.
+There is no exercise-selection or progression logic in the server either.
+
 ## Other load-bearing design decisions
 
 - **People, not names.** A reference resolves to a person *entity* (`people`), not a
@@ -104,6 +110,18 @@ working.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
+- `drinks` — one row per drinking occasion; `standard_drinks` (REAL), `kind`, `notes`.
+  Sober days aren't stored — a day is sober if it has no row. `get_drink_summary`
+  aggregates (daily totals, sober streak) in SQL.
+- `exercises` — the exercise catalog (stable entities, like people): `technique_notes`,
+  `common_mistakes`, `cautions`, `video_link`. Starts empty; `log_workout` auto-stubs a
+  bare record for any unknown name, which `update_exercise` later enriches.
+- `exercise_muscles` — normalizes muscle→exercise (`role` primary|secondary) so
+  per-muscle recency/volume is a plain GROUP BY. Canonical muscle list is `MUSCLES`.
+- `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), the
+  two-level log mirroring entries/mentions.
+- `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
+  `update_profile` and surfaced by `get_fitness_briefing`.
 
 ## Matching (in `find_candidates` / `score_surface_against_alias`)
 

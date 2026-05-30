@@ -13,9 +13,10 @@ Design contract:
     recurring transcription error) auto-matches strongly next time.
 """
 
+import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import jellyfish
@@ -153,6 +154,77 @@ CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
     INSERT INTO entries_fts(entries_fts, rowid, body) VALUES('delete', old.id, old.body);
     INSERT INTO entries_fts(rowid, body) VALUES (new.id, new.body);
 END;
+
+-- ----------------------------------------------------------------------- --
+-- Drinking tracker. One row per logged drinking occasion; days with no row
+-- are sober days. Aggregation (daily totals, streaks) is deterministic SQL.
+-- ----------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS drinks (
+    id              INTEGER PRIMARY KEY,
+    drink_date      TEXT NOT NULL,    -- YYYY-MM-DD the drinks were consumed
+    standard_drinks REAL NOT NULL,    -- in standard-drink units (beer/wine ~1, cocktail ~1.5)
+    kind            TEXT,             -- optional: "beer", "wine", "cocktail"
+    notes           TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
+
+-- ----------------------------------------------------------------------- --
+-- Personal trainer. `exercises` is a catalog of stable exercise ENTITIES
+-- (like people): technique lives here so the model can coach form. Muscles
+-- are normalized into a child table so "what's rested vs worked" is a plain
+-- SQL aggregate, not an LLM guess. `workouts`/`sets` are the two-level log
+-- (session + per-set weight/reps/rpe), mirroring entries/mentions. The
+-- server stores and retrieves; progression judgment happens in conversation.
+-- ----------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS exercises (
+    id              INTEGER PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    category        TEXT,             -- 'strength' | 'cardio' | 'prehab' | 'mobility'
+    equipment       TEXT,
+    technique_notes TEXT,
+    common_mistakes TEXT,
+    cautions        TEXT,             -- injury / shoulder considerations
+    video_link      TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS exercise_muscles (
+    exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
+    muscle      TEXT NOT NULL,        -- canonical lowercase, e.g. 'chest', 'lats', 'quads'
+    role        TEXT NOT NULL DEFAULT 'primary',  -- 'primary' | 'secondary'
+    PRIMARY KEY (exercise_id, muscle)
+);
+CREATE INDEX IF NOT EXISTS idx_exmuscle_muscle ON exercise_muscles(muscle);
+
+CREATE TABLE IF NOT EXISTS workouts (
+    id           INTEGER PRIMARY KEY,
+    workout_date TEXT NOT NULL,       -- YYYY-MM-DD
+    focus        TEXT,                -- "Legs", "Arms", "Cardio"
+    feeling      TEXT,                -- overall how the session felt
+    notes        TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date);
+
+CREATE TABLE IF NOT EXISTS sets (
+    id          INTEGER PRIMARY KEY,
+    workout_id  INTEGER NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+    exercise_id INTEGER NOT NULL REFERENCES exercises(id),
+    set_index   INTEGER NOT NULL,     -- 1-based order within the exercise
+    weight_lbs  REAL,                 -- NULL for bodyweight / cardio
+    reps        INTEGER,
+    rpe         REAL,                 -- 1-10 perceived exertion (10 = true failure)
+    note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);
+CREATE INDEX IF NOT EXISTS idx_sets_exercise ON sets(exercise_id);
+
+-- Generic JSON settings (trainer profile: injury, split, goals, preferences).
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -601,6 +673,434 @@ def get_briefing(recent_entries: int = 5) -> dict:
              "body": _truncate(r["body"], 200)} for r in recent
         ],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Drinking + trainer helpers
+# --------------------------------------------------------------------------- #
+
+# Canonical muscle vocabulary — kept small and consistent so recency/volume
+# aggregates line up. The model should map onto these labels when logging.
+MUSCLES = [
+    "chest", "upper back", "lats", "traps", "shoulders", "biceps", "triceps",
+    "forearms", "abs", "obliques", "lower back", "glutes", "quads",
+    "hamstrings", "calves",
+]
+
+
+def _days_since(d: Optional[str]) -> Optional[int]:
+    if not d:
+        return None
+    try:
+        return (date.fromisoformat(today()) - date.fromisoformat(d)).days
+    except ValueError:
+        return None
+
+
+def _resolve_exercise(conn: sqlite3.Connection, name: str):
+    """Case-insensitive lookup of a catalog exercise by name. Returns row or None."""
+    return conn.execute(
+        "SELECT * FROM exercises WHERE lower(name)=lower(?)", (name.strip(),)
+    ).fetchone()
+
+
+def _muscles_for(conn: sqlite3.Connection, exercise_id: int) -> dict:
+    rows = conn.execute(
+        "SELECT muscle, role FROM exercise_muscles WHERE exercise_id=? ORDER BY role, muscle",
+        (exercise_id,),
+    ).fetchall()
+    return {
+        "primary": [r["muscle"] for r in rows if r["role"] == "primary"],
+        "secondary": [r["muscle"] for r in rows if r["role"] == "secondary"],
+    }
+
+
+def _set_muscles(conn: sqlite3.Connection, exercise_id: int,
+                 primary: Optional[list[str]], secondary: Optional[list[str]]) -> None:
+    """Replace an exercise's muscle links (only when at least one list is given)."""
+    if primary is None and secondary is None:
+        return
+    conn.execute("DELETE FROM exercise_muscles WHERE exercise_id=?", (exercise_id,))
+    for role, names in (("primary", primary or []), ("secondary", secondary or [])):
+        for m in names:
+            m = m.strip().lower()
+            if m:
+                conn.execute(
+                    """INSERT OR IGNORE INTO exercise_muscles(exercise_id, muscle, role)
+                       VALUES (?,?,?)""",
+                    (exercise_id, m, role),
+                )
+
+
+def _exercise_brief(conn: sqlite3.Connection, r) -> dict:
+    return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
+            "equipment": r["equipment"], "muscles": _muscles_for(conn, r["id"])}
+
+
+def _get_profile(conn: sqlite3.Connection) -> dict:
+    row = conn.execute("SELECT value FROM settings WHERE key='profile'").fetchone()
+    return json.loads(row["value"]) if row else {}
+
+
+# --------------------------------------------------------------------------- #
+# Drinking tools
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
+               kind: Optional[str] = None, notes: Optional[str] = None) -> dict:
+    """Log alcohol consumption for a day, in STANDARD-DRINK units.
+
+    Convert what the user describes into standard drinks before calling: one
+    regular beer (12oz/5%), one glass of wine (5oz), or one shot of spirits each
+    count as ~1.0; a strong cocktail or a large pour is ~1.5; a tallboy/double is
+    ~2.0. "Two beers and a glass of wine" -> standard_drinks=3.0. You can call this
+    more than once for the same day (rows accumulate); days with no row are sober.
+
+    Args:
+        standard_drinks: Total standard drinks for this occasion.
+        drink_date: Day consumed, YYYY-MM-DD. Defaults to today.
+        kind: Optional label, e.g. "beer", "wine", "cocktail".
+        notes: Optional context, e.g. "dinner with Robin".
+    """
+    d = drink_date or today()
+    with db() as conn:
+        rid = conn.execute(
+            """INSERT INTO drinks(drink_date, standard_drinks, kind, notes, created_at)
+               VALUES (?,?,?,?,?)""",
+            (d, standard_drinks, kind, notes, now()),
+        ).lastrowid
+        day_total = conn.execute(
+            "SELECT COALESCE(SUM(standard_drinks),0) AS t FROM drinks WHERE drink_date=?",
+            (d,),
+        ).fetchone()["t"]
+    return {"drink_id": rid, "drink_date": d, "logged": standard_drinks,
+            "day_total": round(day_total, 2)}
+
+
+@mcp.tool()
+def get_drink_summary(days: int = 30, since: Optional[str] = None,
+                      until: Optional[str] = None) -> dict:
+    """Drinking trends over a window: per-day totals plus rolling stats.
+
+    Use the default `days` window, or pass an explicit `since`/`until` range. Sober
+    days (no logged drinks) are counted, not stored. `current_sober_streak` is the
+    number of days since the last drink (0 if the user drank today, null if never).
+
+    Args:
+        days: Size of the trailing window in days (ignored if `since` is given).
+        since: Start date YYYY-MM-DD (inclusive).
+        until: End date YYYY-MM-DD (inclusive). Defaults to today.
+    """
+    until = until or today()
+    if since is None:
+        since = date.fromordinal(
+            date.fromisoformat(until).toordinal() - max(days, 1) + 1).isoformat()
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT drink_date, ROUND(SUM(standard_drinks),2) AS total
+               FROM drinks WHERE drink_date BETWEEN ? AND ?
+               GROUP BY drink_date ORDER BY drink_date DESC""",
+            (since, until),
+        ).fetchall()
+        last = conn.execute("SELECT MAX(drink_date) AS d FROM drinks").fetchone()["d"]
+    daily = [{"date": r["drink_date"], "total": r["total"]} for r in rows]
+    window_days = date.fromisoformat(until).toordinal() - date.fromisoformat(since).toordinal() + 1
+    total = round(sum(d["total"] for d in daily), 2)
+    drinking_days = len(daily)
+    return {
+        "since": since, "until": until, "window_days": window_days,
+        "daily": daily,
+        "total_standard_drinks": total,
+        "drinking_days": drinking_days,
+        "sober_days": max(window_days - drinking_days, 0),
+        "avg_per_day": round(total / window_days, 2) if window_days else 0,
+        "avg_per_drinking_day": round(total / drinking_days, 2) if drinking_days else 0,
+        "current_sober_streak": _days_since(last),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Trainer: exercise catalog
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+def create_exercise(name: str, category: Optional[str] = None,
+                    equipment: Optional[str] = None,
+                    muscles: Optional[list[str]] = None,
+                    secondary_muscles: Optional[list[str]] = None,
+                    technique_notes: Optional[str] = None,
+                    common_mistakes: Optional[str] = None,
+                    cautions: Optional[str] = None,
+                    video_link: Optional[str] = None) -> dict:
+    """Add an exercise to the catalog (a stable entity, like a person).
+
+    The catalog starts empty and grows as the user trains — `log_workout` will
+    auto-stub a bare record for any new name, so use this (or `update_exercise`) to
+    enrich one with the coaching content: how to do it (`technique_notes`), what to
+    watch for (`common_mistakes`), and any injury caveats (`cautions`, e.g. the
+    user's left-shoulder limits). `muscles` are the primary movers; use the canonical
+    labels so muscle-recency lines up: chest, upper back, lats, traps, shoulders,
+    biceps, triceps, forearms, abs, obliques, lower back, glutes, quads, hamstrings,
+    calves. Returns the exercise_id (existing id if the name already exists).
+    """
+    with db() as conn:
+        existing = _resolve_exercise(conn, name)
+        if existing:
+            return {"exercise_id": existing["id"], "name": existing["name"],
+                    "created": False, "note": "name already exists; use update_exercise"}
+        eid = conn.execute(
+            """INSERT INTO exercises(name, category, equipment, technique_notes,
+               common_mistakes, cautions, video_link, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (name.strip(), category, equipment, technique_notes, common_mistakes,
+             cautions, video_link, now()),
+        ).lastrowid
+        _set_muscles(conn, eid, muscles, secondary_muscles)
+    return {"exercise_id": eid, "name": name.strip(), "created": True}
+
+
+@mcp.tool()
+def update_exercise(exercise_id: int, category: Optional[str] = None,
+                    equipment: Optional[str] = None,
+                    muscles: Optional[list[str]] = None,
+                    secondary_muscles: Optional[list[str]] = None,
+                    technique_notes: Optional[str] = None,
+                    common_mistakes: Optional[str] = None,
+                    cautions: Optional[str] = None,
+                    video_link: Optional[str] = None) -> dict:
+    """Update an exercise. Only non-null scalar fields are written. If either
+    `muscles` or `secondary_muscles` is provided, the muscle links are replaced
+    wholesale (pass both to set both). Use this to flesh out auto-stubbed records."""
+    fields = {"category": category, "equipment": equipment,
+              "technique_notes": technique_notes, "common_mistakes": common_mistakes,
+              "cautions": cautions, "video_link": video_link}
+    sets_ = {k: v for k, v in fields.items() if v is not None}
+    with db() as conn:
+        if sets_:
+            cols = ", ".join(f"{k}=?" for k in sets_)
+            conn.execute(f"UPDATE exercises SET {cols} WHERE id=?",
+                         (*sets_.values(), exercise_id))
+        _set_muscles(conn, exercise_id, muscles, secondary_muscles)
+    updated = list(sets_) + (["muscles"] if (muscles is not None or secondary_muscles is not None) else [])
+    return {"exercise_id": exercise_id, "updated": updated}
+
+
+@mcp.tool()
+def get_exercise(exercise_id: Optional[int] = None,
+                 name: Optional[str] = None) -> dict:
+    """Full catalog record for one exercise, by id or name — including technique
+    notes, common mistakes, and cautions, so you can coach the user through proper
+    form. Pass either `exercise_id` or `name`."""
+    with db() as conn:
+        if exercise_id is not None:
+            r = conn.execute("SELECT * FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+        elif name is not None:
+            r = _resolve_exercise(conn, name)
+        else:
+            return {"error": "pass exercise_id or name"}
+        if not r:
+            return {"error": "no matching exercise"}
+        m = _muscles_for(conn, r["id"])
+    return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
+            "equipment": r["equipment"], "muscles": m,
+            "technique_notes": r["technique_notes"],
+            "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
+            "video_link": r["video_link"]}
+
+
+@mcp.tool()
+def list_exercises(muscle: Optional[str] = None, equipment: Optional[str] = None,
+                   category: Optional[str] = None) -> dict:
+    """Compact catalog registry (id, name, category, equipment, muscles). Filter by
+    a muscle, an equipment fragment, or a category to pick exercises for a session."""
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
+        out = []
+        for r in rows:
+            m = _muscles_for(conn, r["id"])
+            if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"]):
+                continue
+            if equipment and (not r["equipment"] or equipment.lower() not in r["equipment"].lower()):
+                continue
+            if category and r["category"] != category:
+                continue
+            out.append({"exercise_id": r["id"], "name": r["name"],
+                        "category": r["category"], "equipment": r["equipment"],
+                        "muscles": m})
+    return {"exercises": out, "count": len(out)}
+
+
+# --------------------------------------------------------------------------- #
+# Trainer: logging + retrieval
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
+                focus: Optional[str] = None, feeling: Optional[str] = None,
+                notes: Optional[str] = None) -> dict:
+    """Record a whole training session in one call.
+
+    Each item in `exercises` is:
+        {
+          "name": "Leg Press",
+          "muscles": ["quads", "glutes"],   # optional; seeds the catalog if NEW
+          "sets": [
+            {"weight_lbs": 180, "reps": 10, "rpe": 7, "note": ""},
+            {"weight_lbs": 180, "reps": 10, "rpe": 8},
+            {"weight_lbs": 180, "reps": 8,  "rpe": 9.5, "note": "last one was a grind"}
+          ]
+        }
+    Names are resolved against the catalog case-insensitively; an unknown name is
+    auto-stubbed as a new exercise (using `muscles` if given) so logging never
+    blocks — flag any `created` exercises to the user afterward so they can add
+    technique notes via update_exercise. weight_lbs is null for bodyweight/cardio.
+    rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
+    judge whether to add weight next time. Returns per-exercise ids and which were
+    newly created.
+
+    Args:
+        exercises: The exercises performed, each with its sets (see shape above).
+        workout_date: Day trained, YYYY-MM-DD. Defaults to today.
+        focus: Session focus, e.g. "Legs", "Arms", "Cardio".
+        feeling: Overall how it felt / energy / soreness.
+        notes: Anything else about the session.
+    """
+    wd = workout_date or today()
+    with db() as conn:
+        wid = conn.execute(
+            "INSERT INTO workouts(workout_date, focus, feeling, notes, created_at) VALUES (?,?,?,?,?)",
+            (wd, focus, feeling, notes, now()),
+        ).lastrowid
+        results = []
+        for ex in exercises:
+            name = (ex.get("name") or "").strip()
+            if not name:
+                continue
+            row = _resolve_exercise(conn, name)
+            created = False
+            if row:
+                eid = row["id"]
+            else:
+                eid = conn.execute(
+                    "INSERT INTO exercises(name, created_at) VALUES (?,?)",
+                    (name, now()),
+                ).lastrowid
+                _set_muscles(conn, eid, ex.get("muscles"), None)
+                created = True
+            for i, s in enumerate(ex.get("sets") or [], start=1):
+                conn.execute(
+                    """INSERT INTO sets(workout_id, exercise_id, set_index, weight_lbs,
+                       reps, rpe, note) VALUES (?,?,?,?,?,?,?)""",
+                    (wid, eid, i, s.get("weight_lbs"), s.get("reps"),
+                     s.get("rpe"), s.get("note")),
+                )
+            results.append({"exercise_id": eid, "name": name,
+                            "sets": len(ex.get("sets") or []), "created": created})
+    return {"workout_id": wid, "workout_date": wd, "exercises": results,
+            "new_exercises": [r["name"] for r in results if r["created"]]}
+
+
+@mcp.tool()
+def get_exercise_history(exercise_id: Optional[int] = None,
+                         name: Optional[str] = None, limit: int = 10) -> dict:
+    """Per-session performance for one exercise, newest first — the progressive-
+    overload query. Each session lists its sets as weight/reps/rpe, so you can judge
+    the next weight or rep target: e.g. all sets hit at RPE <=8 with clean form ->
+    add weight; failures or RPE 10 short of target reps -> hold or deload. Pass
+    either `exercise_id` or `name`."""
+    with db() as conn:
+        if exercise_id is None and name is not None:
+            r = _resolve_exercise(conn, name)
+            if not r:
+                return {"error": f"no exercise named {name!r}"}
+            exercise_id = r["id"]
+        ex = conn.execute("SELECT name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+        if not ex:
+            return {"error": "no matching exercise"}
+        rows = conn.execute(
+            """SELECT w.id AS wid, w.workout_date, s.set_index, s.weight_lbs, s.reps, s.rpe, s.note
+               FROM sets s JOIN workouts w ON w.id = s.workout_id
+               WHERE s.exercise_id=?
+               ORDER BY w.workout_date DESC, w.id DESC, s.set_index ASC""",
+            (exercise_id,),
+        ).fetchall()
+    sessions: list[dict] = []
+    seen: dict[int, dict] = {}
+    for r in rows:
+        sess = seen.get(r["wid"])
+        if sess is None:
+            sess = {"workout_id": r["wid"], "date": r["workout_date"], "sets": []}
+            seen[r["wid"]] = sess
+            sessions.append(sess)
+        if len(sessions) > limit:
+            continue
+        sess["sets"].append({"weight_lbs": r["weight_lbs"], "reps": r["reps"],
+                             "rpe": r["rpe"], "note": r["note"]})
+    return {"exercise_id": exercise_id, "name": ex["name"],
+            "sessions": sessions[:limit], "count": min(len(sessions), limit)}
+
+
+@mcp.tool()
+def get_fitness_briefing(recent_workouts: int = 5) -> dict:
+    """One-call trainer context. Returns the stored profile (injuries, split, goals),
+    per-muscle recency (days since each muscle was last trained + sets in the last 7
+    days), and recent sessions. Call this at the start of a training conversation to
+    decide what to work and what to rest: muscles with the most days_since (and low
+    recent volume) are recovered and due; ones trained in the last ~1-2 days should
+    rest. The recommendation itself is yours to make from this data."""
+    with db() as conn:
+        profile = _get_profile(conn)
+        mrows = conn.execute(
+            """SELECT em.muscle,
+                      MAX(w.workout_date) AS last_date,
+                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_7d
+               FROM sets s
+               JOIN workouts w ON w.id = s.workout_id
+               JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+               GROUP BY em.muscle""",
+            (date.fromordinal(date.fromisoformat(today()).toordinal() - 6).isoformat(),),
+        ).fetchall()
+        recent = conn.execute(
+            "SELECT id, workout_date, focus, feeling FROM workouts ORDER BY workout_date DESC, id DESC LIMIT ?",
+            (recent_workouts,),
+        ).fetchall()
+        recent_out = []
+        for w in recent:
+            n = conn.execute(
+                "SELECT COUNT(DISTINCT exercise_id) AS e, COUNT(*) AS s FROM sets WHERE workout_id=?",
+                (w["id"],),
+            ).fetchone()
+            recent_out.append({"workout_id": w["id"], "date": w["workout_date"],
+                               "focus": w["focus"], "feeling": w["feeling"],
+                               "exercises": n["e"], "sets": n["s"]})
+    recency = sorted(
+        ({"muscle": r["muscle"], "last_trained": r["last_date"],
+          "days_since": _days_since(r["last_date"]), "sets_last_7d": r["sets_7d"]}
+         for r in mrows),
+        key=lambda m: (m["days_since"] is None, -(m["days_since"] or 0)),
+    )
+    return {"profile": profile, "muscle_recency": recency,
+            "recent_workouts": recent_out}
+
+
+@mcp.tool()
+def update_profile(profile: dict) -> dict:
+    """Merge fields into the stored trainer profile (JSON). Pass only the keys you
+    want to change; existing keys are preserved. Use it to keep durable training
+    facts current — e.g. {"injury": "left shoulder, avoid overhead pressing"},
+    {"split": {"mon": "arms", "wed": "legs", "fri": "full body"}},
+    {"goals": ["build strength", "lose weight"], "experience": "beginner"}.
+    These are surfaced by get_fitness_briefing so you coach within them."""
+    with db() as conn:
+        current = _get_profile(conn)
+        current.update(profile)
+        conn.execute(
+            """INSERT INTO settings(key, value) VALUES ('profile', ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (json.dumps(current),),
+        )
+    return {"profile": current}
 
 
 if __name__ == "__main__":

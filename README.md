@@ -89,6 +89,42 @@ already carry most of it; this just sets the posture.
 >    `get_related_people`.
 > Keep confirmations to one line. Don't read entries back to me unless I ask.
 
+## Drinking + personal trainer
+
+The same server also tracks drinking and acts as a personal trainer — same rule as
+the journal: **no LLM in the server.** It stores drinks/workouts and computes
+deterministic aggregates (per-muscle recency, sober streaks); the coaching judgment
+— next weight, what to rest, which exercises, how to explain form — happens in the
+conversation, from what the retrieval tools return.
+
+- **Drinking.** `log_drinks` records standard drinks for a day (a beer/wine ≈ 1, a
+  strong cocktail ≈ 1.5); call it as often as needed. `get_drink_summary` gives daily
+  totals, averages, and the current sober streak. Sober days aren't stored — they're
+  the gaps.
+- **Catalog that fills itself.** Exercises start empty. `log_workout` records a whole
+  session in one call and auto-creates a bare catalog entry for any lift it hasn't
+  seen — so logging never stalls. Flesh out technique/cautions later with
+  `update_exercise` (or up front with `create_exercise`).
+- **Progressive overload.** Each set stores `weight_lbs`/`reps`/`rpe` (1–10).
+  `get_exercise_history` replays a lift session-by-session so the trainer can judge
+  the next weight: all sets clean at RPE ≤ 8 → add weight; grinding at RPE 10 short of
+  target → hold or deload.
+- **What to work, what to rest.** `get_fitness_briefing` returns the profile (injury,
+  split, goals), per-muscle recency (days since trained + last-7-day set volume), and
+  recent sessions — enough to program the day and respect recovery.
+
+Suggested Project-instructions posture (alongside the journaling one):
+
+> When I talk about drinking, convert it to standard drinks and `log_drinks`. When I
+> ask how I'm doing, use `get_drink_summary`.
+> When I train: at the start of a session call `get_fitness_briefing` to see what's
+> recovered vs recently hit, my injuries, and my split, then recommend the day's work
+> within those. Explain unfamiliar lifts from the catalog (`get_exercise`); before
+> suggesting a weight, check `get_exercise_history` and apply progressive overload
+> against RPE. Log the finished session with one `log_workout` call (a sets list per
+> exercise, each set with weight/reps/rpe). If it created a new exercise, offer to add
+> technique notes. Keep durable facts (injuries, split, goals) in `update_profile`.
+
 ## Remote deployment — phone access via Coolify
 
 The local setup above connects only to Claude Desktop. To use the journal on your
@@ -194,6 +230,14 @@ trailing slash or includes `/mcp` (it should be the bare origin).
 | `get_briefing` | One-call session context (roster, groups, pending, recent) |
 | `get_entry` | Fetch one entry, including the verbatim `raw_body` on demand |
 | `search_entries` | Full-text search for topics/events |
+| `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
+| `get_drink_summary` | Daily totals + rolling stats and current sober streak |
+| `create_exercise` / `update_exercise` | Add/enrich a catalog exercise (technique, mistakes, cautions, muscles) |
+| `get_exercise` / `list_exercises` | Read one exercise (with technique) / filter the catalog by muscle/equipment |
+| `log_workout` | Record a whole session in one call; auto-stubs unknown lifts |
+| `get_exercise_history` | Per-session weight/reps/rpe for one lift — the progressive-overload query |
+| `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions |
+| `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps
 
