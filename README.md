@@ -78,12 +78,14 @@ already carry most of it; this just sets the posture.
 >      `learn_alias: true`.
 >    - Two close candidates (e.g. both Toms) → ask me which one in one short
 >      question, using context, then link.
->    - Nothing ≥ 0.6 → it's probably someone new; ask, then `create_person` and link.
+>    - Nothing ≥ 0.6 → it's probably someone new; ask, then `save_person` (no
+>      `person_id`) and link.
 > 3. If I say I'll explain later, leave the mention pending — don't push.
 > 4. At the start of a session, call `get_briefing` once to load context — who I
 >    know (roster, roles, groups, summaries), the pending queue, and recent entries.
 >    When I tell you something durable about a person, keep their `summary` current
->    with `update_person`, and set their `groups` when I place them in a circle.
+>    with `save_person` (pass their `person_id`), and set their `groups` when I place
+>    them in a circle.
 > 5. When I ask what's happened with someone, use `get_person_history`; for topics
 >    or events, use `search_entries`; for "who's connected to X", use
 >    `get_related_people`.
@@ -100,11 +102,18 @@ conversation, from what the retrieval tools return.
 - **Drinking.** `log_drinks` records standard drinks for a day (a beer/wine ≈ 1, a
   strong cocktail ≈ 1.5); call it as often as needed. `get_drink_summary` gives daily
   totals, averages, and the current sober streak. Sober days aren't stored — they're
-  the gaps.
-- **Catalog that fills itself.** Exercises start empty. `log_workout` records a whole
-  session in one call and auto-creates a bare catalog entry for any lift it hasn't
-  seen — so logging never stalls. Flesh out technique/cautions later with
-  `update_exercise` (or up front with `create_exercise`).
+  the gaps. To fix a mistake, `get_drink_summary(include_rows=True)` to find the row
+  id, then `update_drink` (corrections go either direction, unlike re-logging) or
+  `delete_record(kind="drink")`.
+- **Catalog that fills itself.** Exercises start empty. `log_workout` records a
+  session — the whole thing in one call, or set-by-set as it happens by passing the
+  first call's `workout_id` back on each later call so the sets append to one session
+  instead of fragmenting it. It auto-creates a bare catalog entry for any lift it
+  hasn't seen — so logging never stalls. Flesh out technique/cautions with
+  `save_exercise` (unknown name creates, known name/id updates). Fix a logged session
+  with `get_exercise_history` (to get `set_id`s) + `update_set` or
+  `delete_record(kind="set")`, `update_workout` to move/relabel it, or
+  `delete_record(kind="workout")` for the whole session.
 - **Progressive overload.** Each set stores `weight_lbs`/`reps`/`rpe` (1–10).
   `get_exercise_history` replays a lift session-by-session so the trainer can judge
   the next weight: all sets clean at RPE ≤ 8 → add weight; grinding at RPE 10 short of
@@ -119,11 +128,14 @@ Suggested Project-instructions posture (alongside the journaling one):
 > ask how I'm doing, use `get_drink_summary`.
 > When I train: at the start of a session call `get_fitness_briefing` to see what's
 > recovered vs recently hit, my injuries, and my split, then recommend the day's work
-> within those. Explain unfamiliar lifts from the catalog (`get_exercise`); before
+> within those. Explain unfamiliar lifts from the catalog (`exercises`); before
 > suggesting a weight, check `get_exercise_history` and apply progressive overload
-> against RPE. Log the finished session with one `log_workout` call (a sets list per
-> exercise, each set with weight/reps/rpe). If it created a new exercise, offer to add
-> technique notes. Keep durable facts (injuries, split, goals) in `update_profile`.
+> against RPE. Log with `log_workout` — either the finished session in one call, or
+> set-by-set during the workout (reuse the returned `workout_id` so it stays one
+> session). If I correct something afterward, use `get_exercise_history` to find the
+> `set_id`, then `update_set` or `delete_record`. If it created a new exercise, offer
+> to add technique notes. Keep
+> durable facts (injuries, split, goals) in `update_profile`.
 
 ## Remote deployment — phone access via Coolify
 
@@ -292,9 +304,7 @@ in one Coolify project.
 |---|---|
 | `add_journal_entry` | Save an entry + return candidate matches per named person |
 | `link_mentions` | Resolve pending mentions to people (with optional alias learning) |
-| `create_person` | Add a new person (name, role, aliases, contact fields, groups) |
-| `update_person` | Edit role/notes/summary/contact fields/groups on a person |
-| `add_alias` | Attach an alias to an existing person |
+| `save_person` | Create or update a person — omit `person_id` to create, pass it to edit; `aliases` adds/learns surface forms, `groups` sets circles |
 | `list_pending_mentions` | The "tell you later" queue |
 | `list_people` | Compact registry; filter by name/role or group |
 | `get_person_history` | Every entry about one person — the payoff query |
@@ -302,15 +312,18 @@ in one Coolify project.
 | `get_briefing` | One-call session context (roster, groups, pending, recent) |
 | `get_entry` | Fetch one entry, including the verbatim `raw_body` on demand |
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body` |
-| `delete_entry` | Permanently delete an entry and its mentions (FTS kept in sync) |
 | `search_entries` | Full-text search for topics/events |
 | `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
-| `get_drink_summary` | Daily totals + rolling stats and current sober streak |
-| `create_exercise` / `update_exercise` | Add/enrich a catalog exercise (technique, mistakes, cautions, muscles) |
-| `get_exercise` / `list_exercises` | Read one exercise (with technique) / filter the catalog by muscle/equipment |
-| `log_workout` | Record a whole session in one call; auto-stubs unknown lifts |
-| `get_exercise_history` | Per-session weight/reps/rpe for one lift — the progressive-overload query |
+| `get_drink_summary` | Daily totals + rolling stats and sober streak; `include_rows=True` adds individual rows with ids for editing |
+| `update_drink` | Correct a logged drink in either direction (incl. downward) or move its day |
+| `save_exercise` | Create or enrich a catalog exercise (technique, mistakes, cautions, muscles); unknown name creates, known name/id updates |
+| `exercises` | Read the catalog — full record when you name/id one, else a filtered list (by muscle/equipment/category) |
+| `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; auto-stubs unknown lifts |
+| `update_workout` | Edit session metadata (move date, focus, feeling, notes) |
+| `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
+| `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions |
+| `delete_record` | Delete one record by `kind` (`entry`/`drink`/`workout`/`set`) + `id` — irreversible, cascades/renumbers as needed |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps
