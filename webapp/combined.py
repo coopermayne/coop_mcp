@@ -1,23 +1,25 @@
 """
-Single-process entrypoint: the MCP server and the read-only web UI in one app.
+Single-process entrypoint: both MCP servers and the read-only web UI in one app,
+sharing one DB so each Claude project loads only its own tools.
 
-There are two MCP servers in this one process, sharing one DB but exposed at
-separate endpoints so each Claude project loads only its own tools:
-  - the journal+drinking server at the origin root — `/mcp` plus its OAuth discovery
-    (`/.well-known/*`, `/auth/callback`) — exactly as when run alone, and
-  - the trainer server under `/trainer` — connector at `/trainer/mcp`, with its own
-    OAuth discovery and callback at `/trainer/auth/callback`.
-The browser UI is mounted under `/app`, so it never collides with either MCP's
-OAuth. One container, one port, one domain.
+  - Journal + drinking: served on the main origin (PUBLIC_URL). `/mcp` plus its OAuth
+    discovery (`/.well-known/*`, `/auth/callback`) and the browser UI under `/app`.
+  - Trainer: a full OAuth server can't share an origin with the journal (their
+    `/authorize`, `/token`, `/auth/callback` paths collide), so when TRAINER_PUBLIC_URL
+    is set the trainer gets its OWN host. We route that hostname to the trainer app at
+    the root, so its connector is `https://<trainer-host>/mcp` with clean root OAuth.
+    With TRAINER_PUBLIC_URL unset (local/authless), the trainer falls back to
+    `/trainer/mcp` on the main origin (no OAuth, so the same-origin collision is moot).
 
-Run:
+Run (local, one origin, trainer at /trainer/mcp):
     MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db python webapp/combined.py
-Then: UI at http://localhost:8000/app, journal connector at .../mcp, trainer
-connector at .../trainer/mcp.
+Prod (trainer on its own host): also set TRAINER_PUBLIC_URL=https://<trainer-host> and
+point that domain at this same Coolify service.
 """
 
 import os
 import sys
+from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -31,28 +33,30 @@ import app as webapp   # noqa: E402  the FastAPI UI
 
 from starlette.applications import Starlette   # noqa: E402
 from starlette.responses import RedirectResponse  # noqa: E402
-from starlette.routing import Mount, Route       # noqa: E402
+from starlette.routing import Host, Mount, Route   # noqa: E402
 
-# Each MCP server builds its own ASGI app at the ORIGIN ROOT (not sub-mounted), so its
-# OAuth discovery docs land where clients look — at the root, not under a prefix.
-mcp_app = server.mcp.http_app(path="/mcp")                       # journal + drinking
-trainer_app = server.trainer_mcp.http_app(path="/trainer/mcp")   # trainer
+mcp_app = server.mcp.http_app(path="/mcp")   # journal + drinking, on the main origin
 
-# The journal app already carries the shared OAuth authorization-server routes
-# (/authorize, /token, /register, /auth/callback, /consent, the AS metadata) plus
-# /mcp, /health and the journal protected-resource metadata. From the trainer app we
-# graft on ONLY its two unique routes — its MCP endpoint and its own protected-resource
-# metadata — so the trainer connector authenticates against the same root OAuth server
-# but advertises a discovery doc that actually resolves at the root.
-_TRAINER_ONLY = {"/trainer/mcp", "/.well-known/oauth-protected-resource/trainer/mcp"}
-_trainer_routes = [r for r in trainer_app.routes
-                   if getattr(r, "path", None) in _TRAINER_ONLY]
+# Trainer host derived from TRAINER_PUBLIC_URL (e.g. https://trainer.example.com).
+TRAINER_HOST = urlparse(os.environ.get("TRAINER_PUBLIC_URL", "")).netloc
+
+# Own-host mode (TRAINER_HOST set): trainer app at the root of its own hostname → clean
+# root OAuth. Otherwise same-origin fallback: trainer at /trainer/mcp on the main origin
+# (authless/local only — two real OAuth servers can't share one origin).
+trainer_app = server.trainer_mcp.http_app(path="/mcp" if TRAINER_HOST else "/trainer/mcp")
+
+if TRAINER_HOST:
+    _trainer_routes = [Host(TRAINER_HOST, app=trainer_app)]
+else:
+    _same_origin = {"/trainer/mcp", "/.well-known/oauth-protected-resource/trainer/mcp"}
+    _trainer_routes = [r for r in trainer_app.routes
+                       if getattr(r, "path", None) in _same_origin]
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(app):
     # Both apps run their own StreamableHTTP session manager; enter both or the
-    # grafted-in trainer endpoint has no live session manager.
+    # trainer endpoint has no live session manager.
     async with mcp_app.lifespan(app), trainer_app.lifespan(app):
         yield
 
@@ -63,14 +67,16 @@ async def _app_root_redirect(request):
     return RedirectResponse(url="/app/")
 
 
-# Parent app: UI under /app, the trainer's two routes, then the whole journal app at
-# "/" (the catch-all carrying root OAuth, /mcp, /health). Specific routes precede it.
+# Trainer route(s) first (the Host match in prod, or the grafted same-origin routes
+# locally), then the UI under /app, then the journal app catch-all at "/" (root OAuth,
+# /mcp, /health). Journal-host requests never match the trainer Host route, so the
+# journal endpoint is byte-for-byte unchanged.
 application = Starlette(
     lifespan=_lifespan,
     routes=[
+        *_trainer_routes,
         Route("/app", _app_root_redirect),
         Mount("/app", app=webapp.app),
-        *_trainer_routes,
         Mount("/", app=mcp_app),
     ],
 )

@@ -43,7 +43,7 @@ ALLOWED_EMAILS = {
 }
 
 
-def _build_auth():
+def _build_auth(public_url: Optional[str] = None):
     """Return a Google OAuth provider if creds are set, else None (authless).
 
     Build a FRESH provider per MCP server — never share one object across both. A
@@ -51,8 +51,14 @@ def _build_auth():
     which stores `_resource_url` ON THE INSTANCE and is what incoming tokens are
     validated against. Sharing one provider lets the second server's build clobber the
     first's `_resource_url`, so the first endpoint then rejects all its own tokens.
-    Each server gets its own instance (same Google client + allowlist) so each keeps
-    its own resource URL: journal -> /mcp, trainer -> /trainer/mcp.
+    Each server gets its own instance (same Google client + allowlist).
+
+    `public_url` overrides the origin the provider advertises (defaults to PUBLIC_URL).
+    The trainer passes its own subdomain (TRAINER_PUBLIC_URL) so its OAuth discovery +
+    callback live at the root of its OWN origin — two full OAuth servers can't share one
+    origin (their /authorize, /token, /auth/callback paths collide), so the trainer gets
+    its own host. The Google client just needs that host's /auth/callback added as an
+    authorized redirect URI.
 
     Authless is for local dev / staging with dummy data only. Set GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET, PUBLIC_URL, and JOURNAL_ALLOWED_EMAILS in Coolify to protect
@@ -60,7 +66,7 @@ def _build_auth():
     """
     cid = os.environ.get("GOOGLE_CLIENT_ID")
     csec = os.environ.get("GOOGLE_CLIENT_SECRET")
-    base = os.environ.get("PUBLIC_URL")  # e.g. https://journal.yourdomain.com
+    base = public_url or os.environ.get("PUBLIC_URL")  # e.g. https://journal.yourdomain.com
     if cid and csec and base:
         from fastmcp.server.auth.providers.google import GoogleProvider
         return GoogleProvider(client_id=cid, client_secret=csec, base_url=base,
@@ -99,13 +105,13 @@ Start a session with get_briefing to load people/journal context before acting.
 if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
 
-# The trainer is a SEPARATE MCP server living in the SAME process and sharing this
-# DB, but exposed at its own endpoint (/trainer/mcp) so a Claude project connected to
-# it loads ONLY the training tools — not the journal/drinking ones. It gets its OWN
-# auth provider instance (see _build_auth: providers are single-resource and must not
-# be shared). webapp/combined.py composes both onto one origin; the webapp itself still
-# imports this module's functions unchanged.
-_trainer_auth = _build_auth()
+# The trainer is a SEPARATE MCP server living in the SAME process and sharing this DB,
+# so a Claude project connected to it loads ONLY the training tools. It gets its OWN
+# auth provider instance (providers are single-resource and must not be shared — see
+# _build_auth). When TRAINER_PUBLIC_URL is set, the provider advertises that subdomain,
+# and webapp/combined.py routes that host to this server (its own clean root OAuth);
+# otherwise it falls back to /trainer/mcp on the journal origin (fine for authless/local).
+_trainer_auth = _build_auth(os.environ.get("TRAINER_PUBLIC_URL"))
 trainer_mcp = FastMCP("trainer", auth=_trainer_auth, instructions="""\
 Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe) and an
 exercise catalog (technique, cautions, target muscles). The server only stores and

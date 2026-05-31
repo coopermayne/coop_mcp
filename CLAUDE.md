@@ -65,9 +65,10 @@ There is no exercise-selection or progression logic in the server either.
   journal+drinking, `trainer_mcp` = training), all tools, shared auth wiring, the
   shared `_delete_record` helper (each server exposes a kind-scoped `delete_record`),
   and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
-- `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): mounts the
-  read-only UI at `/app` and composes BOTH MCP servers onto one origin (journal at
-  `/mcp`, trainer grafted in at `/trainer/mcp`, sharing the root OAuth routes).
+- `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): serves the
+  journal MCP + read-only UI (`/app`) on the main origin, and the trainer MCP either on
+  its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host` routing) or grafted at
+  `/trainer/mcp` on the main origin (authless fallback).
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
@@ -96,9 +97,11 @@ Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `MCP_SERVER`
 (`journal`|`trainer`, stdio only — which server a bare `server.py` launch runs),
 `PORT`, `MCP_HOST`. Auth (set all to protect; unset = authless for dev/staging only):
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (bare origin, no trailing
-slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours).
-The journal's OAuth callback is `<PUBLIC_URL>/auth/callback` (unchanged). See the auth
-section for the trainer endpoint's same-origin OAuth caveat.
+slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours), and
+`TRAINER_PUBLIC_URL` (bare origin of the trainer's own host — enables the trainer on its
+own subdomain; unset = trainer falls back to `/trainer/mcp` on the main origin, authless
+only). Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, if the trainer host is
+set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section.
 
 ## Test
 
@@ -118,12 +121,13 @@ print([(c["name"],c["score"]) for c in e["mentions"][0]["candidates"]])
 PY
 ```
 
-Smoke-test HTTP boot + handshake: start `webapp/combined.py` with `MCP_TRANSPORT=http`,
-then POST an `initialize` JSON-RPC call to BOTH `/mcp` and `/trainer/mcp` (Accept:
-`application/json, text/event-stream`) and expect `200`; with auth on, expect `401`
-plus a `WWW-Authenticate` header whose `resource_metadata` pointer resolves to `200`
-(the trainer's must resolve at the root — that's the thing the route-grafting in
-`combined.py` exists to get right). `/health` should be `200` regardless of auth.
+Smoke-test HTTP boot + handshake: start `webapp/combined.py` with `MCP_TRANSPORT=http`.
+Authless, POST an `initialize` JSON-RPC call to `/mcp` and `/trainer/mcp` (Accept:
+`application/json, text/event-stream`) and expect `200`. With auth on (and
+`TRAINER_PUBLIC_URL` set), the trainer moves to its own host — send `Host:
+<trainer-host>` to `/mcp`; both hosts should `401` with a `WWW-Authenticate` whose
+`resource_metadata` pointer resolves to `200` at THAT host's root. `/health` should be
+`200` regardless of auth.
 
 If a feature changes the schema, add a migration in `init_db()` (it runs `CREATE TABLE
 IF NOT EXISTS` then `ALTER TABLE ADD COLUMN` for new columns) — existing DBs must keep
@@ -180,16 +184,19 @@ failed / server configuration issue"). So `server.py` builds a fresh provider pe
 `.../trainer/mcp`), both resolving at the root because `combined.py` builds each MCP app
 at the root (NOT as a Starlette sub-mount, which would prefix the discovery docs).
 
-The journal's OAuth authorization-server routes (`/authorize`, `/token`, `/register`,
-`/auth/callback`, the AS metadata) serve once at the root; `combined.py` grafts in only
-the trainer's two unique routes (its `/trainer/mcp` endpoint + its protected-resource
-metadata), so the trainer authenticates against the root AS but validates against its
-own resource. ⚠️ This same-origin two-resource setup relies on the root AS issuing a
-token whose audience matches the trainer resource; FastMCP can't cleanly co-host two
-full OAuth servers on one origin (their `/authorize` etc. paths collide). If the trainer
-connector won't authenticate, the robust fix is to give it its own **subdomain** (its
-own origin → its own clean root OAuth). The journal endpoint does not depend on any of
-this — its provider/resource are isolated.
+**Two full OAuth servers can't share one origin** — their `/authorize`, `/token`,
+`/auth/callback` paths collide, and a same-origin token-reuse hack does NOT work in
+practice (verified: the trainer connector fails to authenticate that way). So the
+trainer runs on its **own host**: set `TRAINER_PUBLIC_URL=https://<trainer-host>`, give
+its provider that base_url, and `combined.py` routes that hostname (Starlette `Host(...)`,
+which dispatches by Host header WITHOUT prefixing paths, unlike `Mount`) to the trainer
+app at its root. The trainer then has a complete, isolated OAuth server at its own origin
+(`/mcp`, `/.well-known/*`, `/authorize`, `/auth/callback`). The Google client just needs
+`<trainer-host>/auth/callback` added as a redirect URI. The journal host is untouched.
+
+With `TRAINER_PUBLIC_URL` unset (local/authless), `combined.py` falls back to grafting
+the trainer's `/trainer/mcp` endpoint + its protected-resource metadata onto the main
+origin — fine when there's no OAuth, so the collision is moot.
 
 ## Gotchas
 
