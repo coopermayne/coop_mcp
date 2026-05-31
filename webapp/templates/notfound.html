@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Not found · Journal{% endblock %}
+{% block content %}
+
+<div class="text-center py-20">
+  <p class="text-2xl font-bold tracking-tight">Not found</p>
+  <p class="text-sm text-gray-500 mt-2">No such {{ what }}.</p>
+  <a href="/" class="inline-block mt-6 text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Home</a>
+</div>
+
+{% endblock %}

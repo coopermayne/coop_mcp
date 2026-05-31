@@ -225,6 +225,54 @@ If the connector shows "disconnected" after adding Google: usually the redirect 
 Google doesn't exactly match `https://YOUR-DOMAIN/auth/callback`, or `PUBLIC_URL` has a
 trailing slash or includes `/mcp` (it should be the bare origin).
 
+## Web frontend (read-only)
+
+`webapp/` is a small **read-only** browser UI for reviewing what's been recorded —
+journal entries (with FTS search), workout sessions, drinking trends, and people. It
+has no forms and no chat: capture, resolution and coaching all stay in the conversation
+with Claude. It reads the **same** SQLite DB and reuses `server.py`'s retrieval
+functions directly (the single source of truth for data shapes), so it never duplicates
+query logic and never writes.
+
+Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
+`workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
+uppercase `tracking-widest` labels, stat-tile grids.
+
+**Run locally** (authless — for local/dummy data only):
+
+```bash
+.venv/bin/pip install -r webapp/requirements.txt   # web deps; uses server.py's deps too
+JOURNAL_DB=./journal.db .venv/bin/python webapp/app.py   # http://localhost:8001
+```
+
+Pages: `/` dashboard · `/journal` (+ `?q=` search) · `/entry/{id}` · `/workouts` ·
+`/drinking` · `/people` · `/person/{id}`.
+
+Env vars: `PORT` (default 8001), `WEB_HOST`, `JOURNAL_DB`, `SESSION_SECRET`,
+`WEB_BASE_URL` (public origin, used to build the OAuth redirect), `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `JOURNAL_ALLOWED_EMAILS`. With the `GOOGLE_*` vars unset the app
+runs authless; set them to gate it behind Google sign-in + the email allowlist (same
+allowlist the MCP server uses).
+
+**Deploy (Coolify), behind Google auth:**
+
+- Build from `webapp/Dockerfile` with **build context = repo root** (it copies both
+  `server.py` and `webapp/`). In Coolify set the Dockerfile location to
+  `webapp/Dockerfile` and the base directory to `/`.
+- Mount the **same persistent volume** as the MCP server at `/data` (read-only is fine —
+  SQLite WAL handles a writer + readers). Both services then share one `journal.db`.
+- Assign a domain (e.g. `journal-web.coopermayne.com`); let Coolify provision HTTPS.
+- Google Cloud Console → add redirect URI `https://YOUR-WEB-DOMAIN/auth/callback` to your
+  OAuth client (you can reuse the MCP server's client — just add this second URI).
+- Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JOURNAL_ALLOWED_EMAILS=you@gmail.com`,
+  `WEB_BASE_URL=https://YOUR-WEB-DOMAIN`, and a random `SESSION_SECRET`. Redeploy.
+- Confirm `/health` is `200` and any other path redirects an anonymous visitor to
+  `/login`. Sign in with your allowlisted Google account.
+
+Note `WEB_BASE_URL` (not `PUBLIC_URL`) — the webapp uses standard browser OAuth, separate
+from the MCP server's OAuth-provider flow, so its env vars don't collide if you run both
+in one Coolify project.
+
 ## Tools
 
 | Tool | Purpose |

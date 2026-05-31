@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Drinking · Journal{% endblock %}
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">Drinking</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">Last {{ s.window_days }} days</span>
+</div>
+
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-6 mb-12">
+  {{ m.stat(s.total_standard_drinks | num, "Std Drinks") }}
+  {{ m.stat(s.drinking_days, "Drinking Days") }}
+  {{ m.stat(s.sober_days, "Sober Days") }}
+  {{ m.stat(s.current_sober_streak if s.current_sober_streak is not none else "—", "Sober Streak") }}
+</div>
+
+<div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-5 mb-12">
+  {{ m.section_label("Daily Standard Drinks") }}
+  <div class="flex items-end gap-px h-32 mt-2">
+    {% for day in s.series %}
+      {% set t = day.total %}
+      {% if t <= 0 %}{% set c = '' %}
+      {% elif t <= 2 %}{% set c = '#d0d0d0' %}
+      {% elif t <= 4 %}{% set c = '#808080' %}
+      {% else %}{% set c = '#2a2a2a' %}{% endif %}
+      {% set h = (t / s.peak * 120) %}
+      <div class="flex-1 flex items-end h-full" title="{{ day.date }} — {{ t | num }}">
+        {% if t > 0 %}
+          <div class="w-full rounded-t-[2px]" style="height: {{ [h, 3] | max }}px; background: {{ c }}"></div>
+        {% else %}
+          <div class="w-full border-b border-dashed border-gray-200"></div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  <div class="flex justify-between text-[10px] uppercase tracking-widest text-gray-400 mt-2">
+    <span>{{ s.since | short_date }}</span>
+    <span>{{ s.until | short_date }}</span>
+  </div>
+  <div class="flex items-center gap-4 text-[10px] uppercase tracking-widest text-gray-400 mt-4 pt-3 border-t border-gray-100">
+    <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:#d0d0d0"></span>1–2</span>
+    <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:#808080"></span>3–4</span>
+    <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:#2a2a2a"></span>5+</span>
+    <span class="ml-auto normal-case tracking-normal">avg {{ s.avg_per_day | num }}/day · {{ s.avg_per_drinking_day | num }}/drinking day</span>
+  </div>
+</div>
+
+{% if log %}
+<div>
+  {{ m.section_label("Recent Occasions") }}
+  <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+    {% for r in log %}
+    <div class="px-5 sm:px-6 py-3 flex items-baseline justify-between gap-4">
+      <div class="min-w-0">
+        <span class="text-sm tabular-nums">{{ r.drink_date | short_date }}</span>
+        {% if r.kind %}<span class="badge ml-2">{{ r.kind }}</span>{% endif %}
+        {% if r.notes %}<span class="text-xs text-gray-400 ml-2">{{ r.notes }}</span>{% endif %}
+      </div>
+      <span class="set-pill shrink-0">{{ r.standard_drinks | num }} std</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<p class="text-sm text-gray-400">No drinks logged.</p>
+{% endif %}
+
+{% endblock %}

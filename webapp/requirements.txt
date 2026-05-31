@@ -1,0 +1,8 @@
+# Web frontend. Also needs the MCP server's deps (fastmcp, jellyfish) because it
+# imports server.py for its read functions — install ../requirements.txt too.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+jinja2>=3.1
+authlib>=1.3
+itsdangerous>=2.1
+httpx>=0.27

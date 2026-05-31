@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Journal{% endblock %}
+{% block content %}
+
+{% if d.recent_entries %}
+<div class="mb-12">
+  <div class="flex items-baseline justify-between mb-4">
+    <h2 class="text-xl font-semibold tracking-tight">Recent</h2>
+    <a href="/journal" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">All entries</a>
+  </div>
+  {% for e in d.recent_entries %}{{ m.entry_card(e) }}{% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400 mb-12">No entries yet.</p>
+{% endif %}
+
+{% if d.last_session %}
+{% set s = d.last_session %}
+<div class="mb-12">
+  <div class="flex items-baseline justify-between mb-4">
+    <h2 class="text-xl font-semibold tracking-tight">Last Session</h2>
+    <a href="/workouts" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">All training</a>
+  </div>
+  <a href="/workouts" class="block border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 hover:border-black transition-colors">
+    <p class="text-xs uppercase tracking-widest text-gray-400">{{ s.date | short_date }}</p>
+    <p class="text-base font-semibold tracking-tight mt-1">{{ s.focus or "Workout" }}</p>
+    <p class="text-xs text-gray-500 mt-1">{{ s.exercise_count }} exercises · {{ s.set_count }} sets{% if s.feeling %} · {{ s.feeling }}{% endif %}</p>
+  </a>
+</div>
+{% endif %}
+
+<div class="grid grid-cols-2 gap-6">
+  <a href="/drinking" class="border border-gray-200 rounded-[4px] px-5 py-4 hover:border-black transition-colors">
+    <p class="text-2xl font-semibold tracking-tight">{{ d.drinks_30d | num }}</p>
+    <p class="text-xs uppercase tracking-widest text-gray-400 mt-1">Drinks · 30d</p>
+  </a>
+  <a href="/people" class="border border-gray-200 rounded-[4px] px-5 py-4 hover:border-black transition-colors">
+    <p class="text-2xl font-semibold tracking-tight">{{ d.pending_mentions }}</p>
+    <p class="text-xs uppercase tracking-widest text-gray-400 mt-1">Pending Mentions</p>
+  </a>
+</div>
+
+{% endblock %}
