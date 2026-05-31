@@ -263,10 +263,11 @@ JOURNAL_DB=./journal.db MCP_TRANSPORT=http PORT=8000 .venv/bin/python webapp/com
 ```
 
 UI env vars: `SESSION_SECRET` (set a random value in prod), `WEB_BASE_URL` (public
-origin — used to build the OAuth redirect), `JOURNAL_ALLOWED_EMAILS`, `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`. With the `GOOGLE_*` vars unset the UI runs authless; set them to
-gate it behind Google sign-in + the email allowlist (the *same* allowlist the MCP server
-uses). Standalone-only: `PORT` (default 8001), `WEB_HOST`.
+origin — used to build the OAuth redirect; **defaults to `PUBLIC_URL`** since that's the
+same bare origin, so you usually don't set it), `JOURNAL_ALLOWED_EMAILS`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`. With the `GOOGLE_*` vars unset the UI runs
+authless; set them to gate it behind Google sign-in + the email allowlist (the *same*
+allowlist the MCP server uses). Standalone-only: `PORT` (default 8001), `WEB_HOST`.
 
 **Deploy (Coolify) — no new service needed.** The existing MCP service already builds the
 root `Dockerfile`, which now installs the web deps and runs `webapp/combined.py`. To turn
@@ -275,9 +276,9 @@ the UI on after redeploying:
 - Google Cloud Console → add **one** redirect URI to your existing OAuth client:
   `https://YOUR-DOMAIN/app/auth/callback` (the MCP's `https://YOUR-DOMAIN/auth/callback`
   stays as-is).
-- On the service, add `WEB_BASE_URL=https://YOUR-DOMAIN` and a random `SESSION_SECRET`.
-  `GOOGLE_CLIENT_ID/SECRET`, `JOURNAL_ALLOWED_EMAILS` and `PUBLIC_URL` are already set for
-  the MCP server and are reused.
+- On the service, add just a random `SESSION_SECRET`. `GOOGLE_CLIENT_ID/SECRET`,
+  `JOURNAL_ALLOWED_EMAILS` and `PUBLIC_URL` are already set for the MCP server and are
+  reused (the UI's `WEB_BASE_URL` defaults to `PUBLIC_URL`).
 - Redeploy. The connector keeps working at `/mcp`; the journal UI is at
   `https://YOUR-DOMAIN/app` and bounces anonymous visitors to `/app/login`.
 
