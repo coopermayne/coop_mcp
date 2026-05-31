@@ -42,5 +42,8 @@ application = Starlette(
 
 if __name__ == "__main__":
     import uvicorn
+    # Behind Coolify's reverse proxy: trust X-Forwarded-* so request scheme/host
+    # resolve to the public HTTPS origin (the container only sees proxied traffic).
     uvicorn.run(application, host=os.environ.get("MCP_HOST", "0.0.0.0"),
-                port=int(os.environ.get("PORT", "8000")))
+                port=int(os.environ.get("PORT", "8000")),
+                proxy_headers=True, forwarded_allow_ips="*")
