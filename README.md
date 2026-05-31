@@ -183,6 +183,17 @@ Leave the env vars unset to run authless for local/staging tests (dummy data onl
 > the `email` claim (the requested scopes include it); the check is in
 > `AllowlistMiddleware`.
 
+**Staying logged in across redeploys.** `GoogleProvider` is its own OAuth server: it
+stores Claude's dynamically-registered client and your refresh tokens in an encrypted
+file store. By default that lives under FastMCP's home dir, which is *inside the
+container* and wiped on every push — so each deploy forces a fresh connector login. The
+Dockerfile sets `FASTMCP_HOME=/data/fastmcp` to move that store onto the persistent
+`/data` volume (same volume as `journal.db`), so registrations and tokens survive
+redeploys. The JWT signing key needs no special handling — it's derived deterministically
+from `GOOGLE_CLIENT_SECRET`, so it's stable as long as you don't rotate that secret. (The
+first deploy after adding this var still logs you in once, since the store starts empty
+at its new location.)
+
 
 ## First deploy — checklist
 

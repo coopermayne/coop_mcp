@@ -8,9 +8,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 
 # Remote mode. DB lives on a mounted volume so it survives redeploys.
+# FASTMCP_HOME also points at /data so the OAuth proxy's client registrations
+# and refresh tokens persist across redeploys — otherwise every push wipes them
+# and you're forced to re-authenticate the connector.
 ENV MCP_TRANSPORT=http \
     PORT=8000 \
-    JOURNAL_DB=/data/journal.db
+    JOURNAL_DB=/data/journal.db \
+    FASTMCP_HOME=/data/fastmcp
 
 EXPOSE 8000
 
