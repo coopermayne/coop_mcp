@@ -66,7 +66,17 @@ class AllowlistMiddleware(Middleware):
 
 
 _auth = _build_auth()
-mcp = FastMCP("journal", auth=_auth)
+mcp = FastMCP("journal", auth=_auth, instructions="""\
+Single-user life log with three domains: a conversational journal (people are
+resolved to stable entities, not name strings), a drinking tracker, and a personal
+trainer (workouts + exercise catalog). The server only stores and matches — all
+judgment (which person a mention means, next weight, what to program) is yours.
+
+Two rules: capture never blocks — always save, leave ambiguous mentions pending for
+later; and resolve mentions to person entities, don't normalize names in text.
+
+Start a session with get_briefing (people/journal) and/or get_fitness_briefing
+(training) to load context before acting.""")
 if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
 

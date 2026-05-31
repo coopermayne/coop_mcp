@@ -101,9 +101,15 @@ for _name, _fn in [
     templates.env.filters[_name] = _fn
 
 
+def base_path(request: Request) -> str:
+    """The mount prefix this app is served under ('/app' when embedded in the MCP
+    process, '' when run standalone). Internal links/redirects are prefixed with it."""
+    return request.scope.get("root_path", "") or ""
+
+
 def page(request: Request, template: str, active: str = "", status_code: int = 200, **ctx):
     ctx.update(active=active, auth_enabled=AUTH_ENABLED,
-               user=request.session.get("email"))
+               user=request.session.get("email"), base=base_path(request))
     return templates.TemplateResponse(request=request, name=template,
                                       context=ctx, status_code=status_code)
 
@@ -136,7 +142,7 @@ class RequireAuth(BaseHTTPMiddleware):
             return await call_next(request)
         if request.session.get("email"):
             return await call_next(request)
-        return RedirectResponse("/login")
+        return RedirectResponse((request.scope.get("root_path", "") or "") + "/login")
 
 
 # SessionMiddleware must be outermost so request.session exists for RequireAuth.
@@ -148,13 +154,13 @@ app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax"
 @app.get("/login")
 async def login_page(request: Request):
     if not AUTH_ENABLED or request.session.get("email"):
-        return RedirectResponse("/")
+        return RedirectResponse(base_path(request) + "/")
     return page(request, "login.html")
 
 
 @app.get("/auth/login")
 async def auth_login(request: Request):
-    redirect_uri = (WEB_BASE_URL + "/auth/callback") if WEB_BASE_URL \
+    redirect_uri = (WEB_BASE_URL + base_path(request) + "/auth/callback") if WEB_BASE_URL \
         else str(request.url_for("auth_callback"))
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
@@ -168,13 +174,13 @@ async def auth_callback(request: Request):
         return page(request, "login.html", status_code=403,
                     error=f"{email or 'this account'} is not authorized for this journal.")
     request.session["email"] = email
-    return RedirectResponse("/")
+    return RedirectResponse(base_path(request) + "/")
 
 
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login")
+    return RedirectResponse(base_path(request) + "/login")
 
 
 @app.get("/health")

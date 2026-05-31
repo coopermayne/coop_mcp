@@ -2,19 +2,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# MCP server deps + web UI deps (one image runs both — see webapp/combined.py).
+COPY requirements.txt ./requirements-base.txt
+COPY webapp/requirements.txt ./requirements-web.txt
+RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 
 COPY server.py .
+COPY webapp ./webapp
 
 # Remote mode. DB lives on a mounted volume so it survives redeploys.
-# FASTMCP_HOME also points at /data so the OAuth proxy's client registrations
-# and refresh tokens persist across redeploys — otherwise every push wipes them
-# and you're forced to re-authenticate the connector.
+# One process serves the MCP connector at /mcp and the read-only UI at /app.
 ENV MCP_TRANSPORT=http \
     PORT=8000 \
-    JOURNAL_DB=/data/journal.db \
-    FASTMCP_HOME=/data/fastmcp
+    JOURNAL_DB=/data/journal.db
 
 EXPOSE 8000
 
@@ -25,4 +25,4 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
 
-CMD ["python", "server.py"]
+CMD ["python", "webapp/combined.py"]

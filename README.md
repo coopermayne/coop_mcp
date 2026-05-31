@@ -238,36 +238,48 @@ Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 `workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
 uppercase `tracking-widest` labels, stat-tile grids.
 
-**Run locally** (authless — for local/dummy data only):
+Pages: dashboard · journal (+ `?q=` search) · entry detail · workouts · drinking ·
+people · person detail.
+
+**Same process as the MCP server.** In production one container runs both:
+`webapp/combined.py` mounts the MCP app at the origin root (so `/mcp` and its
+root-level OAuth — `/.well-known/*`, `/auth/callback` — are unchanged) and the UI under
+**`/app`**. The UI's own login callback is therefore `/app/auth/callback`, distinct from
+the MCP's. The UI honors a mount prefix via the ASGI `root_path`, so the same templates
+also work when run standalone at the root (below).
+
+**Run the UI standalone, locally** (authless — for local/dummy data only):
 
 ```bash
-.venv/bin/pip install -r webapp/requirements.txt   # web deps; uses server.py's deps too
-JOURNAL_DB=./journal.db .venv/bin/python webapp/app.py   # http://localhost:8001
+.venv/bin/pip install -r webapp/requirements.txt   # web deps; also uses server.py's deps
+JOURNAL_DB=./journal.db .venv/bin/python webapp/app.py     # http://localhost:8001/
 ```
 
-Pages: `/` dashboard · `/journal` (+ `?q=` search) · `/entry/{id}` · `/workouts` ·
-`/drinking` · `/people` · `/person/{id}`.
+**Run exactly like production** (MCP + UI in one process):
 
-Env vars: `PORT` (default 8001), `WEB_HOST`, `JOURNAL_DB`, `SESSION_SECRET`,
-`WEB_BASE_URL` (public origin, used to build the OAuth redirect), `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `JOURNAL_ALLOWED_EMAILS`. With the `GOOGLE_*` vars unset the app
-runs authless; set them to gate it behind Google sign-in + the email allowlist (same
-allowlist the MCP server uses).
+```bash
+JOURNAL_DB=./journal.db MCP_TRANSPORT=http PORT=8000 .venv/bin/python webapp/combined.py
+# connector: http://localhost:8000/mcp   ·   UI: http://localhost:8000/app
+```
 
-**Deploy (Coolify), behind Google auth:**
+UI env vars: `SESSION_SECRET` (set a random value in prod), `WEB_BASE_URL` (public
+origin — used to build the OAuth redirect), `JOURNAL_ALLOWED_EMAILS`, `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`. With the `GOOGLE_*` vars unset the UI runs authless; set them to
+gate it behind Google sign-in + the email allowlist (the *same* allowlist the MCP server
+uses). Standalone-only: `PORT` (default 8001), `WEB_HOST`.
 
-- Build from `webapp/Dockerfile` with **build context = repo root** (it copies both
-  `server.py` and `webapp/`). In Coolify set the Dockerfile location to
-  `webapp/Dockerfile` and the base directory to `/`.
-- Mount the **same persistent volume** as the MCP server at `/data` (read-only is fine —
-  SQLite WAL handles a writer + readers). Both services then share one `journal.db`.
-- Assign a domain (e.g. `journal-web.coopermayne.com`); let Coolify provision HTTPS.
-- Google Cloud Console → add redirect URI `https://YOUR-WEB-DOMAIN/auth/callback` to your
-  OAuth client (you can reuse the MCP server's client — just add this second URI).
-- Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JOURNAL_ALLOWED_EMAILS=you@gmail.com`,
-  `WEB_BASE_URL=https://YOUR-WEB-DOMAIN`, and a random `SESSION_SECRET`. Redeploy.
-- Confirm `/health` is `200` and any other path redirects an anonymous visitor to
-  `/login`. Sign in with your allowlisted Google account.
+**Deploy (Coolify) — no new service needed.** The existing MCP service already builds the
+root `Dockerfile`, which now installs the web deps and runs `webapp/combined.py`. To turn
+the UI on after redeploying:
+
+- Google Cloud Console → add **one** redirect URI to your existing OAuth client:
+  `https://YOUR-DOMAIN/app/auth/callback` (the MCP's `https://YOUR-DOMAIN/auth/callback`
+  stays as-is).
+- On the service, add `WEB_BASE_URL=https://YOUR-DOMAIN` and a random `SESSION_SECRET`.
+  `GOOGLE_CLIENT_ID/SECRET`, `JOURNAL_ALLOWED_EMAILS` and `PUBLIC_URL` are already set for
+  the MCP server and are reused.
+- Redeploy. The connector keeps working at `/mcp`; the journal UI is at
+  `https://YOUR-DOMAIN/app` and bounces anonymous visitors to `/app/login`.
 
 Note `WEB_BASE_URL` (not `PUBLIC_URL`) — the webapp uses standard browser OAuth, separate
 from the MCP server's OAuth-provider flow, so its env vars don't collide if you run both
