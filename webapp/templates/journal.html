@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% import "macros.html" as m %}
+{% import "macros.html" as m with context %}
 {% block title %}Journal{% endblock %}
 {% block content %}
 
@@ -10,11 +10,11 @@
   </span>
 </div>
 
-<form method="get" action="/journal" class="mb-8 flex gap-2">
+<form method="get" action="{{ base }}/journal" class="mb-8 flex gap-2">
   <input type="search" name="q" value="{{ q }}" placeholder="Search entries…"
          class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
   <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
-  {% if searching %}<a href="/journal" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+  {% if searching %}<a href="{{ base }}/journal" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
 {% if searching %}

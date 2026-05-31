@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#000000" />
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="{{ base }}/static/favicon.svg" type="image/svg+xml" />
   <title>{% block title %}Journal{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -33,13 +33,13 @@
   {% if active %}
   <header class="border-b border-gray-100 sticky top-0 bg-white/90 backdrop-blur z-10">
     <div class="max-w-3xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-      <a href="/" class="text-sm font-semibold tracking-tight">Journal</a>
+      <a href="{{ base }}/" class="text-sm font-semibold tracking-tight">Journal</a>
       <nav class="flex items-center gap-4 sm:gap-5 text-xs uppercase tracking-widest text-gray-400">
-        <a href="/journal" class="hover:text-black transition-colors {% if active == 'journal' %}text-black{% endif %}">Journal</a>
-        <a href="/workouts" class="hover:text-black transition-colors {% if active == 'workouts' %}text-black{% endif %}">Training</a>
-        <a href="/drinking" class="hover:text-black transition-colors {% if active == 'drinking' %}text-black{% endif %}">Drinking</a>
-        <a href="/people" class="hover:text-black transition-colors {% if active == 'people' %}text-black{% endif %}">People</a>
-        {% if auth_enabled %}<a href="/logout" class="hover:text-black transition-colors text-gray-300">Out</a>{% endif %}
+        <a href="{{ base }}/journal" class="hover:text-black transition-colors {% if active == 'journal' %}text-black{% endif %}">Journal</a>
+        <a href="{{ base }}/workouts" class="hover:text-black transition-colors {% if active == 'workouts' %}text-black{% endif %}">Training</a>
+        <a href="{{ base }}/drinking" class="hover:text-black transition-colors {% if active == 'drinking' %}text-black{% endif %}">Drinking</a>
+        <a href="{{ base }}/people" class="hover:text-black transition-colors {% if active == 'people' %}text-black{% endif %}">People</a>
+        {% if auth_enabled %}<a href="{{ base }}/logout" class="hover:text-black transition-colors text-gray-300">Out</a>{% endif %}
       </nav>
     </div>
   </header>

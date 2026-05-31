@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% import "macros.html" as m %}
+{% import "macros.html" as m with context %}
 {% block title %}{{ e.entry_date }} · Journal{% endblock %}
 {% block content %}
 
-<a href="/journal" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Journal</a>
+<a href="{{ base }}/journal" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Journal</a>
 
 <div class="mt-4 mb-8">
   <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | long_date }}</p>
@@ -22,7 +22,7 @@
     <div class="flex flex-wrap gap-2">
       {% for mn in e.mentions %}
         {% if mn.person_id %}
-        <a href="/person/{{ mn.person_id }}" class="set-pill hover:border-black transition-colors">
+        <a href="{{ base }}/person/{{ mn.person_id }}" class="set-pill hover:border-black transition-colors">
           {{ mn.name }}{% if mn.role %} · {{ mn.role }}{% endif %}
         </a>
         {% else %}

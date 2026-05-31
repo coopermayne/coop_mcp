@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% import "macros.html" as m %}
+{% import "macros.html" as m with context %}
 {% block title %}{{ p.name }} · People{% endblock %}
 {% block content %}
 
-<a href="/people" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← People</a>
+<a href="{{ base }}/people" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← People</a>
 
 <div class="mt-4 mb-8">
   <h1 class="text-2xl font-bold tracking-tight">{{ p.name }}</h1>
@@ -49,7 +49,7 @@
   {{ m.section_label("Often Mentioned With") }}
   <div class="flex flex-wrap gap-2">
     {% for r in p.related %}
-    <a href="/person/{{ r.person_id }}" class="set-pill hover:border-black transition-colors">
+    <a href="{{ base }}/person/{{ r.person_id }}" class="set-pill hover:border-black transition-colors">
       {{ r.name }}<span class="text-gray-400 ml-1.5">×{{ r.shared_entries }}</span>
     </a>
     {% endfor %}
