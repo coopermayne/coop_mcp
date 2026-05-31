@@ -172,9 +172,11 @@ HTTP at `/mcp` (see the Dockerfile). On Coolify:
    `https://YOUR-DOMAIN/trainer/mcp` (training) — one process serves both.
 5. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste a
    URL. Add the journal one for sure; add the trainer one as a SECOND connector if you
-   want training in its own project. Both authenticate against the same Google login, so
-   no extra Google setup is needed for the second. Then enable each per-conversation via
-   the "+" menu on your phone.
+   want training in its own project. The trainer authenticates against the journal's
+   root OAuth server (no new Google redirect URI). ⚠️ FastMCP can't cleanly co-host two
+   full OAuth servers on one origin; if the trainer connector won't authenticate, give
+   it its own subdomain (see the auth notes). Then enable each per-conversation via the
+   "+" menu on your phone.
 
 **Roll it out in two stages.** First deploy as-is (no auth) and connect it with only
 **dummy data** to confirm the Claude-to-Coolify pipe works end to end. Do **not** put

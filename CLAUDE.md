@@ -12,12 +12,13 @@ remote HTTP server behind Google auth (phone access via claude.ai connectors).
 
 **Two MCP servers, one process, one DB.** The training feature is a *second* FastMCP
 instance — `trainer_mcp`, exposed at its own endpoint `/trainer/mcp` — separate from
-the journal+drinking server (`mcp` at `/mcp`). Both live in `server.py`, share the same
-SQLite DB and the same Google auth provider, but each is its own connector → its own
-Claude project, so a conversation loads only that half's tools (smaller tool surface =
-less latency, the reason for the split). It's purely an MCP-layer division: the webapp
-still imports this module's functions unchanged. `webapp/combined.py` composes both
-endpoints onto one origin.
+the journal+drinking server (`mcp` at `/mcp`). Both live in `server.py` and share the
+same SQLite DB; each has its OWN Google auth provider (providers are single-resource —
+see the auth section). Each is its own connector → its own Claude project, so a
+conversation loads only that half's tools (smaller tool surface = less latency, the
+reason for the split). It's purely an MCP-layer division: the webapp still imports this
+module's functions unchanged. `webapp/combined.py` composes both endpoints onto one
+origin.
 
 ## The one architectural rule
 
@@ -96,8 +97,8 @@ Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `MCP_SERVER`
 `PORT`, `MCP_HOST`. Auth (set all to protect; unset = authless for dev/staging only):
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (bare origin, no trailing
 slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours).
-One Google provider is shared by both endpoints, so the redirect URI is just
-`<PUBLIC_URL>/auth/callback` — the trainer needs no extra Google config.
+The journal's OAuth callback is `<PUBLIC_URL>/auth/callback` (unchanged). See the auth
+section for the trainer endpoint's same-origin OAuth caveat.
 
 ## Test
 
@@ -168,15 +169,27 @@ Claude's connector UI. `AllowlistMiddleware.on_call_tool` then rejects any authe
 account whose email isn't in `JOURNAL_ALLOWED_EMAILS` — a valid Google login alone is
 not enough. Google redirect URI is `<PUBLIC_URL>/auth/callback`.
 
-**One provider, two endpoints.** An OAuth authorization server lives once at the origin
-root, so both MCP servers share a single `GoogleProvider` (built in `server.py`, passed
-to both instances) — same `/authorize`, `/token`, `/register`, `/auth/callback`. Each
-endpoint still advertises its OWN protected-resource metadata (`/.well-known/oauth-
-protected-resource/mcp` for journal, `.../trainer/mcp` for trainer), both resolving at
-the root. That's why `combined.py` builds each MCP app at the root (not as a Starlette
-sub-mount, which would prefix the discovery docs and break client lookup) and grafts in
-only the trainer's two unique routes. Adding the trainer needed **no** new Google
-redirect URI.
+**Two endpoints, a provider EACH (never shared).** A `GoogleProvider` is single-
+resource: building its HTTP app calls `set_mcp_path()`, which writes `_resource_url`
+*onto the provider instance*, and that is what incoming tokens are validated against. If
+both servers share one provider object, building the second app overwrites the first's
+`_resource_url`, and the first endpoint then rejects all of its own tokens ("auth
+failed / server configuration issue"). So `server.py` builds a fresh provider per server
+(`_build_auth()` called twice) — journal keeps `_resource_url=/mcp`, trainer keeps
+`/trainer/mcp`. Each advertises its own protected-resource metadata (`.../mcp`,
+`.../trainer/mcp`), both resolving at the root because `combined.py` builds each MCP app
+at the root (NOT as a Starlette sub-mount, which would prefix the discovery docs).
+
+The journal's OAuth authorization-server routes (`/authorize`, `/token`, `/register`,
+`/auth/callback`, the AS metadata) serve once at the root; `combined.py` grafts in only
+the trainer's two unique routes (its `/trainer/mcp` endpoint + its protected-resource
+metadata), so the trainer authenticates against the root AS but validates against its
+own resource. ⚠️ This same-origin two-resource setup relies on the root AS issuing a
+token whose audience matches the trainer resource; FastMCP can't cleanly co-host two
+full OAuth servers on one origin (their `/authorize` etc. paths collide). If the trainer
+connector won't authenticate, the robust fix is to give it its own **subdomain** (its
+own origin → its own clean root OAuth). The journal endpoint does not depend on any of
+this — its provider/resource are isolated.
 
 ## Gotchas
 
