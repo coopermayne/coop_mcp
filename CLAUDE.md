@@ -38,6 +38,13 @@ There is no exercise-selection or progression logic in the server either.
 - **It gets quieter over time.** Linking a mention with `learn_alias=True` stores the
   surface form (including transcription errors) as a learned alias, so it auto-matches
   next time.
+- **All user-facing dates are Pacific.** The user lives on Pacific time, so `today()`
+  and every date default (`entry_date`, `drink_date`, `workout_date`) plus streak/recency
+  math roll over at Pacific midnight, via `PACIFIC = ZoneInfo("America/Los_Angeles")` —
+  never the server's UTC midnight. `created_at` stays UTC (an unambiguous storage
+  timestamp, not a user date). Both briefings return `now` (`current_clock()`) so the
+  model can anchor "today"/"yesterday" before defaulting or back-dating. `tzdata` is a
+  dependency so `zoneinfo` resolves on the slim Docker image.
 - **Tool docstrings are the model-facing contract.** Claude reads them to decide when to
   ask vs. link vs. queue (e.g. the score thresholds). If you change a tool's behavior,
   update its docstring in the same edit — it's not just documentation.
@@ -45,7 +52,7 @@ There is no exercise-selection or progression logic in the server either.
 ## Files
 
 - `server.py` — everything: schema, matching, all MCP tools, auth wiring, entrypoint.
-- `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`.
+- `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
 
