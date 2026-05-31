@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Training · Journal{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold tracking-tight mb-6">Training</h1>
+
+<div class="grid grid-cols-3 gap-6 mb-12">
+  {{ m.stat(totals.sessions, "Sessions") }}
+  {{ m.stat(totals.exercises, "Exercises") }}
+  {{ m.stat(totals.sets, "Total Sets") }}
+</div>
+
+{% if muscles %}
+<div class="mb-12">
+  {{ m.section_label("Muscle Recency") }}
+  <div class="grid grid-cols-3 sm:grid-cols-5 gap-2">
+    {% for mu in muscles %}
+      {% set n = mu.sets_last_7d %}
+      {% if n == 0 %}{% set bar = '#e5e7eb' %}
+      {% elif n <= 4 %}{% set bar = '#d0d0d0' %}
+      {% elif n <= 9 %}{% set bar = '#808080' %}
+      {% else %}{% set bar = '#2a2a2a' %}{% endif %}
+      <div class="border border-gray-200 rounded-[3px] px-2.5 py-2">
+        <div class="h-1 rounded-full mb-2" style="background: {{ bar }}"></div>
+        <p class="text-[10px] uppercase tracking-wide text-gray-500 leading-tight">{{ mu.muscle }}</p>
+        <p class="text-xs tabular-nums mt-0.5">
+          {% if mu.days_since is none %}<span class="text-gray-300">never</span>
+          {% elif mu.days_since == 0 %}today
+          {% else %}{{ mu.days_since }}d ago{% endif %}
+        </p>
+        <p class="text-[10px] text-gray-400 tabular-nums">{{ n }} set{{ '' if n == 1 else 's' }} / 7d</p>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if sessions %}
+  {% for s in sessions %}
+  <article class="border border-gray-200 rounded-[4px] mb-8">
+    <div class="px-5 sm:px-6 pt-5 sm:pt-6 pb-4">
+      <p class="text-xs uppercase tracking-widest text-gray-400">{{ s.date | long_date }}</p>
+      <h2 class="text-xl sm:text-2xl font-semibold tracking-tight mt-1">{{ s.focus or "Workout" }}</h2>
+      <p class="text-sm text-gray-500 mt-0.5">{{ s.exercise_count }} exercises · {{ s.set_count }} sets</p>
+    </div>
+
+    <div class="border-t border-gray-100 px-5 sm:px-6 py-3">
+      {% for ex in s.exercises %}
+      <div class="flex items-start justify-between gap-3 py-1.5">
+        <div class="min-w-0">
+          <span class="text-sm font-medium">{{ ex.name }}</span>
+          {% if ex.category and ex.category != 'strength' %}<span class="badge ml-1.5">{{ ex.category }}</span>{% endif %}
+        </div>
+        <div class="flex flex-wrap gap-1 justify-end">
+          {% for st in ex.sets %}<span class="set-pill" {% if st.note %}title="{{ st.note }}"{% endif %}>{{ st | set_label }}</span>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if s.feeling or s.notes %}
+    <div class="border-t border-gray-100 px-5 sm:px-6 py-4 space-y-1.5">
+      {% if s.feeling %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Feeling:</span> {{ s.feeling }}</p>{% endif %}
+      {% if s.notes %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Notes:</span> {{ s.notes }}</p>{% endif %}
+    </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+{% else %}
+  <p class="text-sm text-gray-400">No workouts logged yet.</p>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ e.entry_date }} · Journal{% endblock %}
+{% block content %}
+
+<a href="/journal" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Journal</a>
+
+<div class="mt-4 mb-8">
+  <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | long_date }}</p>
+  <p class="text-sm text-gray-300 mt-1">Recorded {{ e.created_at[:10] | short_date }}</p>
+</div>
+
+<article class="border border-gray-200 rounded-[4px]">
+  <div class="px-5 sm:px-6 py-5">
+    <p class="text-[15px] text-gray-800 leading-relaxed whitespace-pre-line">{{ e.body }}</p>
+  </div>
+
+  {% set resolved = e.mentions | selectattr('person_id') | list %}
+  {% if e.mentions %}
+  <div class="border-t border-gray-100 px-5 sm:px-6 py-4">
+    {{ m.section_label("People") }}
+    <div class="flex flex-wrap gap-2">
+      {% for mn in e.mentions %}
+        {% if mn.person_id %}
+        <a href="/person/{{ mn.person_id }}" class="set-pill hover:border-black transition-colors">
+          {{ mn.name }}{% if mn.role %} · {{ mn.role }}{% endif %}
+        </a>
+        {% else %}
+        <span class="badge" title="Unresolved mention">{{ mn.surface_form }} · ?</span>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if e.raw_body and e.raw_body != e.body %}
+  <div class="border-t border-gray-100 px-5 sm:px-6 py-4">
+    {{ m.section_label("Verbatim") }}
+    <p class="text-sm text-gray-400 leading-relaxed whitespace-pre-line italic">{{ e.raw_body }}</p>
+  </div>
+  {% endif %}
+</article>
+
+{% endblock %}

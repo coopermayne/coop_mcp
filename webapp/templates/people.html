@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}People · Journal{% endblock %}
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">People</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }}</span>
+</div>
+
+<form method="get" action="/people" class="mb-8 flex gap-2">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search name or role…"
+         class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+  <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
+  {% if q %}<a href="/people" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+</form>
+
+{% if people %}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for p in people %}
+  <a href="/person/{{ p.person_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    <div class="flex items-baseline justify-between gap-3">
+      <div class="min-w-0">
+        <span class="text-sm font-medium">{{ p.name }}</span>
+        {% if p.role %}<span class="text-xs text-gray-500 ml-2">{{ p.role }}</span>{% endif %}
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        {% for g in p.groups %}<span class="badge">{{ g }}</span>{% endfor %}
+        {% if p.aliases %}<span class="text-[10px] text-gray-300 tabular-nums">{{ p.aliases }} alias{{ '' if p.aliases == 1 else 'es' }}</span>{% endif %}
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400">{% if q %}No one matched "{{ q }}".{% else %}No people yet.{% endif %}</p>
+{% endif %}
+
+{% endblock %}

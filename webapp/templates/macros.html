@@ -1,0 +1,20 @@
+{# Reusable pieces shared across pages. #}
+
+{% macro stat(value, label) %}
+<div>
+  <p class="text-2xl sm:text-3xl font-semibold tracking-tight">{{ value }}</p>
+  <p class="text-xs uppercase tracking-widest text-gray-400 mt-1">{{ label }}</p>
+</div>
+{% endmacro %}
+
+{% macro entry_card(e) %}
+<a href="/entry/{{ e.entry_id }}"
+   class="block border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-4 hover:border-black transition-colors">
+  <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | short_date }}</p>
+  <p class="text-sm text-gray-700 mt-1.5 leading-relaxed whitespace-pre-line">{{ e.body }}</p>
+</a>
+{% endmacro %}
+
+{% macro section_label(text) %}
+<p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{{ text }}</p>
+{% endmacro %}

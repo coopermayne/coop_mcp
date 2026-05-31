@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ p.name }} · People{% endblock %}
+{% block content %}
+
+<a href="/people" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← People</a>
+
+<div class="mt-4 mb-8">
+  <h1 class="text-2xl font-bold tracking-tight">{{ p.name }}</h1>
+  {% if p.role %}<p class="text-sm text-gray-500 mt-1">{{ p.role }}</p>{% endif %}
+  {% if p.groups %}
+  <div class="flex flex-wrap gap-2 mt-3">
+    {% for g in p.groups %}<span class="badge">{{ g }}</span>{% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if p.summary %}
+<div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-6">
+  {{ m.section_label("Summary") }}
+  <p class="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{{ p.summary }}</p>
+</div>
+{% endif %}
+
+{% if p.email or p.phone or p.address or p.notes %}
+<div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-6 space-y-1.5">
+  {{ m.section_label("Details") }}
+  {% if p.email %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Email:</span> {{ p.email }}</p>{% endif %}
+  {% if p.phone %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Phone:</span> {{ p.phone }}</p>{% endif %}
+  {% if p.address %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Address:</span> {{ p.address }}</p>{% endif %}
+  {% if p.notes %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Notes:</span> {{ p.notes }}</p>{% endif %}
+</div>
+{% endif %}
+
+{% if p.aliases %}
+<div class="mb-6">
+  {{ m.section_label("Also Known As") }}
+  <div class="flex flex-wrap gap-2">
+    {% for a in p.aliases %}
+      <span class="set-pill {% if a.source == 'learned' %}border-dashed text-gray-400{% endif %}"
+            title="{{ a.source }}">{{ a.surface_form }}</span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if p.related %}
+<div class="mb-8">
+  {{ m.section_label("Often Mentioned With") }}
+  <div class="flex flex-wrap gap-2">
+    {% for r in p.related %}
+    <a href="/person/{{ r.person_id }}" class="set-pill hover:border-black transition-colors">
+      {{ r.name }}<span class="text-gray-400 ml-1.5">×{{ r.shared_entries }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div>
+  <div class="flex items-baseline justify-between mb-4">
+    <h2 class="text-xl font-semibold tracking-tight">History</h2>
+    <span class="text-xs uppercase tracking-widest text-gray-400">{{ p.history_count }} entries</span>
+  </div>
+  {% if p.history %}
+    {% for e in p.history %}{{ m.entry_card(e) }}{% endfor %}
+  {% else %}
+    <p class="text-sm text-gray-400">No entries mention {{ p.name }} yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
