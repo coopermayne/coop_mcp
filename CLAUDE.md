@@ -91,7 +91,7 @@ os.environ["JOURNAL_DB"]="/tmp/t.db"
 spec=importlib.util.spec_from_file_location("server","server.py")
 S=importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 S.init_db()
-pid=S.create_person("Tom", role="father", aliases=["Dad"])["person_id"]
+pid=S.save_person(canonical_name="Tom", role="father", aliases=["Dad"])["person_id"]
 e=S.add_journal_entry(body="Dad came by.", raw_body="dad came by", mentions=["dad"])
 print([(c["name"],c["score"]) for c in e["mentions"][0]["candidates"]])
 PY
@@ -122,7 +122,7 @@ working.
   aggregates (daily totals, sober streak) in SQL.
 - `exercises` — the exercise catalog (stable entities, like people): `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`. Starts empty; `log_workout` auto-stubs a
-  bare record for any unknown name, which `update_exercise` later enriches.
+  bare record for any unknown name, which `save_exercise` later enriches.
 - `exercise_muscles` — normalizes muscle→exercise (`role` primary|secondary) so
   per-muscle recency/volume is a plain GROUP BY. Canonical muscle list is `MUSCLES`.
 - `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), the
