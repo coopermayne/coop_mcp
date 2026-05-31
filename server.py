@@ -46,12 +46,13 @@ ALLOWED_EMAILS = {
 def _build_auth():
     """Return a Google OAuth provider if creds are set, else None (authless).
 
-    ONE provider is shared by both MCP servers (journal + trainer): it's the same
-    Google client and the same single-user allowlist, and an OAuth authorization
-    server can only live once at the origin root — so its /authorize, /token,
-    /register and /auth/callback routes are served once and both endpoints
-    authenticate against them. Each server still advertises its OWN protected-resource
-    metadata (resource-path-specific, so they don't collide).
+    Build a FRESH provider per MCP server — never share one object across both. A
+    GoogleProvider is single-resource: building its HTTP app calls set_mcp_path(),
+    which stores `_resource_url` ON THE INSTANCE and is what incoming tokens are
+    validated against. Sharing one provider lets the second server's build clobber the
+    first's `_resource_url`, so the first endpoint then rejects all its own tokens.
+    Each server gets its own instance (same Google client + allowlist) so each keeps
+    its own resource URL: journal -> /mcp, trainer -> /trainer/mcp.
 
     Authless is for local dev / staging with dummy data only. Set GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET, PUBLIC_URL, and JOURNAL_ALLOWED_EMAILS in Coolify to protect
@@ -99,12 +100,13 @@ if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
 
 # The trainer is a SEPARATE MCP server living in the SAME process and sharing this
-# DB (and the same auth provider), but exposed at its own endpoint (/trainer/mcp) so a
-# Claude project connected to it loads ONLY the training tools — not the
-# journal/drinking ones. Splitting them keeps each conversation's tool surface small.
-# webapp/combined.py composes both onto one origin; the webapp itself still imports
-# this module's functions unchanged.
-trainer_mcp = FastMCP("trainer", auth=_auth, instructions="""\
+# DB, but exposed at its own endpoint (/trainer/mcp) so a Claude project connected to
+# it loads ONLY the training tools — not the journal/drinking ones. It gets its OWN
+# auth provider instance (see _build_auth: providers are single-resource and must not
+# be shared). webapp/combined.py composes both onto one origin; the webapp itself still
+# imports this module's functions unchanged.
+_trainer_auth = _build_auth()
+trainer_mcp = FastMCP("trainer", auth=_trainer_auth, instructions="""\
 Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe) and an
 exercise catalog (technique, cautions, target muscles). The server only stores and
 computes deterministic aggregates (per-muscle recency/volume) — all coaching
@@ -116,7 +118,7 @@ computing any date.
 
 Start a training session with get_fitness_briefing to load the profile (injuries,
 split, goals), per-muscle recency, and recent sessions before recommending work.""")
-if _auth is not None:
+if _trainer_auth is not None:
     trainer_mcp.add_middleware(AllowlistMiddleware())
 
 
