@@ -255,3 +255,5 @@ trailing slash or includes `/mcp` (it should be the bare origin).
   contact fields, treating your DB as the enrichment layer. Avoid two-way sync.
 - Possible v2: vCard import/export, and a scheduled job that regenerates each
   person's `summary` from their recent entries.
+
+<!-- ci: auto-deploy webhook test c6fd7db -->
