@@ -137,12 +137,17 @@ class RequireAuth(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if not AUTH_ENABLED:
             return await call_next(request)
+        # Match against the path *relative to the mount prefix* (root_path is
+        # '/app' when embedded in the MCP process, '' when standalone).
+        root = request.scope.get("root_path", "") or ""
         path = request.url.path
+        if root and path.startswith(root):
+            path = path[len(root):] or "/"
         if path in PUBLIC_PATHS or path.startswith("/static"):
             return await call_next(request)
         if request.session.get("email"):
             return await call_next(request)
-        return RedirectResponse((request.scope.get("root_path", "") or "") + "/login")
+        return RedirectResponse(root + "/login")
 
 
 # SessionMiddleware must be outermost so request.session exists for RequireAuth.
