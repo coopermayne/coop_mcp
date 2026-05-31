@@ -37,7 +37,9 @@ from starlette.middleware.sessions import SessionMiddleware    # noqa: E402
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-WEB_BASE_URL = (os.environ.get("WEB_BASE_URL") or "").rstrip("/")
+# Public origin used to build the OAuth redirect. Defaults to the MCP server's
+# PUBLIC_URL (same bare origin) so there's no duplicate var to set.
+WEB_BASE_URL = (os.environ.get("WEB_BASE_URL") or os.environ.get("PUBLIC_URL") or "").rstrip("/")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-insecure-change-me")
 AUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 ALLOWED_EMAILS = server.ALLOWED_EMAILS  # reuse the MCP server's allowlist
