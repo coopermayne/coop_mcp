@@ -10,9 +10,9 @@ RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 COPY server.py .
 COPY webapp ./webapp
 
-# Remote mode. DB lives on a mounted volume so it survives redeploys.
-# One process serves both MCP connectors (journal at /mcp, trainer at /trainer/mcp)
-# and the read-only UI at /app.
+# Remote mode. DB lives on a mounted volume so it survives redeploys. One process serves
+# the journal MCP (+ read-only UI at /app) on PUBLIC_URL and, when TRAINER_PUBLIC_URL is
+# set, the trainer MCP on that second host (each with its own root OAuth).
 ENV MCP_TRANSPORT=http \
     PORT=8000 \
     JOURNAL_DB=/data/journal.db

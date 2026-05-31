@@ -109,11 +109,18 @@ deterministic aggregates (per-muscle recency, sober streaks); the coaching judgm
 conversation, from what the retrieval tools return.
 
 **The trainer is a separate MCP server.** Drinking stays on the journal server, but the
-training tools live on their own FastMCP instance at their own endpoint (`/trainer/mcp`
-remote; `MCP_SERVER=trainer` over stdio) sharing the same DB. Connect it as its own
-connector and give it its own Claude **Project**, so a journaling chat doesn't load the
-workout tools and vice-versa — each conversation carries a smaller, more relevant tool
-set. Use the trainer posture below as that project's custom instructions.
+training tools live on their own FastMCP instance sharing the same DB. Connect it as its
+own connector and give it its own Claude **Project**, so a journaling chat doesn't load
+the workout tools and vice-versa — each conversation carries a smaller, more relevant
+tool set. Use the trainer posture below as that project's custom instructions.
+
+Where it's exposed depends on auth. Two full OAuth servers can't share one origin (their
+`/authorize`, `/token`, `/auth/callback` paths collide), so in production the trainer
+runs on its **own subdomain** — set `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN` and the
+single process routes that hostname to the trainer server at its root (connector:
+`https://TRAINER-DOMAIN/mcp`, clean root OAuth). Over stdio use `MCP_SERVER=trainer`.
+With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
+`/trainer/mcp` on the main origin. See "Remote deployment" for the subdomain steps.
 
 - **Drinking.** `log_drinks` records standard drinks for a day (a beer/wine ≈ 1, a
   strong cocktail ≈ 1.5); call it as often as needed. `get_drink_summary` gives daily
@@ -168,15 +175,18 @@ HTTP at `/mcp` (see the Dockerfile). On Coolify:
 1. New resource → from this repo (or Dockerfile). Coolify builds the image.
 2. Add a **persistent volume** mounted at `/data` so `journal.db` survives redeploys.
 3. Give it a domain; Coolify provisions HTTPS via Let's Encrypt automatically.
-4. Your MCP URLs are `https://YOUR-DOMAIN/mcp` (journal + drinking) and
-   `https://YOUR-DOMAIN/trainer/mcp` (training) — one process serves both.
-5. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste a
+4. **For the trainer, add a second domain** on the SAME Coolify application (Coolify
+   accepts multiple domains per service) — e.g. `https://TRAINER-DOMAIN` — pointed at
+   the same DNS, and set the env var `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN`. The
+   one process then serves the journal on `YOUR-DOMAIN` and the trainer on
+   `TRAINER-DOMAIN`, each with its own root OAuth.
+5. Your MCP URLs are `https://YOUR-DOMAIN/mcp` (journal + drinking) and
+   `https://TRAINER-DOMAIN/mcp` (training).
+6. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste a
    URL. Add the journal one for sure; add the trainer one as a SECOND connector if you
-   want training in its own project. The trainer authenticates against the journal's
-   root OAuth server (no new Google redirect URI). ⚠️ FastMCP can't cleanly co-host two
-   full OAuth servers on one origin; if the trainer connector won't authenticate, give
-   it its own subdomain (see the auth notes). Then enable each per-conversation via the
-   "+" menu on your phone.
+   want training in its own project. (With auth on, the trainer needs its own redirect
+   URI in Google — see below.) Then enable each per-conversation via the "+" menu on
+   your phone.
 
 **Roll it out in two stages.** First deploy as-is (no auth) and connect it with only
 **dummy data** to confirm the Claude-to-Coolify pipe works end to end. Do **not** put
@@ -191,10 +201,12 @@ Claude discovers it automatically and self-registers, so you just paste the URL 
 client ID/secret in Claude's connector settings.
 
 **1. Create a Google OAuth client** (Google Cloud Console → APIs & Services →
-Credentials → Create OAuth client ID → Web application). Set the authorized redirect URI to:
+Credentials → Create OAuth client ID → Web application). Add these authorized redirect
+URIs (one client serves both hosts):
 
 ```
 https://YOUR-DOMAIN/auth/callback
+https://TRAINER-DOMAIN/auth/callback     # only if you run the trainer subdomain
 ```
 
 **2. Set these env vars in Coolify** (never in the image):
@@ -205,6 +217,7 @@ https://YOUR-DOMAIN/auth/callback
 | `GOOGLE_CLIENT_SECRET` | from the Google client |
 | `PUBLIC_URL` | `https://YOUR-DOMAIN` (no trailing slash, no `/mcp`) |
 | `JOURNAL_ALLOWED_EMAILS` | your Gmail address (comma-separated for more than one) |
+| `TRAINER_PUBLIC_URL` | `https://TRAINER-DOMAIN` — enables the trainer on its own host (omit to skip the trainer / keep it at `/trainer/mcp` authless) |
 
 With those set, the server flips from authless to protected on restart. Verified
 behavior: an unauthenticated request gets `401` with a `WWW-Authenticate` header
@@ -242,8 +255,9 @@ real entries.
 - [ ] Assign a domain; let Coolify provision HTTPS. Leave all `GOOGLE_*` vars unset.
 - [ ] Deploy. Check `https://YOUR-DOMAIN/health` returns `{"status":"ok"}`.
 - [ ] At claude.ai (in a browser) → Customize → Connectors → Add custom connector →
-      paste `https://YOUR-DOMAIN/mcp`. It should connect with no login. (Optionally add
-      `https://YOUR-DOMAIN/trainer/mcp` as a second connector for the training tools.)
+      paste `https://YOUR-DOMAIN/mcp`. It should connect with no login. (Authless, the
+      trainer is at `https://YOUR-DOMAIN/trainer/mcp`; on the trainer subdomain it's
+      `https://TRAINER-DOMAIN/mcp`.)
 - [ ] On your phone, enable the connector via the "+" menu and add one throwaway
       entry about a fake person. Confirm it saves and reads back.
 - [ ] Clear the test data (delete `/data/journal.db`; it recreates on next call).
@@ -258,9 +272,21 @@ real entries.
       sign-in. Log in with your allowlisted account.
 - [ ] Add a real entry from your phone. You're live.
 
+**Stage 3 — turn on the trainer (its own subdomain)**
+- [ ] DNS: point `TRAINER-DOMAIN` at the same server as `YOUR-DOMAIN`.
+- [ ] Coolify: add `https://TRAINER-DOMAIN` as a second domain on the SAME application;
+      let it provision HTTPS.
+- [ ] Google Cloud Console → add redirect URI `https://TRAINER-DOMAIN/auth/callback` to
+      the SAME OAuth client.
+- [ ] In Coolify set `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN`. Redeploy.
+- [ ] Confirm `https://TRAINER-DOMAIN/mcp` returns 401 anonymously and
+      `https://TRAINER-DOMAIN/.well-known/oauth-protected-resource/mcp` returns 200.
+- [ ] In Claude, add a second custom connector `https://TRAINER-DOMAIN/mcp`, sign in,
+      give it its own Project with the trainer posture as instructions.
+
 If the connector shows "disconnected" after adding Google: usually the redirect URI in
-Google doesn't exactly match `https://YOUR-DOMAIN/auth/callback`, or `PUBLIC_URL` has a
-trailing slash or includes `/mcp` (it should be the bare origin).
+Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
+`TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
 
 ## Web frontend (read-only)
 
@@ -325,10 +351,11 @@ in one Coolify project.
 
 ## Tools
 
-Split across two connectors. The **journal** server (`/mcp`) carries the journal +
-drinking tools through `update_drink`, plus a `delete_record` scoped to `entry`/`drink`.
-The **trainer** server (`/trainer/mcp`) carries `save_exercise` through `update_profile`,
-plus its own `delete_record` scoped to `workout`/`set`. Both hit the same DB.
+Split across two connectors. The **journal** server (`YOUR-DOMAIN/mcp`) carries the
+journal + drinking tools through `update_drink`, plus a `delete_record` scoped to
+`entry`/`drink`. The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
+main origin when authless) carries `save_exercise` through `update_profile`, plus its
+own `delete_record` scoped to `workout`/`set`. Both hit the same DB.
 
 | Tool | Purpose |
 |---|---|
