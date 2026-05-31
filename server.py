@@ -1,6 +1,12 @@
 """
 Journal MCP server.
 
+This module defines TWO FastMCP servers sharing one SQLite DB and one Google auth
+provider: `mcp` (the journal + drinking tools, at /mcp) and `trainer_mcp` (the training
+tools, at /trainer/mcp). They're split so each is its own connector / Claude project and
+a conversation loads only the relevant tool set. webapp/combined.py composes both onto
+one origin; over stdio, MCP_SERVER picks which one a bare `server.py` launch runs.
+
 Design contract:
   - This server is a DETERMINISTIC data + candidate-matching layer. It contains
     no LLM. Entity resolution ("which Tom?") is done by the model in the
@@ -40,6 +46,13 @@ ALLOWED_EMAILS = {
 def _build_auth():
     """Return a Google OAuth provider if creds are set, else None (authless).
 
+    ONE provider is shared by both MCP servers (journal + trainer): it's the same
+    Google client and the same single-user allowlist, and an OAuth authorization
+    server can only live once at the origin root — so its /authorize, /token,
+    /register and /auth/callback routes are served once and both endpoints
+    authenticate against them. Each server still advertises its OWN protected-resource
+    metadata (resource-path-specific, so they don't collide).
+
     Authless is for local dev / staging with dummy data only. Set GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET, PUBLIC_URL, and JOURNAL_ALLOWED_EMAILS in Coolify to protect
     the server before putting real entries in.
@@ -69,22 +82,42 @@ class AllowlistMiddleware(Middleware):
 
 _auth = _build_auth()
 mcp = FastMCP("journal", auth=_auth, instructions="""\
-Single-user life log with three domains: a conversational journal (people are
-resolved to stable entities, not name strings), a drinking tracker, and a personal
-trainer (workouts + exercise catalog). The server only stores and matches — all
-judgment (which person a mention means, next weight, what to program) is yours.
+Single-user life log: a conversational journal (people are resolved to stable
+entities, not name strings) plus a drinking tracker. The server only stores and
+matches — the judgment (which person a mention means) is yours.
 
 Two rules: capture never blocks — always save, leave ambiguous mentions pending for
 later; and resolve mentions to person entities, don't normalize names in text.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
-on Pacific time. Both briefings return `now` (current Pacific date/time); anchor
+on Pacific time. get_briefing returns `now` (current Pacific date/time); anchor
 "today"/"yesterday" to it before defaulting or computing any date.
 
-Start a session with get_briefing (people/journal) and/or get_fitness_briefing
-(training) to load context before acting.""")
+Start a session with get_briefing to load people/journal context before acting.
+(Workouts/training live on a separate `trainer` MCP server.)""")
 if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
+
+# The trainer is a SEPARATE MCP server living in the SAME process and sharing this
+# DB (and the same auth provider), but exposed at its own endpoint (/trainer/mcp) so a
+# Claude project connected to it loads ONLY the training tools — not the
+# journal/drinking ones. Splitting them keeps each conversation's tool surface small.
+# webapp/combined.py composes both onto one origin; the webapp itself still imports
+# this module's functions unchanged.
+trainer_mcp = FastMCP("trainer", auth=_auth, instructions="""\
+Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe) and an
+exercise catalog (technique, cautions, target muscles). The server only stores and
+computes deterministic aggregates (per-muscle recency/volume) — all coaching
+judgment (next weight, what to program, what to rest, how to cue form) is yours.
+
+All dates here are Pacific (America/Los_Angeles). get_fitness_briefing returns `now`
+(current Pacific date/time); anchor "today"/"yesterday" to it before defaulting or
+computing any date.
+
+Start a training session with get_fitness_briefing to load the profile (injuries,
+split, goals), per-muscle recency, and recent sessions before recommending work.""")
+if _auth is not None:
+    trainer_mcp.add_middleware(AllowlistMiddleware())
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -729,18 +762,10 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
     return {"entry_id": entry_id, "updated": list(sets)}
 
 
-@mcp.tool()
-def delete_record(kind: str, id: int) -> dict:
-    """Permanently delete one record. Irreversible — confirm with the user first.
-
-    `kind` selects what `id` refers to:
-      - "entry"   — a journal entry (its mentions go too; FTS stays in sync).
-      - "drink"   — one logged drink row (a day with no rows left is sober again).
-      - "workout" — a whole training session (all its sets go too).
-      - "set"     — one logged set (remaining sets for that exercise are renumbered
-                    so set_index stays contiguous).
-    Find ids with the matching read: get_entry/search_entries, get_drink_summary
-    (include_rows=True), get_fitness_briefing, get_exercise_history."""
+def _delete_record(kind: str, id: int) -> dict:
+    """Shared delete implementation behind both servers' delete_record tools. Maps
+    `kind` to its table, deletes the row, and (for sets) renumbers the remaining
+    set_index so it stays contiguous."""
     tables = {"entry": "entries", "drink": "drinks", "workout": "workouts", "set": "sets"}
     table = tables.get(kind)
     if not table:
@@ -764,6 +789,21 @@ def delete_record(kind: str, id: int) -> dict:
             for i, row in enumerate(remaining, start=1):
                 conn.execute("UPDATE sets SET set_index=? WHERE id=?", (i, row["id"]))
     return {"kind": kind, "id": id, "deleted": True}
+
+
+@mcp.tool()
+def delete_record(kind: str, id: int) -> dict:
+    """Permanently delete one journal-side record. Irreversible — confirm first.
+
+    `kind` selects what `id` refers to:
+      - "entry" — a journal entry (its mentions go too; FTS stays in sync).
+      - "drink" — one logged drink row (a day with no rows left is sober again).
+    Find ids with get_entry/search_entries or get_drink_summary(include_rows=True).
+    (Workouts and sets are deleted via the trainer server's own delete_record.)"""
+    if kind not in ("entry", "drink"):
+        return {"error": f"unknown kind {kind!r}; this server deletes one of "
+                         "['drink', 'entry'] (use the trainer server for workout/set)"}
+    return _delete_record(kind, id)
 
 
 @mcp.tool()
@@ -1030,7 +1070,7 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 # Trainer: exercise catalog
 # --------------------------------------------------------------------------- #
 
-@mcp.tool()
+@trainer_mcp.tool()
 def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   category: Optional[str] = None, equipment: Optional[str] = None,
                   muscles: Optional[list[str]] = None,
@@ -1089,7 +1129,7 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                        + (["muscles"] if (muscles is not None or secondary_muscles is not None) else [])}
 
 
-@mcp.tool()
+@trainer_mcp.tool()
 def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
               muscle: Optional[str] = None, equipment: Optional[str] = None,
               category: Optional[str] = None) -> dict:
@@ -1134,7 +1174,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
 # Trainer: logging + retrieval
 # --------------------------------------------------------------------------- #
 
-@mcp.tool()
+@trainer_mcp.tool()
 def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 focus: Optional[str] = None, feeling: Optional[str] = None,
                 notes: Optional[str] = None, workout_id: Optional[int] = None) -> dict:
@@ -1232,7 +1272,7 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
             "appended": workout_id is not None}
 
 
-@mcp.tool()
+@trainer_mcp.tool()
 def get_exercise_history(exercise_id: Optional[int] = None,
                          name: Optional[str] = None, limit: int = 10) -> dict:
     """Per-session performance for one exercise, newest first — the progressive-
@@ -1278,7 +1318,7 @@ def get_exercise_history(exercise_id: Optional[int] = None,
             "sessions": sessions[:limit], "count": min(len(sessions), limit)}
 
 
-@mcp.tool()
+@trainer_mcp.tool()
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
                    notes: Optional[str] = None) -> dict:
@@ -1303,7 +1343,7 @@ def update_workout(workout_id: int, workout_date: Optional[str] = None,
     return {"workout_id": workout_id, "updated": list(sets)}
 
 
-@mcp.tool()
+@trainer_mcp.tool()
 def update_set(set_id: int, weight_lbs: Optional[float] = None,
                reps: Optional[int] = None, rpe: Optional[float] = None,
                note: Optional[str] = None) -> dict:
@@ -1326,7 +1366,7 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
     return {"set_id": set_id, "updated": list(sets)}
 
 
-@mcp.tool()
+@trainer_mcp.tool()
 def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
@@ -1369,7 +1409,7 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
             "muscle_recency": recency, "recent_workouts": recent_out}
 
 
-@mcp.tool()
+@trainer_mcp.tool()
 def update_profile(profile: dict) -> dict:
     """Merge fields into the stored trainer profile (JSON). Pass only the keys you
     want to change; existing keys are preserved. Use it to keep durable training
@@ -1388,14 +1428,34 @@ def update_profile(profile: dict) -> dict:
     return {"profile": current}
 
 
+@trainer_mcp.tool(name="delete_record")
+def delete_training_record(kind: str, id: int) -> dict:
+    """Permanently delete one training record. Irreversible — confirm first.
+
+    `kind` selects what `id` refers to:
+      - "workout" — a whole session (all its sets go too).
+      - "set"     — one logged set (remaining sets for that exercise are renumbered
+                    so set_index stays contiguous).
+    Find ids with get_fitness_briefing or get_exercise_history."""
+    if kind not in ("workout", "set"):
+        return {"error": f"unknown kind {kind!r}; this server deletes one of "
+                         "['set', 'workout'] (use the journal server for entry/drink)"}
+    return _delete_record(kind, id)
+
+
 if __name__ == "__main__":
     init_db()
+    # stdio carries a single MCP stream, so a stdio launch runs ONE server, chosen by
+    # MCP_SERVER (journal|trainer) — point each Claude Desktop config at the right one.
+    # HTTP mode here is for single-server smoke tests; in production
+    # webapp/combined.py serves BOTH MCP servers + the UI in one process.
+    selected = trainer_mcp if os.environ.get("MCP_SERVER") == "trainer" else mcp
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "http":
         # Remote mode (behind Coolify's HTTPS proxy). Connector URL: https://<domain>/mcp
-        mcp.run(transport="http",
-                host=os.environ.get("MCP_HOST", "0.0.0.0"),
-                port=int(os.environ.get("PORT", "8000")),
-                path="/mcp")
+        selected.run(transport="http",
+                     host=os.environ.get("MCP_HOST", "0.0.0.0"),
+                     port=int(os.environ.get("PORT", "8000")),
+                     path="/mcp")
     else:
-        mcp.run()
+        selected.run()

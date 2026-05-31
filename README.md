@@ -52,12 +52,21 @@ Edit `claude_desktop_config.json` (Settings → Developer → Edit Config):
       "command": "/ABSOLUTE/PATH/journal-mcp/.venv/bin/python",
       "args": ["/ABSOLUTE/PATH/journal-mcp/server.py"],
       "env": { "JOURNAL_DB": "/ABSOLUTE/PATH/journal.db" }
+    },
+    "trainer": {
+      "command": "/ABSOLUTE/PATH/journal-mcp/.venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/journal-mcp/server.py"],
+      "env": { "JOURNAL_DB": "/ABSOLUTE/PATH/journal.db", "MCP_SERVER": "trainer" }
     }
   }
 }
 ```
 
-Use absolute paths. Restart Claude Desktop; the journal tools appear in the tools menu.
+Use absolute paths. The two entries run the same `server.py` against the same DB; over
+stdio each launch serves one MCP server, selected by `MCP_SERVER` (the journal+drinking
+tools, or — with `MCP_SERVER=trainer` — the training tools). Register only `journal` if
+you don't want the trainer tools loaded. Restart Claude Desktop; the tools appear in the
+tools menu.
 
 ## Make the conversation flow (the efficient-integration half)
 
@@ -93,11 +102,18 @@ already carry most of it; this just sets the posture.
 
 ## Drinking + personal trainer
 
-The same server also tracks drinking and acts as a personal trainer — same rule as
+The same codebase also tracks drinking and acts as a personal trainer — same rule as
 the journal: **no LLM in the server.** It stores drinks/workouts and computes
 deterministic aggregates (per-muscle recency, sober streaks); the coaching judgment
 — next weight, what to rest, which exercises, how to explain form — happens in the
 conversation, from what the retrieval tools return.
+
+**The trainer is a separate MCP server.** Drinking stays on the journal server, but the
+training tools live on their own FastMCP instance at their own endpoint (`/trainer/mcp`
+remote; `MCP_SERVER=trainer` over stdio) sharing the same DB. Connect it as its own
+connector and give it its own Claude **Project**, so a journaling chat doesn't load the
+workout tools and vice-versa — each conversation carries a smaller, more relevant tool
+set. Use the trainer posture below as that project's custom instructions.
 
 - **Drinking.** `log_drinks` records standard drinks for a day (a beer/wine ≈ 1, a
   strong cocktail ≈ 1.5); call it as often as needed. `get_drink_summary` gives daily
@@ -122,7 +138,9 @@ conversation, from what the retrieval tools return.
   split, goals), per-muscle recency (days since trained + last-7-day set volume), and
   recent sessions — enough to program the day and respect recovery.
 
-Suggested Project-instructions posture (alongside the journaling one):
+Suggested posture for the **trainer project's** custom instructions (the drinking lines
+belong with the journaling project, since `log_drinks`/`get_drink_summary` are on the
+journal connector):
 
 > When I talk about drinking, convert it to standard drinks and `log_drinks`. When I
 > ask how I'm doing, use `get_drink_summary`.
@@ -150,9 +168,13 @@ HTTP at `/mcp` (see the Dockerfile). On Coolify:
 1. New resource → from this repo (or Dockerfile). Coolify builds the image.
 2. Add a **persistent volume** mounted at `/data` so `journal.db` survives redeploys.
 3. Give it a domain; Coolify provisions HTTPS via Let's Encrypt automatically.
-4. Your MCP URL is `https://YOUR-DOMAIN/mcp`.
-5. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste
-   the URL. Then enable it per-conversation via the "+" menu on your phone.
+4. Your MCP URLs are `https://YOUR-DOMAIN/mcp` (journal + drinking) and
+   `https://YOUR-DOMAIN/trainer/mcp` (training) — one process serves both.
+5. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste a
+   URL. Add the journal one for sure; add the trainer one as a SECOND connector if you
+   want training in its own project. Both authenticate against the same Google login, so
+   no extra Google setup is needed for the second. Then enable each per-conversation via
+   the "+" menu on your phone.
 
 **Roll it out in two stages.** First deploy as-is (no auth) and connect it with only
 **dummy data** to confirm the Claude-to-Coolify pipe works end to end. Do **not** put
@@ -218,7 +240,8 @@ real entries.
 - [ ] Assign a domain; let Coolify provision HTTPS. Leave all `GOOGLE_*` vars unset.
 - [ ] Deploy. Check `https://YOUR-DOMAIN/health` returns `{"status":"ok"}`.
 - [ ] At claude.ai (in a browser) → Customize → Connectors → Add custom connector →
-      paste `https://YOUR-DOMAIN/mcp`. It should connect with no login.
+      paste `https://YOUR-DOMAIN/mcp`. It should connect with no login. (Optionally add
+      `https://YOUR-DOMAIN/trainer/mcp` as a second connector for the training tools.)
 - [ ] On your phone, enable the connector via the "+" menu and add one throwaway
       entry about a fake person. Confirm it saves and reads back.
 - [ ] Clear the test data (delete `/data/journal.db`; it recreates on next call).
@@ -300,6 +323,11 @@ in one Coolify project.
 
 ## Tools
 
+Split across two connectors. The **journal** server (`/mcp`) carries the journal +
+drinking tools through `update_drink`, plus a `delete_record` scoped to `entry`/`drink`.
+The **trainer** server (`/trainer/mcp`) carries `save_exercise` through `update_profile`,
+plus its own `delete_record` scoped to `workout`/`set`. Both hit the same DB.
+
 | Tool | Purpose |
 |---|---|
 | `add_journal_entry` | Save an entry + return candidate matches per named person |
@@ -323,7 +351,7 @@ in one Coolify project.
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions |
-| `delete_record` | Delete one record by `kind` (`entry`/`drink`/`workout`/`set`) + `id` — irreversible, cascades/renumbers as needed |
+| `delete_record` | Delete one record by `kind` + `id` — irreversible, cascades/renumbers as needed. On the journal connector `kind` is `entry`/`drink`; on the trainer connector it's `workout`/`set` |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps
