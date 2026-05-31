@@ -11,7 +11,8 @@ COPY server.py .
 COPY webapp ./webapp
 
 # Remote mode. DB lives on a mounted volume so it survives redeploys.
-# One process serves the MCP connector at /mcp and the read-only UI at /app.
+# One process serves both MCP connectors (journal at /mcp, trainer at /trainer/mcp)
+# and the read-only UI at /app.
 ENV MCP_TRANSPORT=http \
     PORT=8000 \
     JOURNAL_DB=/data/journal.db

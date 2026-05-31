@@ -10,6 +10,15 @@ stable person records, so later "everything about Tom my father" is an exact loo
 that never pulls in the other Tom. Runs locally over stdio (Claude Desktop) or as a
 remote HTTP server behind Google auth (phone access via claude.ai connectors).
 
+**Two MCP servers, one process, one DB.** The training feature is a *second* FastMCP
+instance — `trainer_mcp`, exposed at its own endpoint `/trainer/mcp` — separate from
+the journal+drinking server (`mcp` at `/mcp`). Both live in `server.py`, share the same
+SQLite DB and the same Google auth provider, but each is its own connector → its own
+Claude project, so a conversation loads only that half's tools (smaller tool surface =
+less latency, the reason for the split). It's purely an MCP-layer division: the webapp
+still imports this module's functions unchanged. `webapp/combined.py` composes both
+endpoints onto one origin.
+
 ## The one architectural rule
 
 **There is no LLM inside the server, and there must never be one.** The server is a
@@ -51,7 +60,13 @@ There is no exercise-selection or progression logic in the server either.
 
 ## Files
 
-- `server.py` — everything: schema, matching, all MCP tools, auth wiring, entrypoint.
+- `server.py` — everything: schema, matching, both FastMCP instances (`mcp` =
+  journal+drinking, `trainer_mcp` = training), all tools, shared auth wiring, the
+  shared `_delete_record` helper (each server exposes a kind-scoped `delete_record`),
+  and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
+- `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): mounts the
+  read-only UI at `/app` and composes BOTH MCP servers onto one origin (journal at
+  `/mcp`, trainer grafted in at `/trainer/mcp`, sharing the root OAuth routes).
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
@@ -68,16 +83,21 @@ There is no exercise-selection or progression logic in the server either.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-# local (Claude Desktop, stdio):
-.venv/bin/python server.py
-# remote (HTTP at /mcp):
-MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db .venv/bin/python server.py
+# local (Claude Desktop, stdio) — stdio runs ONE server; pick it with MCP_SERVER:
+.venv/bin/python server.py                       # journal+drinking (default)
+MCP_SERVER=trainer .venv/bin/python server.py    # trainer
+# remote, both endpoints in one process (this is what the Dockerfile runs):
+MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db .venv/bin/python webapp/combined.py
+#   journal connector: /mcp   ·   trainer connector: /trainer/mcp   ·   UI: /app
 ```
 
-Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `PORT`, `MCP_HOST`.
-Auth (set all to protect; unset = authless for dev/staging only): `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (bare origin, no trailing slash, no `/mcp`),
-`JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours).
+Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `MCP_SERVER`
+(`journal`|`trainer`, stdio only — which server a bare `server.py` launch runs),
+`PORT`, `MCP_HOST`. Auth (set all to protect; unset = authless for dev/staging only):
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (bare origin, no trailing
+slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours).
+One Google provider is shared by both endpoints, so the redirect URI is just
+`<PUBLIC_URL>/auth/callback` — the trainer needs no extra Google config.
 
 ## Test
 
@@ -97,10 +117,12 @@ print([(c["name"],c["score"]) for c in e["mentions"][0]["candidates"]])
 PY
 ```
 
-Smoke-test HTTP boot + handshake: start with `MCP_TRANSPORT=http`, then POST an
-`initialize` JSON-RPC call to `/mcp` (Accept: `application/json, text/event-stream`) and
-expect `200`; with auth on, expect `401` plus a `WWW-Authenticate` header. `/health`
-should be `200` regardless of auth.
+Smoke-test HTTP boot + handshake: start `webapp/combined.py` with `MCP_TRANSPORT=http`,
+then POST an `initialize` JSON-RPC call to BOTH `/mcp` and `/trainer/mcp` (Accept:
+`application/json, text/event-stream`) and expect `200`; with auth on, expect `401`
+plus a `WWW-Authenticate` header whose `resource_metadata` pointer resolves to `200`
+(the trainer's must resolve at the root — that's the thing the route-grafting in
+`combined.py` exists to get right). `/health` should be `200` regardless of auth.
 
 If a feature changes the schema, add a migration in `init_db()` (it runs `CREATE TABLE
 IF NOT EXISTS` then `ALTER TABLE ADD COLUMN` for new columns) — existing DBs must keep
@@ -145,6 +167,16 @@ Client Registration) that proxies Google; Claude discovers it via the 401's
 Claude's connector UI. `AllowlistMiddleware.on_call_tool` then rejects any authenticated
 account whose email isn't in `JOURNAL_ALLOWED_EMAILS` — a valid Google login alone is
 not enough. Google redirect URI is `<PUBLIC_URL>/auth/callback`.
+
+**One provider, two endpoints.** An OAuth authorization server lives once at the origin
+root, so both MCP servers share a single `GoogleProvider` (built in `server.py`, passed
+to both instances) — same `/authorize`, `/token`, `/register`, `/auth/callback`. Each
+endpoint still advertises its OWN protected-resource metadata (`/.well-known/oauth-
+protected-resource/mcp` for journal, `.../trainer/mcp` for trainer), both resolving at
+the root. That's why `combined.py` builds each MCP app at the root (not as a Starlette
+sub-mount, which would prefix the discovery docs and break client lookup) and grafts in
+only the trainer's two unique routes. Adding the trainer needed **no** new Google
+redirect URI.
 
 ## Gotchas
 
