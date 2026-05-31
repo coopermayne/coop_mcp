@@ -50,8 +50,9 @@ def list_entries(limit: int = 40, offset: int = 0, max_chars: int = 320) -> dict
 
 
 def entry_with_people(entry_id: int):
-    """Full entry (clean + verbatim) plus the people resolved within it."""
-    e = server.get_entry(entry_id, include_raw=True)
+    """Cleaned entry plus the people resolved within it. The verbatim raw_body
+    is a hidden backup — not fetched or shown on the web."""
+    e = server.get_entry(entry_id, include_raw=False)
     if "error" in e:
         return None
     with server.db() as conn:
