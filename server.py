@@ -18,6 +18,7 @@ import os
 import sqlite3
 from datetime import date, datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import jellyfish
 from fastmcp import FastMCP
@@ -74,6 +75,10 @@ judgment (which person a mention means, next weight, what to program) is yours.
 
 Two rules: capture never blocks — always save, leave ambiguous mentions pending for
 later; and resolve mentions to person entities, don't normalize names in text.
+
+All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
+on Pacific time. Both briefings return `now` (current Pacific date/time); anchor
+"today"/"yesterday" to it before defaulting or computing any date.
 
 Start a session with get_briefing (people/journal) and/or get_fitness_briefing
 (training) to load context before acting.""")
@@ -258,12 +263,34 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE people ADD COLUMN {col} TEXT")
 
 
+# All user-facing dates in this log are Pacific. The user lives and logs on
+# Pacific time, so "today", entry_date defaults, drink/workout dates, and streak
+# math must roll over at Pacific midnight — not at the server's UTC midnight.
+# (created_at stays UTC: it's an unambiguous storage timestamp, not a user date.)
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    """Current calendar date (YYYY-MM-DD) in Pacific time — the canonical
+    'today' for every date field in this log."""
+    return datetime.now(PACIFIC).strftime("%Y-%m-%d")
+
+
+def current_clock() -> dict:
+    """Current Pacific date/time, broken out for surfacing to the model so it
+    always knows what 'today'/'now' means before it defaults or computes dates."""
+    dt = datetime.now(PACIFIC)
+    return {
+        "date": dt.strftime("%Y-%m-%d"),
+        "time": dt.strftime("%H:%M"),
+        "weekday": dt.strftime("%A"),
+        "timezone": "America/Los_Angeles (Pacific)",
+        "iso": dt.isoformat(),
+    }
 
 
 def phonetic(s: str) -> str:
@@ -628,6 +655,42 @@ def get_entry(entry_id: int, include_raw: bool = True) -> dict:
 
 
 @mcp.tool()
+def update_entry(entry_id: int, entry_date: Optional[str] = None,
+                 body: Optional[str] = None, raw_body: Optional[str] = None) -> dict:
+    """Edit an existing journal entry. Only non-null args are written.
+
+    Use `entry_date` (YYYY-MM-DD, Pacific) to correct the day an entry is ABOUT —
+    e.g. the user said "that was actually yesterday". Dates are Pacific time; resolve
+    relative phrases ("yesterday") against the current Pacific date (see get_briefing's
+    `now`) before passing a concrete date here. `body` replaces the cleaned journal
+    text; `raw_body` replaces the verbatim original. This does NOT re-run people
+    matching — to fix who's mentioned, leave the mention pending / use link_mentions."""
+    fields = {"entry_date": entry_date, "body": body, "raw_body": raw_body}
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return {"entry_id": entry_id, "updated": []}
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM entries WHERE id=?", (entry_id,)).fetchone()
+        if not exists:
+            return {"error": f"no entry with id {entry_id}"}
+        cols = ", ".join(f"{k}=?" for k in sets)
+        conn.execute(f"UPDATE entries SET {cols} WHERE id=?", (*sets.values(), entry_id))
+    return {"entry_id": entry_id, "updated": list(sets)}
+
+
+@mcp.tool()
+def delete_entry(entry_id: int) -> dict:
+    """Permanently delete a journal entry and its mentions. Irreversible — confirm
+    with the user first. The FTS index is kept in sync automatically, and any pending
+    mentions on this entry are removed from the queue."""
+    with db() as conn:
+        cur = conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
+        if cur.rowcount == 0:
+            return {"error": f"no entry with id {entry_id}"}
+    return {"entry_id": entry_id, "deleted": True}
+
+
+@mcp.tool()
 def get_related_people(person_id: int, limit: int = 10) -> dict:
     """Emergent network: people most often mentioned in the same entries as this
     person, ranked by shared-entry count. No tagging required — this is derived
@@ -653,8 +716,10 @@ def get_related_people(person_id: int, limit: int = 10) -> dict:
 def get_briefing(recent_entries: int = 5) -> dict:
     """One-call session context. Returns the people roster (id, name, role, groups,
     short summary), the pending-mention count, the list of groups, and the most
-    recent entries. Call this at the start of a conversation so you know who and
-    what the user is likely talking about."""
+    recent entries. Also returns `now`: the current Pacific date/time — all dates in
+    this log are Pacific, so use it to anchor "today"/"yesterday" before defaulting
+    or computing any entry_date. Call this at the start of a conversation so you know
+    who and what the user is likely talking about."""
     with db() as conn:
         prows = conn.execute(
             "SELECT id, canonical_name, role, summary FROM people ORDER BY canonical_name"
@@ -674,6 +739,7 @@ def get_briefing(recent_entries: int = 5) -> dict:
             (recent_entries,),
         ).fetchall()
     return {
+        "now": current_clock(),
         "people": roster,
         "people_count": len(roster),
         "groups": grp,
@@ -1090,8 +1156,8 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
          for r in mrows),
         key=lambda m: (m["days_since"] is None, -(m["days_since"] or 0)),
     )
-    return {"profile": profile, "muscle_recency": recency,
-            "recent_workouts": recent_out}
+    return {"now": current_clock(), "profile": profile,
+            "muscle_recency": recency, "recent_workouts": recent_out}
 
 
 @mcp.tool()

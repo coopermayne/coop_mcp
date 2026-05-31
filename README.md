@@ -301,6 +301,8 @@ in one Coolify project.
 | `get_related_people` | Emergent network: who's mentioned alongside this person |
 | `get_briefing` | One-call session context (roster, groups, pending, recent) |
 | `get_entry` | Fetch one entry, including the verbatim `raw_body` on demand |
+| `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body` |
+| `delete_entry` | Permanently delete an entry and its mentions (FTS kept in sync) |
 | `search_entries` | Full-text search for topics/events |
 | `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
 | `get_drink_summary` | Daily totals + rolling stats and current sober streak |
@@ -316,7 +318,12 @@ in one Coolify project.
 - Matching is Jaro-Winkler + Metaphone (sounds-alike floor at 0.88). Tune the 0.6
   candidate floor in `find_candidates` if you get too much/little.
 - `entry_date` is the day an entry is *about*, separate from `created_at`, so
-  back-dating ("yesterday I…") sorts correctly in history.
+  back-dating ("yesterday I…") sorts correctly in history. Use `update_entry` to
+  correct it after the fact.
+- **All user-facing dates are Pacific** (`America/Los_Angeles`): `today()` and every
+  date default roll over at Pacific midnight, not the server's UTC midnight. Both
+  briefings return `now` (current Pacific date/time) so the model can anchor
+  "today"/"yesterday" correctly. `created_at` stays UTC — it's a storage timestamp.
 - Contact fields are single-valued (one email/phone/address). If you need multiple
   per person (home/work), promote them to a `contact_methods(person_id, kind, label,
   value)` table — straightforward, and still vCard-aligned.
