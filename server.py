@@ -566,14 +566,19 @@ def list_pending_mentions(limit: int = 50) -> dict:
 @mcp.tool()
 def list_people(query: Optional[str] = None,
                 group: Optional[str] = None) -> dict:
-    """Compact registry of known people (id, name, role, groups, alias count).
-    Optionally filter by a name/role fragment or a group name. Load this for
-    context when starting a session."""
+    """Compact registry of known people (id, name, role, groups, alias count,
+    last_mentioned date). Sorted most-recently-mentioned first (people never
+    mentioned fall to the end, alphabetical). Optionally filter by a name/role
+    fragment or a group name. Load this for context when starting a session."""
     with db() as conn:
         rows = conn.execute(
             """SELECT p.id, p.canonical_name, p.role,
-                      (SELECT COUNT(*) FROM aliases a WHERE a.person_id=p.id) AS aliases
-               FROM people p ORDER BY p.canonical_name"""
+                      (SELECT COUNT(*) FROM aliases a WHERE a.person_id=p.id) AS aliases,
+                      (SELECT MAX(e.entry_date) FROM mentions m
+                         JOIN entries e ON e.id = m.entry_id
+                        WHERE m.person_id = p.id) AS last_mentioned
+               FROM people p
+               ORDER BY last_mentioned IS NULL, last_mentioned DESC, p.canonical_name"""
         ).fetchall()
         people = []
         for r in rows:
@@ -584,7 +589,8 @@ def list_people(query: Optional[str] = None,
             if group and group.lower() not in [g.lower() for g in grps]:
                 continue
             people.append({"person_id": r["id"], "name": r["canonical_name"],
-                           "role": r["role"], "groups": grps, "aliases": r["aliases"]})
+                           "role": r["role"], "groups": grps, "aliases": r["aliases"],
+                           "last_mentioned": r["last_mentioned"]})
     return {"people": people, "count": len(people)}
 
 
