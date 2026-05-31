@@ -15,6 +15,7 @@ Design contract:
 
 import json
 import os
+import re
 import sqlite3
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -293,6 +294,44 @@ def current_clock() -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Input validation. The server trusts the model for judgment, not for data
+# hygiene: a malformed date or an impossible number must not be silently stored,
+# because it corrupts the very summaries (sober streak, recency) this log exists
+# to produce. These guards are deterministic and return a plain {"error": ...}.
+# --------------------------------------------------------------------------- #
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _bad_date(value: Optional[str], field: str) -> Optional[dict]:
+    """Return an error dict if `value` is a non-null but invalid date, else None.
+    Requires strict YYYY-MM-DD that is also a real calendar date (Pacific)."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _DATE_RE.match(value):
+        return {"error": f"{field} must be YYYY-MM-DD, got {value!r}"}
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return {"error": f"{field} is not a real calendar date: {value!r}"}
+    return None
+
+
+def _bad_set(s: dict) -> Optional[str]:
+    """Return a reason string if a set's numbers are out of range, else None."""
+    rpe = s.get("rpe")
+    if rpe is not None and not (1 <= rpe <= 10):
+        return f"rpe must be between 1 and 10, got {rpe}"
+    reps = s.get("reps")
+    if reps is not None and reps < 0:
+        return f"reps must be >= 0, got {reps}"
+    w = s.get("weight_lbs")
+    if w is not None and w < 0:
+        return f"weight_lbs must be >= 0, got {w}"
+    return None
+
+
 def phonetic(s: str) -> str:
     return jellyfish.metaphone(s or "")
 
@@ -369,8 +408,9 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
         wasn't already an exact alias).
       - Two close candidates (e.g. two people named Tom): ask the user which one,
         using context, then link.
-      - No candidate >= 0.6: likely a new person. Ask, then create_person and link
-        — or leave it pending if the user says they'll explain later.
+      - No candidate >= 0.6: likely a new person. Ask, then save_person (no
+        person_id) and link — or leave it pending if the user says they'll explain
+        later.
 
     Args:
         body: The cleaned, structured journal entry.
@@ -378,6 +418,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
         mentions: Surface forms of people referenced, e.g. ["Tom", "Robin"].
         entry_date: Day the entry is ABOUT as YYYY-MM-DD. Defaults to today.
     """
+    if err := _bad_date(entry_date, "entry_date"):
+        return err
     entry_date = entry_date or today()
     snippet_source = raw_body or body
     with db() as conn:
@@ -412,12 +454,16 @@ def link_mentions(links: list[dict]) -> dict:
             that person, so the same word (including a recurring transcription
             error) auto-matches next time.
     """
-    linked = []
+    linked, skipped = [], []
     with db() as conn:
         for ln in links:
             mid, pid = ln["mention_id"], ln["person_id"]
             m = conn.execute("SELECT surface_form FROM mentions WHERE id=?", (mid,)).fetchone()
             if not m:
+                skipped.append({"mention_id": mid, "reason": "no such mention"})
+                continue
+            if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
+                skipped.append({"mention_id": mid, "reason": f"no person with id {pid}"})
                 continue
             conn.execute(
                 "UPDATE mentions SET person_id=?, status='resolved' WHERE id=?",
@@ -430,71 +476,66 @@ def link_mentions(links: list[dict]) -> dict:
                     (pid, m["surface_form"], phonetic(m["surface_form"])),
                 )
             linked.append(mid)
-    return {"linked": linked}
+    out = {"linked": linked}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 @mcp.tool()
-def create_person(canonical_name: str, role: Optional[str] = None,
-                  notes: Optional[str] = None,
-                  aliases: Optional[list[str]] = None,
-                  summary: Optional[str] = None,
-                  email: Optional[str] = None,
-                  phone: Optional[str] = None,
-                  address: Optional[str] = None,
-                  groups: Optional[list[str]] = None) -> dict:
-    """Create a person (an entity). `role` is the disambiguator the user will rely
-    on later, e.g. "father", "law school friend". `summary` is a short rolling
-    profile for context. `groups` are circle names like ["family"] — created if new.
-    Add known aliases and contact fields up front. Returns the new person_id."""
+def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] = None,
+                role: Optional[str] = None, notes: Optional[str] = None,
+                summary: Optional[str] = None, email: Optional[str] = None,
+                phone: Optional[str] = None, address: Optional[str] = None,
+                aliases: Optional[list[str]] = None,
+                groups: Optional[list[str]] = None) -> dict:
+    """Create or update a person (an entity) — the one write tool for people.
+
+    Omit `person_id` to CREATE (then `canonical_name` is required); pass `person_id`
+    to UPDATE an existing person (only the non-null fields you pass are written). `role`
+    is the disambiguator the user relies on later, e.g. "father", "law school friend";
+    `summary` is a short rolling profile for context.
+
+    `aliases` are surface forms (incl. recurring transcription errors): on create they
+    seed the person, on update they are ADDED — so this is also how you attach a new
+    alias to someone later. `groups` are circle names like ["family"], created if new;
+    passing `groups` REPLACES the person's circle membership. Returns the person_id and
+    whether it was newly created."""
     with db() as conn:
-        pid = conn.execute(
-            """INSERT INTO people(canonical_name, role, notes, summary, email, phone,
-               address, created_at) VALUES (?,?,?,?,?,?,?,?)""",
-            (canonical_name, role, notes, summary, email, phone, address, now()),
-        ).lastrowid
+        if person_id is None:
+            if not canonical_name:
+                return {"error": "canonical_name is required to create a person"}
+            person_id = conn.execute(
+                """INSERT INTO people(canonical_name, role, notes, summary, email, phone,
+                   address, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                (canonical_name, role, notes, summary, email, phone, address, now()),
+            ).lastrowid
+            created, updated = True, []
+        else:
+            if not conn.execute("SELECT 1 FROM people WHERE id=?", (person_id,)).fetchone():
+                return {"error": f"no person with id {person_id}"}
+            created = False
+            fields = {"canonical_name": canonical_name, "role": role, "notes": notes,
+                      "summary": summary, "email": email, "phone": phone, "address": address}
+            sets = {k: v for k, v in fields.items() if v is not None}
+            if sets:
+                cols = ", ".join(f"{k}=?" for k in sets)
+                conn.execute(f"UPDATE people SET {cols} WHERE id=?", (*sets.values(), person_id))
+            updated = list(sets)
         for a in (aliases or []):
             conn.execute(
                 """INSERT OR IGNORE INTO aliases(person_id, surface_form, phonetic_key,
                    source) VALUES (?,?,?, 'manual')""",
-                (pid, a, phonetic(a)),
+                (person_id, a, phonetic(a)),
             )
-        _set_groups(conn, pid, groups)
-    return {"person_id": pid, "canonical_name": canonical_name, "role": role}
-
-
-@mcp.tool()
-def update_person(person_id: int, role: Optional[str] = None,
-                  notes: Optional[str] = None, summary: Optional[str] = None,
-                  email: Optional[str] = None, phone: Optional[str] = None,
-                  address: Optional[str] = None,
-                  groups: Optional[list[str]] = None) -> dict:
-    """Update fields on a person. Only non-null args are written. Use `summary` to
-    keep a short rolling profile current, and `groups` to set circle membership
-    (replaces existing membership; group names are created if new)."""
-    fields = {"role": role, "notes": notes, "summary": summary,
-              "email": email, "phone": phone, "address": address}
-    sets = {k: v for k, v in fields.items() if v is not None}
-    with db() as conn:
-        if sets:
-            cols = ", ".join(f"{k}=?" for k in sets)
-            conn.execute(f"UPDATE people SET {cols} WHERE id=?",
-                         (*sets.values(), person_id))
         if groups is not None:
             conn.execute("DELETE FROM person_groups WHERE person_id=?", (person_id,))
             _set_groups(conn, person_id, groups)
-    return {"person_id": person_id, "updated": list(sets) + (["groups"] if groups is not None else [])}
-
-
-@mcp.tool()
-def add_alias(person_id: int, surface_form: str) -> dict:
-    """Manually attach an alias to an existing person."""
-    with db() as conn:
-        conn.execute(
-            """INSERT OR IGNORE INTO aliases(person_id, surface_form, phonetic_key,
-               source) VALUES (?,?,?, 'manual')""",
-            (person_id, surface_form, phonetic(surface_form)),
-        )
-    return {"person_id": person_id, "alias": surface_form}
+    if created:
+        return {"person_id": person_id, "created": True}
+    return {"person_id": person_id, "created": False,
+            "updated": updated + (["aliases"] if aliases else [])
+                       + (["groups"] if groups is not None else [])}
 
 
 @mcp.tool()
@@ -554,6 +595,8 @@ def get_person_history(person_id: int, limit: int = 50,
     """Every entry that mentions this person, newest first — the payoff query.
     This is an indexed lookup on the entity, so 'everything about Tom my father'
     never pulls in the other Tom. Bodies are truncated to max_chars."""
+    if err := _bad_date(since, "since"):
+        return err
     sql = """SELECT DISTINCT e.id, e.entry_date, e.body
              FROM entries e JOIN mentions m ON m.entry_id=e.id
              WHERE m.person_id=? AND m.status='resolved'"""
@@ -665,6 +708,8 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
     `now`) before passing a concrete date here. `body` replaces the cleaned journal
     text; `raw_body` replaces the verbatim original. This does NOT re-run people
     matching — to fix who's mentioned, leave the mention pending / use link_mentions."""
+    if err := _bad_date(entry_date, "entry_date"):
+        return err
     fields = {"entry_date": entry_date, "body": body, "raw_body": raw_body}
     sets = {k: v for k, v in fields.items() if v is not None}
     if not sets:
@@ -679,15 +724,40 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
 
 
 @mcp.tool()
-def delete_entry(entry_id: int) -> dict:
-    """Permanently delete a journal entry and its mentions. Irreversible — confirm
-    with the user first. The FTS index is kept in sync automatically, and any pending
-    mentions on this entry are removed from the queue."""
+def delete_record(kind: str, id: int) -> dict:
+    """Permanently delete one record. Irreversible — confirm with the user first.
+
+    `kind` selects what `id` refers to:
+      - "entry"   — a journal entry (its mentions go too; FTS stays in sync).
+      - "drink"   — one logged drink row (a day with no rows left is sober again).
+      - "workout" — a whole training session (all its sets go too).
+      - "set"     — one logged set (remaining sets for that exercise are renumbered
+                    so set_index stays contiguous).
+    Find ids with the matching read: get_entry/search_entries, get_drink_summary
+    (include_rows=True), get_fitness_briefing, get_exercise_history."""
+    tables = {"entry": "entries", "drink": "drinks", "workout": "workouts", "set": "sets"}
+    table = tables.get(kind)
+    if not table:
+        return {"error": f"unknown kind {kind!r}; use one of {sorted(tables)}"}
     with db() as conn:
-        cur = conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
+        ctx = None
+        if kind == "set":
+            ctx = conn.execute(
+                "SELECT workout_id, exercise_id FROM sets WHERE id=?", (id,)
+            ).fetchone()
+            if not ctx:
+                return {"error": f"no set with id {id}"}
+        cur = conn.execute(f"DELETE FROM {table} WHERE id=?", (id,))
         if cur.rowcount == 0:
-            return {"error": f"no entry with id {entry_id}"}
-    return {"entry_id": entry_id, "deleted": True}
+            return {"error": f"no {kind} with id {id}"}
+        if kind == "set":
+            remaining = conn.execute(
+                "SELECT id FROM sets WHERE workout_id=? AND exercise_id=? ORDER BY set_index",
+                (ctx["workout_id"], ctx["exercise_id"]),
+            ).fetchall()
+            for i, row in enumerate(remaining, start=1):
+                conn.execute("UPDATE sets SET set_index=? WHERE id=?", (i, row["id"]))
+    return {"kind": kind, "id": id, "deleted": True}
 
 
 @mcp.tool()
@@ -839,6 +909,10 @@ def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
         kind: Optional label, e.g. "beer", "wine", "cocktail".
         notes: Optional context, e.g. "dinner with Robin".
     """
+    if err := _bad_date(drink_date, "drink_date"):
+        return err
+    if standard_drinks <= 0:
+        return {"error": f"standard_drinks must be positive, got {standard_drinks}"}
     d = drink_date or today()
     with db() as conn:
         rid = conn.execute(
@@ -856,18 +930,25 @@ def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
 
 @mcp.tool()
 def get_drink_summary(days: int = 30, since: Optional[str] = None,
-                      until: Optional[str] = None) -> dict:
+                      until: Optional[str] = None, include_rows: bool = False) -> dict:
     """Drinking trends over a window: per-day totals plus rolling stats.
 
     Use the default `days` window, or pass an explicit `since`/`until` range. Sober
     days (no logged drinks) are counted, not stored. `current_sober_streak` is the
     number of days since the last drink (0 if the user drank today, null if never).
 
+    Set `include_rows=True` to also get the individual drink rows WITH ids (`drinks`)
+    — needed when the user wants to FIX a logged drink ("last night was really 1, not
+    3"): find the `drink_id` here, then pass it to update_drink or delete_record.
+
     Args:
         days: Size of the trailing window in days (ignored if `since` is given).
         since: Start date YYYY-MM-DD (inclusive).
         until: End date YYYY-MM-DD (inclusive). Defaults to today.
+        include_rows: Also return individual drink rows (with `drink_id`) for editing.
     """
+    if err := _bad_date(since, "since") or _bad_date(until, "until"):
+        return err
     until = until or today()
     if since is None:
         since = date.fromordinal(
@@ -880,11 +961,22 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
             (since, until),
         ).fetchall()
         last = conn.execute("SELECT MAX(drink_date) AS d FROM drinks").fetchone()["d"]
+        row_list = None
+        if include_rows:
+            rr = conn.execute(
+                """SELECT id, drink_date, standard_drinks, kind, notes FROM drinks
+                   WHERE drink_date BETWEEN ? AND ?
+                   ORDER BY drink_date DESC, id DESC""",
+                (since, until),
+            ).fetchall()
+            row_list = [{"drink_id": r["id"], "drink_date": r["drink_date"],
+                         "standard_drinks": r["standard_drinks"], "kind": r["kind"],
+                         "notes": r["notes"]} for r in rr]
     daily = [{"date": r["drink_date"], "total": r["total"]} for r in rows]
     window_days = date.fromisoformat(until).toordinal() - date.fromisoformat(since).toordinal() + 1
     total = round(sum(d["total"] for d in daily), 2)
     drinking_days = len(daily)
-    return {
+    out = {
         "since": since, "until": until, "window_days": window_days,
         "daily": daily,
         "total_standard_drinks": total,
@@ -894,6 +986,38 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
         "avg_per_drinking_day": round(total / drinking_days, 2) if drinking_days else 0,
         "current_sober_streak": _days_since(last),
     }
+    if row_list is not None:
+        out["drinks"] = row_list
+    return out
+
+
+@mcp.tool()
+def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
+                 drink_date: Optional[str] = None, kind: Optional[str] = None,
+                 notes: Optional[str] = None) -> dict:
+    """Correct a logged drink row. Only non-null args are written.
+
+    Use this to fix a mistake in either direction — e.g. lower `standard_drinks`
+    from 3 to 1 (logging can only add, so corrections downward must go through here),
+    or move it to the right day with `drink_date` (YYYY-MM-DD, Pacific). Find the
+    `drink_id` with get_drink_summary(include_rows=True). To remove a row entirely use
+    delete_record(kind="drink", id=...)."""
+    if err := _bad_date(drink_date, "drink_date"):
+        return err
+    if standard_drinks is not None and standard_drinks <= 0:
+        return {"error": f"standard_drinks must be positive, got {standard_drinks}"}
+    fields = {"standard_drinks": standard_drinks, "drink_date": drink_date,
+              "kind": kind, "notes": notes}
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return {"drink_id": drink_id, "updated": []}
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM drinks WHERE id=?", (drink_id,)).fetchone()
+        if not exists:
+            return {"error": f"no drink with id {drink_id}"}
+        cols = ", ".join(f"{k}=?" for k in sets)
+        conn.execute(f"UPDATE drinks SET {cols} WHERE id=?", (*sets.values(), drink_id))
+    return {"drink_id": drink_id, "updated": list(sets)}
 
 
 # --------------------------------------------------------------------------- #
@@ -901,96 +1025,89 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
 # --------------------------------------------------------------------------- #
 
 @mcp.tool()
-def create_exercise(name: str, category: Optional[str] = None,
-                    equipment: Optional[str] = None,
-                    muscles: Optional[list[str]] = None,
-                    secondary_muscles: Optional[list[str]] = None,
-                    technique_notes: Optional[str] = None,
-                    common_mistakes: Optional[str] = None,
-                    cautions: Optional[str] = None,
-                    video_link: Optional[str] = None) -> dict:
-    """Add an exercise to the catalog (a stable entity, like a person).
+def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                  category: Optional[str] = None, equipment: Optional[str] = None,
+                  muscles: Optional[list[str]] = None,
+                  secondary_muscles: Optional[list[str]] = None,
+                  technique_notes: Optional[str] = None,
+                  common_mistakes: Optional[str] = None,
+                  cautions: Optional[str] = None,
+                  video_link: Optional[str] = None) -> dict:
+    """Create or enrich a catalog exercise (a stable entity, like a person) — the one
+    write tool for the catalog.
 
-    The catalog starts empty and grows as the user trains — `log_workout` will
-    auto-stub a bare record for any new name, so use this (or `update_exercise`) to
-    enrich one with the coaching content: how to do it (`technique_notes`), what to
-    watch for (`common_mistakes`), and any injury caveats (`cautions`, e.g. the
-    user's left-shoulder limits). `muscles` are the primary movers; use the canonical
-    labels so muscle-recency lines up: chest, upper back, lats, traps, shoulders,
-    biceps, triceps, forearms, abs, obliques, lower back, glutes, quads, hamstrings,
-    calves. Returns the exercise_id (existing id if the name already exists).
-    """
-    with db() as conn:
-        existing = _resolve_exercise(conn, name)
-        if existing:
-            return {"exercise_id": existing["id"], "name": existing["name"],
-                    "created": False, "note": "name already exists; use update_exercise"}
-        eid = conn.execute(
-            """INSERT INTO exercises(name, category, equipment, technique_notes,
-               common_mistakes, cautions, video_link, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (name.strip(), category, equipment, technique_notes, common_mistakes,
-             cautions, video_link, now()),
-        ).lastrowid
-        _set_muscles(conn, eid, muscles, secondary_muscles)
-    return {"exercise_id": eid, "name": name.strip(), "created": True}
-
-
-@mcp.tool()
-def update_exercise(exercise_id: int, category: Optional[str] = None,
-                    equipment: Optional[str] = None,
-                    muscles: Optional[list[str]] = None,
-                    secondary_muscles: Optional[list[str]] = None,
-                    technique_notes: Optional[str] = None,
-                    common_mistakes: Optional[str] = None,
-                    cautions: Optional[str] = None,
-                    video_link: Optional[str] = None) -> dict:
-    """Update an exercise. Only non-null scalar fields are written. If either
-    `muscles` or `secondary_muscles` is provided, the muscle links are replaced
-    wholesale (pass both to set both). Use this to flesh out auto-stubbed records."""
-    fields = {"category": category, "equipment": equipment,
-              "technique_notes": technique_notes, "common_mistakes": common_mistakes,
-              "cautions": cautions, "video_link": video_link}
-    sets_ = {k: v for k, v in fields.items() if v is not None}
-    with db() as conn:
-        if sets_:
-            cols = ", ".join(f"{k}=?" for k in sets_)
-            conn.execute(f"UPDATE exercises SET {cols} WHERE id=?",
-                         (*sets_.values(), exercise_id))
-        _set_muscles(conn, exercise_id, muscles, secondary_muscles)
-    updated = list(sets_) + (["muscles"] if (muscles is not None or secondary_muscles is not None) else [])
-    return {"exercise_id": exercise_id, "updated": updated}
-
-
-@mcp.tool()
-def get_exercise(exercise_id: Optional[int] = None,
-                 name: Optional[str] = None) -> dict:
-    """Full catalog record for one exercise, by id or name — including technique
-    notes, common mistakes, and cautions, so you can coach the user through proper
-    form. Pass either `exercise_id` or `name`."""
+    Target it by `exercise_id`, or by `name` (resolved case-insensitively): a KNOWN
+    name updates that exercise, an UNKNOWN name creates it. `log_workout` already
+    auto-stubs unknown lifts, so the usual job here is enriching one with coaching
+    content — how to do it (`technique_notes`), what to watch for (`common_mistakes`),
+    injury caveats (`cautions`, e.g. the user's left-shoulder limits). Only non-null
+    scalar fields are written. Providing `muscles` and/or `secondary_muscles` REPLACES
+    those links wholesale (pass both to set both). Use the canonical muscle labels so
+    recency lines up: chest, upper back, lats, traps, shoulders, biceps, triceps,
+    forearms, abs, obliques, lower back, glutes, quads, hamstrings, calves. Returns the
+    exercise_id and whether it was newly created."""
     with db() as conn:
         if exercise_id is not None:
-            r = conn.execute("SELECT * FROM exercises WHERE id=?", (exercise_id,)).fetchone()
-        elif name is not None:
-            r = _resolve_exercise(conn, name)
+            row = conn.execute("SELECT id FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+            if not row:
+                return {"error": f"no exercise with id {exercise_id}"}
+        elif name:
+            row = _resolve_exercise(conn, name)
         else:
-            return {"error": "pass exercise_id or name"}
-        if not r:
-            return {"error": "no matching exercise"}
-        m = _muscles_for(conn, r["id"])
-    return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
-            "equipment": r["equipment"], "muscles": m,
-            "technique_notes": r["technique_notes"],
-            "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
-            "video_link": r["video_link"]}
+            return {"error": "pass name or exercise_id"}
+        if row:
+            eid = row["id"]
+            created = False
+            fields = {"category": category, "equipment": equipment,
+                      "technique_notes": technique_notes, "common_mistakes": common_mistakes,
+                      "cautions": cautions, "video_link": video_link}
+            sets_ = {k: v for k, v in fields.items() if v is not None}
+            if sets_:
+                cols = ", ".join(f"{k}=?" for k in sets_)
+                conn.execute(f"UPDATE exercises SET {cols} WHERE id=?", (*sets_.values(), eid))
+        else:
+            eid = conn.execute(
+                """INSERT INTO exercises(name, category, equipment, technique_notes,
+                   common_mistakes, cautions, video_link, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (name.strip(), category, equipment, technique_notes, common_mistakes,
+                 cautions, video_link, now()),
+            ).lastrowid
+            created, sets_ = True, {}
+        _set_muscles(conn, eid, muscles, secondary_muscles)
+        out_name = conn.execute("SELECT name FROM exercises WHERE id=?", (eid,)).fetchone()["name"]
+    if created:
+        return {"exercise_id": eid, "name": out_name, "created": True}
+    return {"exercise_id": eid, "name": out_name, "created": False,
+            "updated": list(sets_)
+                       + (["muscles"] if (muscles is not None or secondary_muscles is not None) else [])}
 
 
 @mcp.tool()
-def list_exercises(muscle: Optional[str] = None, equipment: Optional[str] = None,
-                   category: Optional[str] = None) -> dict:
-    """Compact catalog registry (id, name, category, equipment, muscles). Filter by
-    a muscle, an equipment fragment, or a category to pick exercises for a session."""
+def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
+              muscle: Optional[str] = None, equipment: Optional[str] = None,
+              category: Optional[str] = None) -> dict:
+    """Read the exercise catalog — one full record, or a filtered list.
+
+    Pass `name` or `exercise_id` to get ONE exercise in full, including technique
+    notes, common mistakes, and cautions, so you can coach proper form. Otherwise it
+    returns the compact registry (id, name, category, equipment, muscles); narrow it
+    with `muscle`, an `equipment` fragment, or `category` to pick exercises for a
+    session."""
     with db() as conn:
+        if name is not None or exercise_id is not None:
+            if exercise_id is not None:
+                r = conn.execute("SELECT * FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+            else:
+                r = _resolve_exercise(conn, name)
+            if not r:
+                return {"error": "no matching exercise"}
+            m = _muscles_for(conn, r["id"])
+            return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
+                    "equipment": r["equipment"], "muscles": m,
+                    "technique_notes": r["technique_notes"],
+                    "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
+                    "video_link": r["video_link"]}
         rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
         out = []
         for r in rows:
@@ -1014,8 +1131,17 @@ def list_exercises(muscle: Optional[str] = None, equipment: Optional[str] = None
 @mcp.tool()
 def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 focus: Optional[str] = None, feeling: Optional[str] = None,
-                notes: Optional[str] = None) -> dict:
-    """Record a whole training session in one call.
+                notes: Optional[str] = None, workout_id: Optional[int] = None) -> dict:
+    """Record a training session — the whole thing in one call, or set-by-set as it
+    happens.
+
+    LOGGING AS YOU GO: to log a session incrementally (one exercise at a time during
+    the workout), pass `workout_id` from the FIRST call's return on every later call
+    so the sets append to the SAME session instead of creating a new one. Omit
+    `workout_id` to start a new session (the default). Without this, separate calls
+    for one workout fragment it into several sessions. New sets continue the set
+    numbering per exercise. focus/feeling/notes on an append call are ignored — set
+    them on the first call or with update_workout.
 
     Each item in `exercises` is:
         {
@@ -1030,7 +1156,7 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     Names are resolved against the catalog case-insensitively; an unknown name is
     auto-stubbed as a new exercise (using `muscles` if given) so logging never
     blocks — flag any `created` exercises to the user afterward so they can add
-    technique notes via update_exercise. weight_lbs is null for bodyweight/cardio.
+    technique notes via save_exercise. weight_lbs is null for bodyweight/cardio.
     rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
     judge whether to add weight next time. Returns per-exercise ids and which were
     newly created.
@@ -1041,13 +1167,30 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
         focus: Session focus, e.g. "Legs", "Arms", "Cardio".
         feeling: Overall how it felt / energy / soreness.
         notes: Anything else about the session.
+        workout_id: Append to this existing session instead of starting a new one
+            (see "LOGGING AS YOU GO" above).
     """
+    if err := _bad_date(workout_date, "workout_date"):
+        return err
+    for ex in exercises:
+        for s in (ex.get("sets") or []):
+            if reason := _bad_set(s):
+                return {"error": f"{ex.get('name','?')}: {reason}"}
     wd = workout_date or today()
     with db() as conn:
-        wid = conn.execute(
-            "INSERT INTO workouts(workout_date, focus, feeling, notes, created_at) VALUES (?,?,?,?,?)",
-            (wd, focus, feeling, notes, now()),
-        ).lastrowid
+        if workout_id is not None:
+            w = conn.execute(
+                "SELECT id, workout_date FROM workouts WHERE id=?", (workout_id,)
+            ).fetchone()
+            if not w:
+                return {"error": f"no workout with id {workout_id}"}
+            wid = w["id"]
+            wd = w["workout_date"]
+        else:
+            wid = conn.execute(
+                "INSERT INTO workouts(workout_date, focus, feeling, notes, created_at) VALUES (?,?,?,?,?)",
+                (wd, focus, feeling, notes, now()),
+            ).lastrowid
         results = []
         for ex in exercises:
             name = (ex.get("name") or "").strip()
@@ -1064,7 +1207,12 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 ).lastrowid
                 _set_muscles(conn, eid, ex.get("muscles"), None)
                 created = True
-            for i, s in enumerate(ex.get("sets") or [], start=1):
+            # continue set numbering if this exercise already has sets in the session
+            start = (conn.execute(
+                "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
+                (wid, eid),
+            ).fetchone()["m"]) + 1
+            for i, s in enumerate(ex.get("sets") or [], start=start):
                 conn.execute(
                     """INSERT INTO sets(workout_id, exercise_id, set_index, weight_lbs,
                        reps, rpe, note) VALUES (?,?,?,?,?,?,?)""",
@@ -1074,7 +1222,8 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
             results.append({"exercise_id": eid, "name": name,
                             "sets": len(ex.get("sets") or []), "created": created})
     return {"workout_id": wid, "workout_date": wd, "exercises": results,
-            "new_exercises": [r["name"] for r in results if r["created"]]}
+            "new_exercises": [r["name"] for r in results if r["created"]],
+            "appended": workout_id is not None}
 
 
 @mcp.tool()
@@ -1084,7 +1233,12 @@ def get_exercise_history(exercise_id: Optional[int] = None,
     overload query. Each session lists its sets as weight/reps/rpe, so you can judge
     the next weight or rep target: e.g. all sets hit at RPE <=8 with clean form ->
     add weight; failures or RPE 10 short of target reps -> hold or deload. Pass
-    either `exercise_id` or `name`."""
+    either `exercise_id` or `name`.
+
+    Each set also carries its `set_id` and `workout_id`, so this doubles as the
+    discovery query for corrections: to fix a logged set ("my last squat was really
+    185") find its `set_id` here and pass it to update_set or delete_record; to remove
+    a whole session use its `workout_id` with delete_record(kind="workout")."""
     with db() as conn:
         if exercise_id is None and name is not None:
             r = _resolve_exercise(conn, name)
@@ -1095,7 +1249,8 @@ def get_exercise_history(exercise_id: Optional[int] = None,
         if not ex:
             return {"error": "no matching exercise"}
         rows = conn.execute(
-            """SELECT w.id AS wid, w.workout_date, s.set_index, s.weight_lbs, s.reps, s.rpe, s.note
+            """SELECT w.id AS wid, w.workout_date, s.id AS sid, s.set_index,
+                      s.weight_lbs, s.reps, s.rpe, s.note
                FROM sets s JOIN workouts w ON w.id = s.workout_id
                WHERE s.exercise_id=?
                ORDER BY w.workout_date DESC, w.id DESC, s.set_index ASC""",
@@ -1111,10 +1266,58 @@ def get_exercise_history(exercise_id: Optional[int] = None,
             sessions.append(sess)
         if len(sessions) > limit:
             continue
-        sess["sets"].append({"weight_lbs": r["weight_lbs"], "reps": r["reps"],
-                             "rpe": r["rpe"], "note": r["note"]})
+        sess["sets"].append({"set_id": r["sid"], "weight_lbs": r["weight_lbs"],
+                             "reps": r["reps"], "rpe": r["rpe"], "note": r["note"]})
     return {"exercise_id": exercise_id, "name": ex["name"],
             "sessions": sessions[:limit], "count": min(len(sessions), limit)}
+
+
+@mcp.tool()
+def update_workout(workout_id: int, workout_date: Optional[str] = None,
+                   focus: Optional[str] = None, feeling: Optional[str] = None,
+                   notes: Optional[str] = None) -> dict:
+    """Edit a session's metadata. Only non-null args are written. Use `workout_date`
+    (YYYY-MM-DD, Pacific) to move a session to the right day, or set focus/feeling/
+    notes after the fact. To change the SETS, use update_set, log_workout (with
+    `workout_id` to append), or delete_record(kind="set"); to remove the whole session
+    use delete_record(kind="workout")."""
+    if err := _bad_date(workout_date, "workout_date"):
+        return err
+    fields = {"workout_date": workout_date, "focus": focus,
+              "feeling": feeling, "notes": notes}
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return {"workout_id": workout_id, "updated": []}
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM workouts WHERE id=?", (workout_id,)).fetchone()
+        if not exists:
+            return {"error": f"no workout with id {workout_id}"}
+        cols = ", ".join(f"{k}=?" for k in sets)
+        conn.execute(f"UPDATE workouts SET {cols} WHERE id=?", (*sets.values(), workout_id))
+    return {"workout_id": workout_id, "updated": list(sets)}
+
+
+@mcp.tool()
+def update_set(set_id: int, weight_lbs: Optional[float] = None,
+               reps: Optional[int] = None, rpe: Optional[float] = None,
+               note: Optional[str] = None) -> dict:
+    """Correct a single logged set. Only non-null args are written, so this can't
+    blank a field back to NULL (e.g. clear a weight to mark bodyweight) — delete the
+    set with delete_record(kind="set") and re-log it for that. Find the `set_id` with
+    get_exercise_history. `rpe` is 1-10."""
+    if reason := _bad_set({"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe}):
+        return {"error": reason}
+    fields = {"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe, "note": note}
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return {"set_id": set_id, "updated": []}
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM sets WHERE id=?", (set_id,)).fetchone()
+        if not exists:
+            return {"error": f"no set with id {set_id}"}
+        cols = ", ".join(f"{k}=?" for k in sets)
+        conn.execute(f"UPDATE sets SET {cols} WHERE id=?", (*sets.values(), set_id))
+    return {"set_id": set_id, "updated": list(sets)}
 
 
 @mcp.tool()
