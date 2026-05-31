@@ -24,16 +24,25 @@ import server          # noqa: E402  the MCP server (its `mcp` object + reads)
 import app as webapp   # noqa: E402  the FastAPI UI
 
 from starlette.applications import Starlette   # noqa: E402
-from starlette.routing import Mount            # noqa: E402
+from starlette.responses import RedirectResponse  # noqa: E402
+from starlette.routing import Mount, Route       # noqa: E402
 
 # Starlette app for the MCP server (carries the session-manager lifespan).
 mcp_app = server.mcp.http_app(path="/mcp")
+
+
+async def _app_root_redirect(request):
+    # Bare "/app" (no trailing slash) doesn't reach the mounted sub-app's "/" route,
+    # so send it to "/app/" explicitly.
+    return RedirectResponse(url="/app/")
+
 
 # Parent app: UI under /app, everything else (/, /mcp, OAuth) to the MCP app.
 # The parent must adopt the MCP app's lifespan or its session manager never starts.
 application = Starlette(
     lifespan=mcp_app.lifespan,
     routes=[
+        Route("/app", _app_root_redirect),
         Mount("/app", app=webapp.app),
         Mount("/", app=mcp_app),
     ],
