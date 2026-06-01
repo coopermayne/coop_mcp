@@ -38,7 +38,13 @@ from starlette.routing import Host, Mount, Route   # noqa: E402
 mcp_app = server.mcp.http_app(path="/mcp")   # journal + drinking, on the main origin
 
 # Trainer host derived from TRAINER_PUBLIC_URL (e.g. https://trainer.example.com).
-TRAINER_HOST = urlparse(os.environ.get("TRAINER_PUBLIC_URL", "")).netloc
+# Tolerate a scheme-less value ("trainer.example.com") — without a scheme urlparse puts
+# the host in .path and .netloc is empty, which would silently drop us into fallback
+# mode and serve the JOURNAL on the trainer host.
+_trainer_public = os.environ.get("TRAINER_PUBLIC_URL", "").strip()
+if _trainer_public and "://" not in _trainer_public:
+    _trainer_public = "https://" + _trainer_public
+TRAINER_HOST = urlparse(_trainer_public).netloc
 
 # Own-host mode (TRAINER_HOST set): trainer app at the root of its own hostname → clean
 # root OAuth. Otherwise same-origin fallback: trainer at /trainer/mcp on the main origin

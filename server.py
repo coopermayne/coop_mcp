@@ -67,6 +67,8 @@ def _build_auth(public_url: Optional[str] = None):
     cid = os.environ.get("GOOGLE_CLIENT_ID")
     csec = os.environ.get("GOOGLE_CLIENT_SECRET")
     base = public_url or os.environ.get("PUBLIC_URL")  # e.g. https://journal.yourdomain.com
+    if base and "://" not in base:
+        base = "https://" + base  # tolerate a scheme-less value (OAuth base_url needs one)
     if cid and csec and base:
         from fastmcp.server.auth.providers.google import GoogleProvider
         return GoogleProvider(client_id=cid, client_secret=csec, base_url=base,
