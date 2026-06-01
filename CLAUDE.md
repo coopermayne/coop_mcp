@@ -152,8 +152,12 @@ working.
   bare record for any unknown name, which `save_exercise` later enriches.
 - `exercise_muscles` — normalizes muscle→exercise (`role` primary|secondary) so
   per-muscle recency/volume is a plain GROUP BY. Canonical muscle list is `MUSCLES`.
-- `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), the
-  two-level log mirroring entries/mentions.
+- `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), plus
+  `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
+  lifts, weight/reps NULL for cardio). The two-level log mirroring entries/mentions.
+  Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
+  `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
+  `muscle_recency`.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
   `update_profile` and surfaced by `get_fitness_briefing`.
 
