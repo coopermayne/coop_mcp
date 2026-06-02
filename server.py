@@ -893,6 +893,71 @@ def delete_record(kind: str, id: int) -> dict:
 
 
 @mcp.tool()
+def merge_people(survivor_person_id: int, loser_person_id: int) -> dict:
+    """Merge two person records that turn out to be the same human — e.g. if "Tom"
+    and "Tom Smith" were created before they were linked. All of the loser's
+    aliases, mentions, and group memberships move onto the survivor (duplicates
+    deduped; the loser's canonical name becomes an alias so the surface form stays
+    discoverable). The loser is then deleted. Irreversible.
+
+    This is a relational merge only — the survivor's role/notes/summary/email/
+    phone/address are NOT overwritten. The loser's fields are returned as
+    `discarded_fields` so you can decide whether any are worth copying onto the
+    survivor via save_person(person_id=survivor_person_id, …)."""
+    if survivor_person_id == loser_person_id:
+        return {"error": "survivor and loser must be different people"}
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM people WHERE id=?", (survivor_person_id,)).fetchone():
+            return {"error": f"no person with id {survivor_person_id} (survivor)"}
+        loser = conn.execute(
+            """SELECT id, canonical_name, role, notes, summary, email, phone, address
+               FROM people WHERE id=?""", (loser_person_id,)
+        ).fetchone()
+        if not loser:
+            return {"error": f"no person with id {loser_person_id} (loser)"}
+        # The loser's canonical name becomes a manual alias on the survivor — keeps the
+        # surface form discoverable for matching once the loser row is gone.
+        conn.execute(
+            """INSERT OR IGNORE INTO aliases(person_id, surface_form, phonetic_key, source)
+               VALUES (?,?,?, 'manual')""",
+            (survivor_person_id, loser["canonical_name"], phonetic(loser["canonical_name"])),
+        )
+        # Aliases: UNIQUE(person_id, surface_form), so INSERT OR IGNORE handles dups.
+        conn.execute(
+            """INSERT OR IGNORE INTO aliases(person_id, surface_form, phonetic_key, source)
+               SELECT ?, surface_form, phonetic_key, source FROM aliases WHERE person_id=?""",
+            (survivor_person_id, loser_person_id),
+        )
+        moved_aliases = conn.execute(
+            "DELETE FROM aliases WHERE person_id=?", (loser_person_id,)
+        ).rowcount
+        moved_mentions = conn.execute(
+            "UPDATE mentions SET person_id=? WHERE person_id=?",
+            (survivor_person_id, loser_person_id),
+        ).rowcount
+        # person_groups: PRIMARY KEY (person_id, group_id), so INSERT OR IGNORE handles dups.
+        conn.execute(
+            """INSERT OR IGNORE INTO person_groups(person_id, group_id)
+               SELECT ?, group_id FROM person_groups WHERE person_id=?""",
+            (survivor_person_id, loser_person_id),
+        )
+        moved_groups = conn.execute(
+            "DELETE FROM person_groups WHERE person_id=?", (loser_person_id,)
+        ).rowcount
+        conn.execute("DELETE FROM people WHERE id=?", (loser_person_id,))
+        discarded = {k: loser[k] for k in
+                     ("role", "notes", "summary", "email", "phone", "address") if loser[k]}
+    return {
+        "survivor_person_id": survivor_person_id,
+        "merged_person_id": loser_person_id,
+        "merged_canonical_name": loser["canonical_name"],
+        "moved": {"aliases": moved_aliases, "mentions": moved_mentions,
+                  "groups": moved_groups},
+        "discarded_fields": discarded,
+    }
+
+
+@mcp.tool()
 def get_related_people(person_id: int, limit: int = 10) -> dict:
     """Emergent network: people most often mentioned in the same entries as this
     person, ranked by shared-entry count. No tagging required — this is derived
