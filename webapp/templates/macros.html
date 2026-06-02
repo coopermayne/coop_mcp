@@ -28,12 +28,43 @@
 {% endmacro %}
 
 {% macro day_block(day) %}
-<section class="mb-10">
-  <p class="text-xs uppercase tracking-widest text-gray-400 mb-3">{{ day.date | long_date }}</p>
+{# Day sections are anchor targets for the sidebar calendar (#day-YYYY-MM-DD).
+   scroll-mt-20 keeps the heading clear of the sticky page header on jump. A top
+   rule separates one day from the next; first:* drops it on the first block. #}
+<section id="day-{{ day.date }}"
+         class="scroll-mt-20 mb-10 pt-8 border-t border-gray-200 first:border-t-0 first:pt-0">
+  <p class="text-sm uppercase tracking-widest text-gray-500 font-medium mb-4">{{ day.date | long_date }}</p>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
   </div>
 </section>
+{% endmacro %}
+
+{% macro mini_calendar(months) %}
+{# Sticky journal sidebar (lg+). Each cell with an entry links to the day's
+   anchor; cells without entries are dimmed and inert. Today gets a faint ring. #}
+<div class="space-y-6 text-[11px] tabular-nums">
+  {% for cm in months %}
+  <div>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{{ cm.label }}</p>
+    <div class="grid grid-cols-7 text-[9px] text-gray-300 mb-1">
+      {% for h in ['S','M','T','W','T','F','S'] %}<div class="text-center font-medium uppercase tracking-wider">{{ h }}</div>{% endfor %}
+    </div>
+    <div class="grid grid-cols-7 gap-y-0.5">
+      {% for week in cm.weeks %}
+        {% for d in week %}
+          {% if d.has_entry %}
+            <a href="#day-{{ d.date }}"
+               class="aspect-square flex items-center justify-center rounded-sm text-gray-900 hover:bg-black hover:text-white transition-colors {% if d.is_today %}ring-1 ring-black{% endif %}">{{ d.day }}</a>
+          {% else %}
+            <span class="aspect-square flex items-center justify-center {% if d.in_month %}text-gray-300{% else %}text-gray-200{% endif %} {% if d.is_today %}ring-1 ring-gray-300 rounded-sm{% endif %}">{{ d.day }}</span>
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
 {% endmacro %}
 
 {% macro section_label(text) %}

@@ -9,6 +9,7 @@ full workouts-with-sets, person detail, a gap-filled drink series, and the
 dashboard roll-up. Nothing here writes.
 """
 
+import calendar as _cal
 import os
 import sys
 from datetime import date, timedelta
@@ -125,6 +126,39 @@ def list_days(limit_entries: int = 120) -> dict:
             days.append({"date": e["entry_date"], "entries": []})
         days[-1]["entries"].append(e)
     return {"days": days, "total": total}
+
+
+def calendar_months(entry_dates: list[str], today: str | None = None) -> list[dict]:
+    """Sidebar calendar data for the journal feed: one entry per month spanned by
+    the given entry_dates, newest month first. Each month carries weeks of seven
+    day cells with `has_entry` / `in_month` / `is_today` flags so the template
+    avoids date math. Sunday-first to match the user's locale convention. Empty
+    input → []."""
+    if not entry_dates:
+        return []
+    entry_set = set(entry_dates)
+    parsed = sorted({date.fromisoformat(d) for d in entry_set})
+    earliest, latest = parsed[0].replace(day=1), parsed[-1].replace(day=1)
+    today_d = date.fromisoformat(today) if today else None
+    cal = _cal.Calendar(firstweekday=6)  # Sunday
+    out: list[dict] = []
+    cur = latest
+    while cur >= earliest:
+        weeks = []
+        for week in cal.monthdatescalendar(cur.year, cur.month):
+            row = []
+            for d in week:
+                iso = d.isoformat()
+                row.append({
+                    "date": iso, "day": d.day,
+                    "in_month": d.month == cur.month,
+                    "has_entry": iso in entry_set,
+                    "is_today": d == today_d,
+                })
+            weeks.append(row)
+        out.append({"label": cur.strftime("%b %Y"), "weeks": weeks})
+        cur = (cur - timedelta(days=1)).replace(day=1)
+    return out
 
 
 def entry_with_people(entry_id: int):
