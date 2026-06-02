@@ -41,10 +41,21 @@ There is no exercise-selection or progression logic in the server either.
   people. Never normalize names in text — resolve mentions to entities.
 - **Capture never blocks.** `add_journal_entry` always saves, even if every mention is
   ambiguous. Unresolved mentions sit in the queue (`status='pending'`) for later.
+- **One note per topic.** A single conversation often spans several unrelated threads
+  (family dinner, then a rough meeting with the boss). Each unrelated thread is its OWN
+  entry — Claude calls `add_journal_entry` once per topic — so a note's people don't
+  bleed across contexts and a later `get_person_history` stays scoped (the boss query
+  surfaces the meeting, never the dinner that was merely told the same day). This is
+  purely a model/contract decision (lives in the docstring + server `instructions`): the
+  schema already allows many entries per `entry_date`, and the entries are fully
+  independent — no shared conversation id, no cross-linking. Granularity: a single event
+  with several people stays one entry; split only genuinely separate threads.
 - **Two-layer entry storage.** `entries.body` is Claude's cleaned, concise version (the
   journal proper, what search/history show). `entries.raw_body` is the user's verbatim
   words, hidden, returned only via `get_entry`. Mentions are matched against the *raw*
-  surface form, not the cleaned text.
+  surface form, not the cleaned text. When a conversation is split into several notes,
+  each note's `raw_body` holds only the verbatim slice about that topic — not the whole
+  transcript duplicated onto every entry.
 - **It gets quieter over time.** Linking a mention with `learn_alias=True` stores the
   surface form (including transcription errors) as a learned alias, so it auto-matches
   next time.
