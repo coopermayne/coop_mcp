@@ -1675,66 +1675,6 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
 
 
 @trainer_mcp.tool()
-def get_weight_summary(days: int = 90, since: Optional[str] = None,
-                       until: Optional[str] = None, include_rows: bool = False) -> dict:
-    """Bodyweight trend over a window — the data layer for "how's the weight going?".
-
-    Uses the default `days` window or an explicit `since`/`until` range. Returns one
-    point per day (the latest reading that day), newest first, plus `latest`,
-    `change_in_window_lbs` (latest minus the oldest day in the window; negative = down),
-    `min`, `max`, and the reading `count`. The trend judgment is yours to make from it.
-
-    Set `include_rows=True` to also get individual readings WITH ids (`readings`) —
-    needed to FIX a mistyped weigh-in: find the `bodyweight_id`, then
-    delete_record(kind="weight", id=...) and re-log it.
-
-    Args:
-        days: Trailing window size in days (ignored if `since` is given).
-        since: Start date YYYY-MM-DD (inclusive).
-        until: End date YYYY-MM-DD (inclusive). Defaults to today.
-        include_rows: Also return individual readings (with `bodyweight_id`) for editing.
-    """
-    if err := _bad_date(since, "since") or _bad_date(until, "until"):
-        return err
-    until = until or today()
-    if since is None:
-        since = date.fromordinal(
-            date.fromisoformat(until).toordinal() - max(days, 1) + 1).isoformat()
-    with db() as conn:
-        # one point per day: the latest reading (highest id) on each date in range
-        rows = conn.execute(
-            """SELECT weigh_date, weight_lbs FROM body_weight
-               WHERE id IN (SELECT MAX(id) FROM body_weight
-                            WHERE weigh_date BETWEEN ? AND ? GROUP BY weigh_date)
-               ORDER BY weigh_date DESC""",
-            (since, until),
-        ).fetchall()
-        row_list = None
-        if include_rows:
-            rr = conn.execute(
-                """SELECT id, weigh_date, weight_lbs, note FROM body_weight
-                   WHERE weigh_date BETWEEN ? AND ?
-                   ORDER BY weigh_date DESC, id DESC""",
-                (since, until),
-            ).fetchall()
-            row_list = [{"bodyweight_id": r["id"], "weigh_date": r["weigh_date"],
-                         "weight_lbs": r["weight_lbs"], "note": r["note"]} for r in rr]
-    daily = [{"date": r["weigh_date"], "weight_lbs": r["weight_lbs"]} for r in rows]
-    window_days = date.fromisoformat(until).toordinal() - date.fromisoformat(since).toordinal() + 1
-    out = {"since": since, "until": until, "window_days": window_days,
-           "count": len(daily), "daily": daily}
-    if daily:
-        weights = [d["weight_lbs"] for d in daily]
-        out["latest"] = daily[0]
-        out["change_in_window_lbs"] = round(daily[0]["weight_lbs"] - daily[-1]["weight_lbs"], 1)
-        out["min"] = min(weights)
-        out["max"] = max(weights)
-    if row_list is not None:
-        out["readings"] = row_list
-    return out
-
-
-@trainer_mcp.tool()
 def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
@@ -1850,9 +1790,9 @@ def delete_training_record(kind: str, id: int) -> dict:
       - "workout" — a whole session (all its sets go too).
       - "set"     — one logged set (remaining sets for that exercise are renumbered
                     so set_index stays contiguous).
-      - "weight"  — one bodyweight reading.
-    Find ids with get_fitness_briefing, get_exercise_history, or
-    get_weight_summary(include_rows=True)."""
+      - "weight"  — one bodyweight reading (its `bodyweight_id` is returned by
+                    log_bodyweight; to fix a mistyped weigh-in, delete it and re-log).
+    Find workout/set ids with get_fitness_briefing or get_exercise_history."""
     if kind not in ("workout", "set", "weight"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
                          "['set', 'weight', 'workout'] (use the journal server for entry/drink)"}

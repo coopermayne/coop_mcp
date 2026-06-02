@@ -150,11 +150,11 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   clobbering earlier ones) resurface in `get_fitness_briefing`, so observations made
   mid-workout become cautions next time.
 - **Bodyweight + trend.** `log_bodyweight` records a weigh-in (returning the change vs
-  the prior reading); `get_weight_summary` gives the trend over a window (per-day
-  points, total change, min/max), and the latest reading + 30-day change ride along in
-  `get_fitness_briefing`. Storage is date-keyed (its own daily metric, not a column on
-  a workout), so you can weigh on rest days too. Fix a mistyped reading with
-  `get_weight_summary(include_rows=True)` + `delete_record(kind="weight")`, then re-log.
+  the prior reading), and the latest reading + 30-day change ride along in
+  `get_fitness_briefing`; the webapp's Training page shows the longer trend. Storage is
+  date-keyed (its own daily metric, not a column on a workout), so you can weigh on rest
+  days too. Fix a mistyped reading by deleting it (`delete_record(kind="weight")`, using
+  the `bodyweight_id` from the log return) and re-logging.
 
 Suggested posture for the **trainer project's** custom instructions (the drinking lines
 belong with the journaling project, since `log_drinks`/`get_drink_summary` are on the
@@ -392,7 +392,6 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `append_note` adds a line without clobbering earlier notes |
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
 | `log_bodyweight` | Record a weigh-in (lbs); returns the change vs the prior reading |
-| `get_weight_summary` | Bodyweight trend over a window: per-day points + change/min/max; `include_rows=True` adds readings with ids for editing |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight |
 | `delete_record` | Delete one record by `kind` + `id` — irreversible, cascades/renumbers as needed. On the journal connector `kind` is `entry`/`drink`; on the trainer connector it's `workout`/`set`/`weight` |

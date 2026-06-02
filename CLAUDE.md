@@ -173,11 +173,11 @@ working.
   (the drinks pattern, not a `workouts` column: weight is a daily metric you may log on
   rest days too, and the point is the trend). The latest reading on a day is "the"
   weight for that day; a day with no row simply wasn't weighed. `log_bodyweight` adds
-  one (returning `change_lbs` vs the prior weigh-in), `get_weight_summary` aggregates
-  the trend in SQL, and `get_fitness_briefing` surfaces the latest reading + 30-day
-  change. The webapp joins it onto each session by date (shown inline) and as a header
-  trend. There is NO weight-goal/target logic in the server — the coaching is the
-  model's, as everywhere else.
+  one (returning `change_lbs` vs the prior weigh-in) and `get_fitness_briefing` surfaces
+  the latest reading + 30-day change; the longer trend lives in the webapp (which joins
+  the reading onto each session by date, shown inline, and as a header trend), not a
+  dedicated server tool. There is NO weight-goal/target logic in the server — the
+  coaching is the model's, as everywhere else.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
   `update_profile` and surfaced by `get_fitness_briefing`.
 
