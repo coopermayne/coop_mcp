@@ -122,7 +122,7 @@
         <a href="{{ base }}/workouts" class="hover:text-black transition-colors {% if active == 'workouts' %}text-black{% endif %}">Training</a>
         <a href="{{ base }}/drinking" class="hover:text-black transition-colors {% if active == 'drinking' %}text-black{% endif %}">Drinking</a>
         <a href="{{ base }}/people" class="hover:text-black transition-colors {% if active == 'people' %}text-black{% endif %}">People</a>
-        {% if auth_enabled %}<a href="{{ base }}/logout" class="hover:text-black transition-colors text-gray-300">Out</a>{% endif %}
+        {% if auth_enabled %}<a href="{{ base }}/logout" class="hover:text-black transition-colors text-gray-300" onclick="return confirm('Log out?');">Out</a>{% endif %}
       </nav>
     </div>
   </header>
