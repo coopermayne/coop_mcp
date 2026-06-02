@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#000000" />
+  {# Tell the browser we render correctly in both modes so it themes its own
+     chrome (scrollbars, form controls, autofill) to match the user's OS pref. #}
+  <meta name="color-scheme" content="light dark" />
   <link rel="icon" href="{{ base }}/static/favicon.svg" type="image/svg+xml" />
   <title>{% block title %}Journal{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -43,6 +46,70 @@
     }
     .group:hover .entry-open { color: #9ca3af; }
     @media (min-width: 640px) { .entry-open { opacity: 0; } .group:hover .entry-open { opacity: 1; } }
+
+    /* Brief zoom-in flourish on the day section the user just clicked in the
+       mini-calendar. Origin is the top-left so it feels like the section
+       expands from where the eye lands after the scroll. */
+    @keyframes calZoom {
+      0%   { transform: scale(.96); opacity: .55; }
+      55%  { transform: scale(1.015); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .cal-zoom { animation: calZoom 520ms cubic-bezier(.2,.8,.2,1); transform-origin: 0 0; }
+    @media (prefers-reduced-motion: reduce) { .cal-zoom { animation: none; } }
+
+    /* Dark mode — OS-driven, no toggle. The app is fully monochrome, so we
+       can flip the handful of Tailwind gray utilities the templates use plus
+       our own custom classes in one place rather than sprinkling dark:
+       variants across every template.
+
+       Each selector is prefixed with `html` to bump specificity (0,1,1) above
+       Tailwind's bare (0,1,0) utilities — needed because the Tailwind Play CDN
+       injects its own stylesheets at runtime AFTER this <style> block parses,
+       so equal-specificity rules would lose the cascade. */
+    @media (prefers-color-scheme: dark) {
+      html body { background-color: #0a0a0a; color: #fafafa; }
+      html .bg-white                                 { background-color: #0a0a0a; }
+      html .bg-gray-50, html .hover\:bg-gray-50:hover{ background-color: #171717; }
+      html .bg-black, html .hover\:bg-black:hover    { background-color: #fafafa; color: #0a0a0a; }
+      html .bg-gray-800, html .hover\:bg-gray-800:hover { background-color: #e5e5e5; color: #0a0a0a; }
+      html .text-black, html .hover\:text-black:hover{ color: #fafafa; }
+      html .text-white, html .hover\:text-white:hover{ color: #0a0a0a; }
+      html .text-gray-300                            { color: #525252; }
+      html .text-gray-400                            { color: #737373; }
+      html .text-gray-500                            { color: #a3a3a3; }
+      html .text-gray-600                            { color: #d4d4d4; }
+      html .text-gray-700, html .text-gray-800, html .text-gray-900 { color: #fafafa; }
+      html .border-gray-100                          { border-color: #171717; }
+      html .border-gray-200                          { border-color: #262626; }
+      /* Tailwind's `divide-*` utility uses a long, high-specificity selector
+         (`> :not([hidden]) ~ :not([hidden])`) — match it verbatim so our
+         override wins, and !important to defeat the var-based color value. */
+      html .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: #171717 !important; }
+      html .divide-gray-200 > :not([hidden]) ~ :not([hidden]) { border-color: #262626 !important; }
+      html .border-black, html .hover\:border-black:hover { border-color: #fafafa; }
+      html .ring-black                               { --tw-ring-color: #fafafa; }
+      html .ring-gray-300                            { --tw-ring-color: #525252; }
+      /* The translucent header backdrop is its own utility (bg-white/90). */
+      html .bg-white\/90                             { background-color: rgba(10,10,10,.9); }
+      /* Custom utilities defined above */
+      html .badge      { border-color: #404040; color: #a3a3a3; }
+      html .badge:hover{ border-color: #fafafa; color: #fafafa; }
+      html .badge-dark { border-color: #fafafa; color: #fafafa; }
+      html .set-pill   { border-color: #262626; }
+      html .person-link              { text-decoration-color: #404040; }
+      html .person-link:hover        { color: #fafafa; text-decoration-color: #fafafa; }
+      html .entry-open               { color: #404040; }
+      html .group:hover .entry-open  { color: #a3a3a3; }
+      /* Form controls — no template sets a bg/text color on inputs, so without
+         this they render with the browser default (white). Match the page so
+         the field sits flat on the background; border-gray-200 already handles
+         the outline via the existing override. */
+      html input, html textarea, html select {
+        background-color: #0a0a0a; color: #fafafa;
+      }
+      html input::placeholder, html textarea::placeholder { color: #525252; }
+    }
   </style>
 </head>
 <body class="min-h-screen bg-white text-black">
@@ -60,7 +127,7 @@
     </div>
   </header>
   {% endif %}
-  <main class="{% block main_max %}max-w-3xl{% endblock %} mx-auto px-4 sm:px-6 py-10 sm:py-14">
+  <main class="max-w-3xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
     {% block content %}{% endblock %}
   </main>
 </body>

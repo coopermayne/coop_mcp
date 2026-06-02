@@ -1,9 +1,11 @@
 {% extends "base.html" %}
 {% import "macros.html" as m with context %}
 {% block title %}Journal{% endblock %}
-{# Widen on large screens so the calendar sidebar has room without squeezing prose. #}
-{% block main_max %}max-w-3xl lg:max-w-5xl{% endblock %}
 {% block content %}
+
+{# Floating right-edge calendar (lg+ only, invisible until hovered). Placed at
+   the top of content but `fixed` so it overlays — doesn't affect the main column. #}
+{% if not searching %}{{ m.floating_calendar(months) }}{% endif %}
 
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Journal</h1>
@@ -46,16 +48,7 @@
   {% endif %}
 {% else %}
   {% if days %}
-    <div class="lg:grid lg:grid-cols-[1fr_180px] lg:gap-12">
-      <div class="min-w-0">
-        {% for day in days %}{{ m.day_block(day) }}{% endfor %}
-      </div>
-      {% if months %}
-      <aside class="hidden lg:block">
-        <div class="sticky top-20">{{ m.mini_calendar(months) }}</div>
-      </aside>
-      {% endif %}
-    </div>
+    {% for day in days %}{{ m.day_block(day) }}{% endfor %}
   {% else %}
     <p class="text-sm text-gray-400">No entries yet.</p>
   {% endif %}
