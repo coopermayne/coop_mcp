@@ -15,6 +15,27 @@
 </a>
 {% endmacro %}
 
+{% macro entry_paragraph(e) %}
+{# One per-topic note as a paragraph in the day's block. People are linked inline
+   (person-link, built server-side as e.body_html); a faint hanging marker opens
+   the full entry without turning the whole paragraph into a link (which can't wrap
+   the inner name links). #}
+<div class="group flex gap-2 sm:-ml-5 sm:gap-3">
+  <a href="{{ base }}/entry/{{ e.entry_id }}" class="entry-open shrink-0 pt-0.5 text-sm leading-relaxed"
+     title="Open entry" aria-label="Open this entry">›</a>
+  <p class="flex-1 text-[15px] text-gray-800 leading-relaxed whitespace-pre-line">{{ e.body_html }}</p>
+</div>
+{% endmacro %}
+
+{% macro day_block(day) %}
+<section class="mb-10">
+  <p class="text-xs uppercase tracking-widest text-gray-400 mb-3">{{ day.date | long_date }}</p>
+  <div class="space-y-3">
+    {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
+  </div>
+</section>
+{% endmacro %}
+
 {% macro section_label(text) %}
 <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{{ text }}</p>
 {% endmacro %}
