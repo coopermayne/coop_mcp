@@ -329,17 +329,11 @@ async def entry(request: Request, entry_id: int):
 async def workouts(request: Request):
     sessions = data.workouts_full(limit=20)
     brief = server.get_fitness_briefing(recent_workouts=1)
-    totals = {
-        "sessions": len(sessions),
-        "exercises": sum(s["exercise_count"] for s in sessions),
-        "sets": sum(s["set_count"] for s in sessions),
-    }
     months = data.calendar_months([s["date"] for s in sessions], today=server.today())
     return page(request, "workouts.html", active="workouts",
-                sessions=sessions, totals=totals,
-                muscles=brief.get("muscle_recency", []),
+                sessions=sessions,
+                muscles=data.muscle_breakdown(),
                 profile=brief.get("profile", {}),
-                weight=data.bodyweight_overview(),
                 months=months)
 
 

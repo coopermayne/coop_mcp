@@ -348,28 +348,66 @@ def workouts_full(limit: int = 20) -> list:
     return out
 
 
-def bodyweight_overview() -> dict | None:
-    """Latest bodyweight plus 30-day change for the training page header. None if no
-    readings yet. Mirrors get_fitness_briefing's bodyweight block (latest reading; the
-    baseline is the most recent reading on or before 30 days ago)."""
+def muscle_breakdown() -> dict:
+    """Per-muscle training breakdown for the /workouts body heatmap.
+
+    Keyed by every muscle in `server.MUSCLES` — all 15 are always present (zeroed
+    when never trained) so the diagram can render cold regions too. Each value
+    carries the recency/volume the diagram colors by (`days_since`, `last_trained`,
+    `sets_last_7d`, `sets_last_14d`) plus the per-exercise breakdown the recency
+    briefing doesn't expose: the top ~5 exercises that hit the muscle in the last
+    14 days, with 14d/7d set counts, for the hover popup.
+
+    A "set" counts once per (muscle, set) through exercise_muscles, matching how
+    server.get_fitness_briefing computes muscle_recency. All dates are Pacific
+    (server.today())."""
+    today = server.today()
+    seven_ago = (date.fromisoformat(today) - timedelta(days=6)).isoformat()
+    fourteen_ago = (date.fromisoformat(today) - timedelta(days=13)).isoformat()
+    out = {
+        m: {"days_since": None, "last_trained": None,
+            "sets_last_7d": 0, "sets_last_14d": 0, "exercises": []}
+        for m in server.MUSCLES
+    }
     with server.db() as conn:
-        latest = conn.execute(
-            "SELECT weigh_date, weight_lbs FROM body_weight ORDER BY weigh_date DESC, id DESC LIMIT 1"
-        ).fetchone()
-        if not latest:
-            return None
-        from datetime import date as _date
-        thirty_ago = _date.fromordinal(
-            _date.fromisoformat(server.today()).toordinal() - 30).isoformat()
-        base = conn.execute(
-            """SELECT weight_lbs FROM body_weight WHERE weigh_date <= ?
-               ORDER BY weigh_date DESC, id DESC LIMIT 1""",
-            (thirty_ago,),
-        ).fetchone()
-    out = {"latest_lbs": latest["weight_lbs"], "date": latest["weigh_date"],
-           "change_30d_lbs": None}
-    if base:
-        out["change_30d_lbs"] = round(latest["weight_lbs"] - base["weight_lbs"], 1)
+        for r in conn.execute(
+            """SELECT em.muscle,
+                      MAX(w.workout_date) AS last_date,
+                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_7d,
+                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_14d
+               FROM sets s
+               JOIN workouts w ON w.id = s.workout_id
+               JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+               GROUP BY em.muscle""",
+            (seven_ago, fourteen_ago),
+        ).fetchall():
+            m = out.get(r["muscle"])
+            if m is None:   # a muscle outside the canonical list — ignore
+                continue
+            m["last_trained"] = r["last_date"]
+            m["days_since"] = server._days_since(r["last_date"])
+            m["sets_last_7d"] = r["sets_7d"] or 0
+            m["sets_last_14d"] = r["sets_14d"] or 0
+        # top exercises per muscle over the last 14 days (for the hover popup)
+        for r in conn.execute(
+            """SELECT em.muscle, e.name AS name,
+                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_7d,
+                      COUNT(*) AS sets_14d
+               FROM sets s
+               JOIN workouts w ON w.id = s.workout_id
+               JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+               JOIN exercises e ON e.id = s.exercise_id
+               WHERE w.workout_date >= ?
+               GROUP BY em.muscle, e.id
+               ORDER BY em.muscle, sets_14d DESC, sets_7d DESC, e.name""",
+            (seven_ago, fourteen_ago),
+        ).fetchall():
+            m = out.get(r["muscle"])
+            if m is None or len(m["exercises"]) >= 5:
+                continue
+            m["exercises"].append(
+                {"name": r["name"], "sets_14d": r["sets_14d"], "sets_7d": r["sets_7d"]}
+            )
     return out
 
 
@@ -378,7 +416,13 @@ def bodyweight_overview() -> dict | None:
 # --------------------------------------------------------------------------- #
 
 def drinking(days: int = 30) -> dict:
-    """Drink summary plus a gap-filled day-by-day series for the chart."""
+    """Drink summary plus a gap-filled day-by-day series for the chart.
+
+    Adds two headline averages:
+      - avg_alltime: total drinks across all calendar days from the first ever logged
+        day through today (sober days count as 0).
+      - avg_6d_excl_today: last 6 calendar days NOT counting today, divided by 6.
+    """
     s = server.get_drink_summary(days=days)
     by_date = {d["date"]: d["total"] for d in s["daily"]}
     start = date.fromisoformat(s["since"])
