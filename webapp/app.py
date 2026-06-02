@@ -15,9 +15,13 @@ Env: PORT, WEB_HOST, WEB_BASE_URL (public origin, for the OAuth redirect),
      SESSION_SECRET, GOOGLE_CLIENT_ID/SECRET, JOURNAL_ALLOWED_EMAILS, JOURNAL_DB.
 """
 
+import html
 import os
+import re
 import sys
 from datetime import datetime
+
+from markupsafe import Markup
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -101,6 +105,44 @@ for _name, _fn in [
     ("num", num), ("set_label", set_label),
 ]:
     templates.env.filters[_name] = _fn
+
+
+def linkify_people(body: str, people: list[dict], base: str) -> Markup:
+    """Return the entry body as safe HTML with each resolved person's name linked
+    inline to their page — quiet underlines that don't break the prose. Names are
+    matched on word boundaries, case-insensitively, longest form first (so "Tom
+    Brady" wins over "Tom"); every occurrence is linked. Text is HTML-escaped; only
+    the anchors we build are markup."""
+    if not body:
+        return Markup("")
+    form_to_person: dict[str, dict] = {}
+    for p in people:
+        for f in p.get("forms", []):
+            f = (f or "").strip()
+            if len(f) < 2:  # 1-char forms match too much
+                continue
+            form_to_person.setdefault(f.lower(), p)
+    if not form_to_person:
+        return Markup(html.escape(body))
+    forms = sorted({fp for fp in form_to_person}, key=len, reverse=True)
+    pattern = re.compile(r"\b(" + "|".join(re.escape(f) for f in forms) + r")\b",
+                         re.IGNORECASE)
+    out, last = [], 0
+    for mobj in pattern.finditer(body):
+        out.append(html.escape(body[last:mobj.start()]))
+        word = mobj.group(0)
+        person = form_to_person.get(word.lower())
+        if person:
+            label = person["name"] + (f" · {person['role']}" if person.get("role") else "")
+            out.append(
+                f'<a href="{base}/person/{person["person_id"]}" class="person-link" '
+                f'title="{html.escape(label)}">{html.escape(word)}</a>'
+            )
+        else:
+            out.append(html.escape(word))
+        last = mobj.end()
+    out.append(html.escape(body[last:]))
+    return Markup("".join(out))
 
 
 def base_path(request: Request) -> str:
@@ -213,13 +255,20 @@ async def index(request: Request):
 @app.get("/journal")
 async def journal(request: Request, q: str = ""):
     q = (q or "").strip()
+    base = base_path(request)
     if q:
         res = server.search_entries(q, limit=40)
+        entries = data.attach_people(res["results"])
+        for e in entries:
+            e["body_html"] = linkify_people(e["body"], e["people"], base)
         return page(request, "journal.html", active="journal",
-                    q=q, entries=res["results"], count=res["count"], searching=True)
-    res = data.list_entries(limit=50)
+                    q=q, entries=entries, count=res["count"], searching=True)
+    res = data.list_days(limit_entries=120)
+    for day in res["days"]:
+        for e in day["entries"]:
+            e["body_html"] = linkify_people(e["body"], e["people"], base)
     return page(request, "journal.html", active="journal",
-                q="", entries=res["entries"], count=res["total"], searching=False)
+                q="", days=res["days"], count=res["total"], searching=False)
 
 
 @app.get("/entry/{entry_id}")
