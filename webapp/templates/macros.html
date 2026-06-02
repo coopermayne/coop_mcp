@@ -63,11 +63,17 @@
     <div class="grid grid-cols-7 gap-y-0.5">
       {% for week in cm.weeks %}
         {% for d in week %}
-          {% if d.has_entry %}
+          {% if not d.in_month %}
+            {# Adjacent-month filler — keep the grid slot, hide the digit.
+               The user navigates whole months via ‹/›, so spillover days
+               would only be a source of confusion (esp. when they have
+               entries but their day-section isn't on this page). #}
+            <span class="aspect-square" aria-hidden="true"></span>
+          {% elif d.has_entry %}
             <a href="#day-{{ d.date }}"
                class="aspect-square flex items-center justify-center rounded-sm text-gray-900 hover:bg-black hover:text-white transition-colors {% if d.is_today %}ring-1 ring-black{% endif %}">{{ d.day }}</a>
           {% else %}
-            <span class="aspect-square flex items-center justify-center {% if d.in_month %}text-gray-300{% else %}text-gray-200{% endif %} {% if d.is_today %}ring-1 ring-gray-300 rounded-sm{% endif %}">{{ d.day }}</span>
+            <span class="aspect-square flex items-center justify-center text-gray-300 {% if d.is_today %}ring-1 ring-gray-300 rounded-sm{% endif %}">{{ d.day }}</span>
           {% endif %}
         {% endfor %}
       {% endfor %}
