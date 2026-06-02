@@ -41,12 +41,22 @@
 {% endmacro %}
 
 {% macro mini_calendar(months) %}
-{# Sticky journal sidebar (lg+). Each cell with an entry links to the day's
-   anchor; cells without entries are dimmed and inert. Today gets a faint ring. #}
-<div class="space-y-6 text-[11px] tabular-nums">
+{# 7-col month grid. Cells with `has_entry` link to `#day-YYYY-MM-DD`; cells
+   without are dimmed and inert. Today gets a faint ring. One month at a time;
+   ‹ / › step through `months` (which is newest-first, so ‹ goes back in time).
+   The inline script wires the arrows; no framework needed. #}
+<div class="text-[11px] tabular-nums" data-mini-cal>
   {% for cm in months %}
-  <div>
-    <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{{ cm.label }}</p>
+  <div data-month-idx="{{ loop.index0 }}"{% if not loop.first %} hidden{% endif %}>
+    <div class="flex items-center justify-between mb-2">
+      <button type="button" data-cal-prev
+              class="text-gray-400 hover:text-black transition-colors px-1 leading-none disabled:opacity-20 disabled:hover:text-gray-400 disabled:cursor-default"
+              aria-label="Previous month"{% if loop.last %} disabled{% endif %}>‹</button>
+      <p class="text-[10px] uppercase tracking-widest text-gray-400">{{ cm.label }}</p>
+      <button type="button" data-cal-next
+              class="text-gray-400 hover:text-black transition-colors px-1 leading-none disabled:opacity-20 disabled:hover:text-gray-400 disabled:cursor-default"
+              aria-label="Next month"{% if loop.first %} disabled{% endif %}>›</button>
+    </div>
     <div class="grid grid-cols-7 text-[9px] text-gray-300 mb-1">
       {% for h in ['S','M','T','W','T','F','S'] %}<div class="text-center font-medium uppercase tracking-wider">{{ h }}</div>{% endfor %}
     </div>
@@ -65,6 +75,54 @@
   </div>
   {% endfor %}
 </div>
+<script>
+(function(){
+  document.querySelectorAll('[data-mini-cal]').forEach(function(root){
+    var months = root.querySelectorAll('[data-month-idx]');
+    if (months.length < 2) return;
+    var cur = 0;
+    function show(i){
+      if (i < 0 || i >= months.length) return;
+      months[cur].hidden = true;
+      months[i].hidden = false;
+      cur = i;
+    }
+    root.addEventListener('click', function(e){
+      var t = e.target;
+      // ‹ = older month → higher index (months are newest-first)
+      if (t.matches('[data-cal-prev]') && !t.disabled) { show(cur + 1); return; }
+      if (t.matches('[data-cal-next]') && !t.disabled) { show(cur - 1); return; }
+      var a = t.closest && t.closest('a[href^="#day-"]');
+      if (a) {
+        var id = a.getAttribute('href').slice(1);
+        var target = document.getElementById(id);
+        if (target) {
+          e.preventDefault();
+          target.scrollIntoView({behavior: 'smooth', block: 'start'});
+          target.classList.remove('cal-zoom');
+          void target.offsetWidth;  // restart animation if same day clicked twice
+          target.classList.add('cal-zoom');
+          if (history.replaceState) history.replaceState(null, '', '#' + id);
+        }
+      }
+    });
+  });
+})();
+</script>
+{% endmacro %}
+
+{% macro floating_calendar(months) %}
+{# Lurking sidebar: fixed to the right edge on lg+, invisible by default, fades
+   in when the cursor enters the strip. The outer aside reserves the hover area
+   (w-56) even while the inner content is transparent — divs still register
+   hover at opacity-0. Hidden entirely on mobile/tablet. #}
+{% if months %}
+<aside class="hidden lg:block fixed right-0 top-20 w-56 max-h-[calc(100vh-6rem)] overflow-y-auto z-20 group/cal pointer-events-auto">
+  <div class="px-4 py-2 opacity-0 translate-x-2 group-hover/cal:opacity-100 group-hover/cal:translate-x-0 transition-all duration-200 motion-reduce:transition-none">
+    {{ mini_calendar(months) }}
+  </div>
+</aside>
+{% endif %}
 {% endmacro %}
 
 {% macro section_label(text) %}
