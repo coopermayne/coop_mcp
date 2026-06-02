@@ -10,6 +10,13 @@
   </span>
 </div>
 
+{% if pending_count and pending_count > 0 %}
+<a href="{{ base }}/pending" class="block mb-6 border border-gray-200 rounded-[4px] px-4 py-2.5 hover:border-black transition-colors flex items-center justify-between">
+  <span class="text-sm text-gray-700">{{ pending_count }} pending mention{{ '' if pending_count == 1 else 's' }} to resolve</span>
+  <span class="text-xs uppercase tracking-widest text-gray-400">Review ›</span>
+</a>
+{% endif %}
+
 <form method="get" action="{{ base }}/journal" class="mb-8 flex gap-2">
   <input type="search" name="q" value="{{ q }}" placeholder="Search entries…"
          class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />

@@ -249,26 +249,48 @@ async def health():
 
 @app.get("/")
 async def index(request: Request):
-    return page(request, "index.html", active="home", d=data.dashboard())
+    base = base_path(request)
+    d = data.home()
+    for day in d["days"]:
+        for e in day["entries"]:
+            e["body_html"] = linkify_people(e["body"], e["people"], base)
+    return page(request, "index.html", active="home", d=d)
+
+
+def _pending_count() -> int:
+    with server.db() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM mentions WHERE status='pending'"
+        ).fetchone()["n"]
 
 
 @app.get("/journal")
 async def journal(request: Request, q: str = ""):
     q = (q or "").strip()
     base = base_path(request)
+    pending_n = _pending_count()
     if q:
         res = server.search_entries(q, limit=40)
         entries = data.attach_people(res["results"])
         for e in entries:
             e["body_html"] = linkify_people(e["body"], e["people"], base)
         return page(request, "journal.html", active="journal",
-                    q=q, entries=entries, count=res["count"], searching=True)
+                    q=q, entries=entries, count=res["count"], searching=True,
+                    pending_count=pending_n)
     res = data.list_days(limit_entries=120)
     for day in res["days"]:
         for e in day["entries"]:
             e["body_html"] = linkify_people(e["body"], e["people"], base)
     return page(request, "journal.html", active="journal",
-                q="", days=res["days"], count=res["total"], searching=False)
+                q="", days=res["days"], count=res["total"], searching=False,
+                pending_count=pending_n)
+
+
+@app.get("/pending")
+async def pending(request: Request):
+    items = data.pending_mentions()
+    return page(request, "pending.html", active="journal",
+                items=items, count=len(items))
 
 
 @app.get("/entry/{entry_id}")
@@ -307,7 +329,23 @@ async def people(request: Request, q: str = ""):
     q = (q or "").strip()
     res = server.list_people(query=q or None)
     return page(request, "people.html", active="people",
-                q=q, people=res["people"], count=res["count"])
+                q=q, people=res["people"], count=res["count"],
+                groups=data.groups_overview())
+
+
+@app.get("/groups")
+async def groups(request: Request):
+    return page(request, "groups.html", active="people",
+                groups=data.groups_overview())
+
+
+@app.get("/group/{name}")
+async def group(request: Request, name: str):
+    g = data.group_members(name)
+    if g is None:
+        return page(request, "notfound.html", active="people",
+                    status_code=404, what="group")
+    return page(request, "group.html", active="people", g=g)
 
 
 @app.get("/person/{person_id}")
