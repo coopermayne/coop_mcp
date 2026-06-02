@@ -35,6 +35,12 @@ from starlette.applications import Starlette   # noqa: E402
 from starlette.responses import RedirectResponse  # noqa: E402
 from starlette.routing import Host, Mount, Route   # noqa: E402
 
+# Apply schema + migrations BEFORE building the apps. `init_db()` only runs from
+# server.py's __main__ block, which never fires in prod (the Dockerfile CMD runs
+# this module). Without this call, ALTER TABLE migrations added in init_db()
+# never reach the live DB, and any query that references a new column 500s.
+server.init_db()
+
 mcp_app = server.mcp.http_app(path="/mcp")   # journal + drinking, on the main origin
 
 # Trainer host derived from TRAINER_PUBLIC_URL (e.g. https://trainer.example.com).
