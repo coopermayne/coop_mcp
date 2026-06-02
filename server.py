@@ -115,10 +115,12 @@ if _auth is not None:
 # otherwise it falls back to /trainer/mcp on the journal origin (fine for authless/local).
 _trainer_auth = _build_auth(os.environ.get("TRAINER_PUBLIC_URL"))
 trainer_mcp = FastMCP("trainer", auth=_trainer_auth, instructions="""\
-Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe) and an
-exercise catalog (technique, cautions, target muscles). The server only stores and
-computes deterministic aggregates (per-muscle recency/volume) — all coaching
-judgment (next weight, what to program, what to rest, how to cue form) is yours.
+Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe, plus
+duration/distance for cardio like running and walking) and an exercise catalog
+(technique, cautions, target muscles). The server only stores and computes
+deterministic aggregates (per-muscle recency/volume, cardio minutes/miles) — all
+coaching judgment (next weight, what to program, what to rest, how to cue form) is
+yours.
 
 All dates here are Pacific (America/Los_Angeles). get_fitness_briefing returns `now`
 (current Pacific date/time); anchor "today"/"yesterday" to it before defaulting or
@@ -274,6 +276,8 @@ CREATE TABLE IF NOT EXISTS sets (
     weight_lbs  REAL,                 -- NULL for bodyweight / cardio
     reps        INTEGER,
     rpe         REAL,                 -- 1-10 perceived exertion (10 = true failure)
+    duration_seconds INTEGER,         -- cardio: time of the effort (run/walk/row); NULL for lifts
+    distance_miles   REAL,            -- cardio: distance covered; NULL for lifts
     note        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);
@@ -305,6 +309,10 @@ def init_db() -> None:
         for col in ("summary", "email", "phone", "address"):
             if col not in pcols:
                 conn.execute(f"ALTER TABLE people ADD COLUMN {col} TEXT")
+        scols = [r["name"] for r in conn.execute("PRAGMA table_info(sets)")]
+        for col, decl in (("duration_seconds", "INTEGER"), ("distance_miles", "REAL")):
+            if col not in scols:
+                conn.execute(f"ALTER TABLE sets ADD COLUMN {col} {decl}")
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -372,6 +380,12 @@ def _bad_set(s: dict) -> Optional[str]:
     w = s.get("weight_lbs")
     if w is not None and w < 0:
         return f"weight_lbs must be >= 0, got {w}"
+    dur = s.get("duration_seconds")
+    if dur is not None and dur < 0:
+        return f"duration_seconds must be >= 0, got {dur}"
+    dist = s.get("distance_miles")
+    if dist is not None and dist < 0:
+        return f"distance_miles must be >= 0, got {dist}"
     return None
 
 
@@ -1279,6 +1293,13 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     judge whether to add weight next time. Returns per-exercise ids and which were
     newly created.
 
+    CARDIO (running, walking, rowing, cycling): log it as an exercise too — give it
+    `muscles: []` (so it's a true cardio entry, not counted in muscle recency) and
+    use a set per bout with `duration_seconds` and/or `distance_miles` instead of
+    weight/reps. A 30-minute, 3.2-mile run is one set
+    {"duration_seconds": 1800, "distance_miles": 3.2, "rpe": 6}. weight_lbs/reps stay
+    null. Intervals can be one set each. Pass durations in SECONDS (25 min = 1500).
+
     Args:
         exercises: The exercises performed, each with its sets (see shape above).
         workout_date: Day trained, YYYY-MM-DD. Defaults to today.
@@ -1333,9 +1354,11 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
             for i, s in enumerate(ex.get("sets") or [], start=start):
                 conn.execute(
                     """INSERT INTO sets(workout_id, exercise_id, set_index, weight_lbs,
-                       reps, rpe, note) VALUES (?,?,?,?,?,?,?)""",
+                       reps, rpe, duration_seconds, distance_miles, note)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     (wid, eid, i, s.get("weight_lbs"), s.get("reps"),
-                     s.get("rpe"), s.get("note")),
+                     s.get("rpe"), s.get("duration_seconds"),
+                     s.get("distance_miles"), s.get("note")),
                 )
             results.append({"exercise_id": eid, "name": name,
                             "sets": len(ex.get("sets") or []), "created": created})
@@ -1368,7 +1391,8 @@ def get_exercise_history(exercise_id: Optional[int] = None,
             return {"error": "no matching exercise"}
         rows = conn.execute(
             """SELECT w.id AS wid, w.workout_date, s.id AS sid, s.set_index,
-                      s.weight_lbs, s.reps, s.rpe, s.note
+                      s.weight_lbs, s.reps, s.rpe, s.duration_seconds,
+                      s.distance_miles, s.note
                FROM sets s JOIN workouts w ON w.id = s.workout_id
                WHERE s.exercise_id=?
                ORDER BY w.workout_date DESC, w.id DESC, s.set_index ASC""",
@@ -1384,8 +1408,13 @@ def get_exercise_history(exercise_id: Optional[int] = None,
             sessions.append(sess)
         if len(sessions) > limit:
             continue
-        sess["sets"].append({"set_id": r["sid"], "weight_lbs": r["weight_lbs"],
-                             "reps": r["reps"], "rpe": r["rpe"], "note": r["note"]})
+        st = {"set_id": r["sid"], "weight_lbs": r["weight_lbs"],
+              "reps": r["reps"], "rpe": r["rpe"], "note": r["note"]}
+        if r["duration_seconds"] is not None:
+            st["duration_seconds"] = r["duration_seconds"]
+        if r["distance_miles"] is not None:
+            st["distance_miles"] = r["distance_miles"]
+        sess["sets"].append(st)
     return {"exercise_id": exercise_id, "name": ex["name"],
             "sessions": sessions[:limit], "count": min(len(sessions), limit)}
 
@@ -1418,14 +1447,21 @@ def update_workout(workout_id: int, workout_date: Optional[str] = None,
 @trainer_mcp.tool()
 def update_set(set_id: int, weight_lbs: Optional[float] = None,
                reps: Optional[int] = None, rpe: Optional[float] = None,
+               duration_seconds: Optional[int] = None,
+               distance_miles: Optional[float] = None,
                note: Optional[str] = None) -> dict:
     """Correct a single logged set. Only non-null args are written, so this can't
     blank a field back to NULL (e.g. clear a weight to mark bodyweight) — delete the
     set with delete_record(kind="set") and re-log it for that. Find the `set_id` with
-    get_exercise_history. `rpe` is 1-10."""
-    if reason := _bad_set({"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe}):
+    get_exercise_history. `rpe` is 1-10. `duration_seconds`/`distance_miles` are the
+    cardio fields (run/walk/row)."""
+    if reason := _bad_set({"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
+                           "duration_seconds": duration_seconds,
+                           "distance_miles": distance_miles}):
         return {"error": reason}
-    fields = {"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe, "note": note}
+    fields = {"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
+              "duration_seconds": duration_seconds,
+              "distance_miles": distance_miles, "note": note}
     sets = {k: v for k, v in fields.items() if v is not None}
     if not sets:
         return {"set_id": set_id, "updated": []}
@@ -1442,10 +1478,13 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
 def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
-    days), and recent sessions. Call this at the start of a training conversation to
-    decide what to work and what to rest: muscles with the most days_since (and low
-    recent volume) are recovered and due; ones trained in the last ~1-2 days should
-    rest. The recommendation itself is yours to make from this data."""
+    days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
+    in the last 7 days), and recent sessions. Call this at the start of a training
+    conversation to decide what to work and what to rest: muscles with the most
+    days_since (and low recent volume) are recovered and due; ones trained in the last
+    ~1-2 days should rest. Cardio is tracked separately because it carries no muscle
+    mapping. The recommendation itself is yours to make from this data."""
+    week_ago = date.fromordinal(date.fromisoformat(today()).toordinal() - 6).isoformat()
     with db() as conn:
         profile = _get_profile(conn)
         mrows = conn.execute(
@@ -1456,7 +1495,19 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
                GROUP BY em.muscle""",
-            (date.fromordinal(date.fromisoformat(today()).toordinal() - 6).isoformat(),),
+            (week_ago,),
+        ).fetchall()
+        crows = conn.execute(
+            """SELECT e.name,
+                      MAX(w.workout_date) AS last_date,
+                      SUM(CASE WHEN w.workout_date >= ? THEN COALESCE(s.duration_seconds,0) ELSE 0 END) AS dur_7d,
+                      SUM(CASE WHEN w.workout_date >= ? THEN COALESCE(s.distance_miles,0) ELSE 0 END) AS dist_7d
+               FROM sets s
+               JOIN workouts w ON w.id = s.workout_id
+               JOIN exercises e ON e.id = s.exercise_id
+               WHERE s.duration_seconds IS NOT NULL OR s.distance_miles IS NOT NULL
+               GROUP BY e.id""",
+            (week_ago, week_ago),
         ).fetchall()
         recent = conn.execute(
             "SELECT id, workout_date, focus, feeling FROM workouts ORDER BY workout_date DESC, id DESC LIMIT ?",
@@ -1477,8 +1528,17 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
          for r in mrows),
         key=lambda m: (m["days_since"] is None, -(m["days_since"] or 0)),
     )
+    cardio = sorted(
+        ({"exercise": r["name"], "last_done": r["last_date"],
+          "days_since": _days_since(r["last_date"]),
+          "minutes_last_7d": round((r["dur_7d"] or 0) / 60, 1),
+          "miles_last_7d": round(r["dist_7d"] or 0, 2)}
+         for r in crows),
+        key=lambda c: (c["days_since"] is None, -(c["days_since"] or 0)),
+    )
     return {"now": current_clock(), "profile": profile,
-            "muscle_recency": recency, "recent_workouts": recent_out}
+            "muscle_recency": recency, "cardio_recency": cardio,
+            "recent_workouts": recent_out}
 
 
 @trainer_mcp.tool()
