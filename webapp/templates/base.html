@@ -27,6 +27,22 @@
       letter-spacing: 0.025em; line-height: 1.625; border-radius: 2px; color: #6b7280;
     }
     .badge-dark { border-color: #000; color: #000; }
+    /* Inline person reference inside journal prose — present but quiet: a faint
+       underline that firms up on hover, no color shift until then. */
+    .person-link {
+      color: inherit; text-decoration: underline; text-decoration-thickness: 1px;
+      text-decoration-color: #d1d5db; text-underline-offset: 2px;
+      transition: text-decoration-color .15s, color .15s;
+    }
+    .person-link:hover { color: #000; text-decoration-color: #000; }
+    /* Per-paragraph affordance to open the full entry: a hanging marker that's
+       faint on touch screens and reveals on hover at the desk. */
+    .entry-open {
+      color: #d1d5db; transition: color .15s, opacity .15s;
+      text-decoration: none; user-select: none;
+    }
+    .group:hover .entry-open { color: #9ca3af; }
+    @media (min-width: 640px) { .entry-open { opacity: 0; } .group:hover .entry-open { opacity: 1; } }
   </style>
 </head>
 <body class="min-h-screen bg-white text-black">

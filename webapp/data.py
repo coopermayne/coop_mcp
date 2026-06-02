@@ -49,6 +49,84 @@ def list_entries(limit: int = 40, offset: int = 0, max_chars: int = 320) -> dict
     }
 
 
+def _people_for_entries(conn, entry_ids: list[int]) -> dict:
+    """Resolved people per entry, each carrying the name `forms` to look for in the
+    body when linking names inline: the canonical name, the surface form actually
+    used, and the person's aliases. Keyed by entry_id; pending mentions are skipped
+    (nothing to link to)."""
+    if not entry_ids:
+        return {}
+    qs = ",".join("?" * len(entry_ids))
+    rows = conn.execute(
+        f"""SELECT m.entry_id, m.surface_form, p.id AS pid, p.canonical_name, p.role
+            FROM mentions m JOIN people p ON p.id = m.person_id
+            WHERE m.entry_id IN ({qs}) ORDER BY m.entry_id, m.id""",
+        entry_ids,
+    ).fetchall()
+    pids = sorted({r["pid"] for r in rows})
+    aliases: dict[int, list[str]] = {}
+    if pids:
+        ps = ",".join("?" * len(pids))
+        for a in conn.execute(
+            f"SELECT person_id, surface_form FROM aliases WHERE person_id IN ({ps})", pids
+        ):
+            aliases.setdefault(a["person_id"], []).append(a["surface_form"])
+    by_entry: dict[int, dict[int, dict]] = {}
+    for r in rows:
+        people = by_entry.setdefault(r["entry_id"], {})
+        person = people.get(r["pid"])
+        if person is None:
+            person = {
+                "person_id": r["pid"],
+                "name": r["canonical_name"],
+                "role": r["role"],
+                "forms": set(),
+            }
+            person["forms"].update(
+                f for f in [r["canonical_name"], *aliases.get(r["pid"], [])] if f
+            )
+            people[r["pid"]] = person
+        if r["surface_form"]:
+            person["forms"].add(r["surface_form"])
+    return {eid: list(people.values()) for eid, people in by_entry.items()}
+
+
+def attach_people(entries: list[dict]) -> list[dict]:
+    """Attach each entry's resolved people (for inline linking) in place."""
+    with server.db() as conn:
+        people = _people_for_entries(conn, [e["entry_id"] for e in entries])
+    for e in entries:
+        e["people"] = people.get(e["entry_id"], [])
+    return entries
+
+
+def list_days(limit_entries: int = 120) -> dict:
+    """Recent entries grouped into days, newest day first; within a day the entries
+    read top-to-bottom in the order they were recorded (so the day reads as one
+    block of prose split into per-topic paragraphs). Each entry carries its resolved
+    people so the feed can link names inline. Bodies are returned in full — entries
+    are now small per-topic notes, not the day's whole dump."""
+    with server.db() as conn:
+        rows = conn.execute(
+            "SELECT id, entry_date, body FROM entries "
+            "ORDER BY entry_date DESC, id ASC LIMIT ?",
+            (limit_entries,),
+        ).fetchall()
+        total = conn.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"]
+        entries = [
+            {"entry_id": r["id"], "entry_date": r["entry_date"], "body": r["body"]}
+            for r in rows
+        ]
+        people = _people_for_entries(conn, [e["entry_id"] for e in entries])
+    days: list[dict] = []
+    for e in entries:
+        e["people"] = people.get(e["entry_id"], [])
+        if not days or days[-1]["date"] != e["entry_date"]:
+            days.append({"date": e["entry_date"], "entries": []})
+        days[-1]["entries"].append(e)
+    return {"days": days, "total": total}
+
+
 def entry_with_people(entry_id: int):
     """Cleaned entry plus the people resolved within it. The verbatim raw_body
     is a hidden backup — not fetched or shown on the web."""
