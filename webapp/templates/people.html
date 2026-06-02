@@ -5,7 +5,10 @@
 
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">People</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }}</span>
+  <div class="flex items-baseline gap-4">
+    {% if groups %}<a href="{{ base }}/groups" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Groups ›</a>{% endif %}
+    <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }}</span>
+  </div>
 </div>
 
 <form method="get" action="{{ base }}/people" class="mb-8 flex gap-2">

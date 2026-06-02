@@ -153,9 +153,74 @@ def entry_with_people(entry_id: int):
     return e
 
 
+def pending_mentions(limit: int = 200) -> list:
+    """The resolution queue, enriched for the web view: each pending mention with
+    its surface form, context snippet, entry_date, entry_id (so you can jump to
+    the entry), and the same candidate matches `list_pending_mentions` returns —
+    this UI is read-only, so resolution still happens in conversation with Claude.
+    """
+    out = server.list_pending_mentions(limit=limit)["pending"]
+    with server.db() as conn:
+        ids = {p["mention_id"] for p in out}
+        if ids:
+            qs = ",".join("?" * len(ids))
+            entry_by_mention = {
+                r["mid"]: r["eid"] for r in conn.execute(
+                    f"SELECT id AS mid, entry_id AS eid FROM mentions WHERE id IN ({qs})",
+                    list(ids),
+                )
+            }
+        else:
+            entry_by_mention = {}
+    for p in out:
+        p["entry_id"] = entry_by_mention.get(p["mention_id"])
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # People
 # --------------------------------------------------------------------------- #
+
+def groups_overview() -> list:
+    """All groups with member counts, sorted by size descending. Empty groups
+    (no current members) drop out so the page reflects what's actually wired up."""
+    with server.db() as conn:
+        rows = conn.execute(
+            """SELECT g.name, COUNT(pg.person_id) AS n
+               FROM groups g LEFT JOIN person_groups pg ON pg.group_id = g.id
+               GROUP BY g.id HAVING n > 0
+               ORDER BY n DESC, g.name"""
+        ).fetchall()
+    return [{"name": r["name"], "member_count": r["n"]} for r in rows]
+
+
+def group_members(name: str) -> dict | None:
+    """Members of one group with the same compact shape as /people rows (id, name,
+    role, last_mentioned, alias count, other groups). Returns None if the group
+    doesn't exist."""
+    with server.db() as conn:
+        g = conn.execute("SELECT id, name FROM groups WHERE name=?", (name,)).fetchone()
+        if not g:
+            return None
+        rows = conn.execute(
+            """SELECT p.id, p.canonical_name, p.role,
+                      (SELECT COUNT(*) FROM aliases a WHERE a.person_id=p.id) AS aliases,
+                      (SELECT MAX(e.entry_date) FROM mentions m
+                         JOIN entries e ON e.id = m.entry_id
+                        WHERE m.person_id = p.id) AS last_mentioned
+               FROM people p JOIN person_groups pg ON pg.person_id = p.id
+               WHERE pg.group_id = ?
+               ORDER BY last_mentioned IS NULL, last_mentioned DESC, p.canonical_name""",
+            (g["id"],),
+        ).fetchall()
+        members = []
+        for r in rows:
+            other = [og for og in server._groups_for(conn, r["id"]) if og != g["name"]]
+            members.append({"person_id": r["id"], "name": r["canonical_name"],
+                            "role": r["role"], "aliases": r["aliases"],
+                            "last_mentioned": r["last_mentioned"], "groups": other})
+    return {"name": g["name"], "members": members, "count": len(members)}
+
 
 def person_detail(person_id: int, history_limit: int = 60):
     """Everything the read UI shows for one person."""
@@ -274,31 +339,17 @@ def recent_drinks(limit: int = 30) -> list:
 
 
 # --------------------------------------------------------------------------- #
-# Dashboard
+# Home (landing page)
 # --------------------------------------------------------------------------- #
 
-def dashboard() -> dict:
-    """One roll-up for the landing page."""
-    with server.db() as conn:
-        entries_n = conn.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"]
-        people_n = conn.execute("SELECT COUNT(*) AS n FROM people").fetchone()["n"]
-        pending_n = conn.execute(
-            "SELECT COUNT(*) AS n FROM mentions WHERE status='pending'"
-        ).fetchone()["n"]
-        workouts_n = conn.execute("SELECT COUNT(*) AS n FROM workouts").fetchone()["n"]
-        last_workout = conn.execute(
-            "SELECT MAX(workout_date) AS d FROM workouts"
-        ).fetchone()["d"]
-    drink = server.get_drink_summary(days=30)
+def home() -> dict:
+    """The landing page roll-up: two most recent journal entries (day-grouped,
+    with their resolved people attached for inline linking), the 30-day drink
+    series for the chart, and the most recent workout. The route layer is
+    responsible for converting the entry bodies to body_html (needs the request's
+    base path)."""
     return {
-        "entries_count": entries_n,
-        "people_count": people_n,
-        "pending_mentions": pending_n,
-        "workouts_count": workouts_n,
-        "last_workout": last_workout,
-        "days_since_workout": server._days_since(last_workout),
-        "sober_streak": drink.get("current_sober_streak"),
-        "drinks_30d": drink.get("total_standard_drinks"),
-        "recent_entries": list_entries(limit=5)["entries"],
+        "days": list_days(limit_entries=2)["days"],
+        "drink": drinking(days=30),
         "last_session": (workouts_full(limit=1) or [None])[0],
     }

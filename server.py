@@ -893,6 +893,71 @@ def delete_record(kind: str, id: int) -> dict:
 
 
 @mcp.tool()
+def merge_people(survivor_person_id: int, loser_person_id: int) -> dict:
+    """Merge two person records that turn out to be the same human — e.g. if "Tom"
+    and "Tom Smith" were created before they were linked. All of the loser's
+    aliases, mentions, and group memberships move onto the survivor (duplicates
+    deduped; the loser's canonical name becomes an alias so the surface form stays
+    discoverable). The loser is then deleted. Irreversible.
+
+    This is a relational merge only — the survivor's role/notes/summary/email/
+    phone/address are NOT overwritten. The loser's fields are returned as
+    `discarded_fields` so you can decide whether any are worth copying onto the
+    survivor via save_person(person_id=survivor_person_id, …)."""
+    if survivor_person_id == loser_person_id:
+        return {"error": "survivor and loser must be different people"}
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM people WHERE id=?", (survivor_person_id,)).fetchone():
+            return {"error": f"no person with id {survivor_person_id} (survivor)"}
+        loser = conn.execute(
+            """SELECT id, canonical_name, role, notes, summary, email, phone, address
+               FROM people WHERE id=?""", (loser_person_id,)
+        ).fetchone()
+        if not loser:
+            return {"error": f"no person with id {loser_person_id} (loser)"}
+        # The loser's canonical name becomes a manual alias on the survivor — keeps the
+        # surface form discoverable for matching once the loser row is gone.
+        conn.execute(
+            """INSERT OR IGNORE INTO aliases(person_id, surface_form, phonetic_key, source)
+               VALUES (?,?,?, 'manual')""",
+            (survivor_person_id, loser["canonical_name"], phonetic(loser["canonical_name"])),
+        )
+        # Aliases: UNIQUE(person_id, surface_form), so INSERT OR IGNORE handles dups.
+        conn.execute(
+            """INSERT OR IGNORE INTO aliases(person_id, surface_form, phonetic_key, source)
+               SELECT ?, surface_form, phonetic_key, source FROM aliases WHERE person_id=?""",
+            (survivor_person_id, loser_person_id),
+        )
+        moved_aliases = conn.execute(
+            "DELETE FROM aliases WHERE person_id=?", (loser_person_id,)
+        ).rowcount
+        moved_mentions = conn.execute(
+            "UPDATE mentions SET person_id=? WHERE person_id=?",
+            (survivor_person_id, loser_person_id),
+        ).rowcount
+        # person_groups: PRIMARY KEY (person_id, group_id), so INSERT OR IGNORE handles dups.
+        conn.execute(
+            """INSERT OR IGNORE INTO person_groups(person_id, group_id)
+               SELECT ?, group_id FROM person_groups WHERE person_id=?""",
+            (survivor_person_id, loser_person_id),
+        )
+        moved_groups = conn.execute(
+            "DELETE FROM person_groups WHERE person_id=?", (loser_person_id,)
+        ).rowcount
+        conn.execute("DELETE FROM people WHERE id=?", (loser_person_id,))
+        discarded = {k: loser[k] for k in
+                     ("role", "notes", "summary", "email", "phone", "address") if loser[k]}
+    return {
+        "survivor_person_id": survivor_person_id,
+        "merged_person_id": loser_person_id,
+        "merged_canonical_name": loser["canonical_name"],
+        "moved": {"aliases": moved_aliases, "mentions": moved_mentions,
+                  "groups": moved_groups},
+        "discarded_fields": discarded,
+    }
+
+
+@mcp.tool()
 def get_related_people(person_id: int, limit: int = 10) -> dict:
     """Emergent network: people most often mentioned in the same entries as this
     person, ranked by shared-entry count. No tagging required — this is derived
@@ -1417,6 +1482,69 @@ def get_exercise_history(exercise_id: Optional[int] = None,
         sess["sets"].append(st)
     return {"exercise_id": exercise_id, "name": ex["name"],
             "sessions": sessions[:limit], "count": min(len(sessions), limit)}
+
+
+@trainer_mcp.tool()
+def get_personal_records(exercise_id: Optional[int] = None,
+                         name: Optional[str] = None) -> dict:
+    """Personal bests for one exercise — the data layer for "have I ever done X?"
+    or "what's my heaviest Y?". Pass `exercise_id` or `name` (fuzzy-matched like
+    get_exercise_history). Returns only the fields that apply to what's been
+    logged; nothing for an empty exercise.
+
+    Lift PRs (any set with weight+reps): `heaviest` (max weight_lbs), `most_reps`
+    (most reps in a single set), `best_e1rm` (Epley estimate: w × (1 + reps/30)).
+    Cardio PRs (sets with duration/distance): `longest_distance`,
+    `longest_duration`, and `fastest_pace` (minutes per mile, only computed for
+    sets where distance ≥ 1 mile, to avoid noisy warm-up bouts)."""
+    with db() as conn:
+        ex = (conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+              if exercise_id is not None else _resolve_exercise(conn, name or ""))
+        if not ex:
+            return {"error": "no matching exercise"}
+        rows = conn.execute(
+            """SELECT s.id, s.weight_lbs, s.reps, s.rpe, s.duration_seconds,
+                      s.distance_miles, w.workout_date
+               FROM sets s JOIN workouts w ON w.id = s.workout_id
+               WHERE s.exercise_id=?""",
+            (ex["id"],),
+        ).fetchall()
+
+    def _brief(r: dict) -> dict:
+        d = {"set_id": r["id"], "date": r["workout_date"]}
+        for k in ("weight_lbs", "reps", "rpe", "duration_seconds", "distance_miles"):
+            if r[k] is not None:
+                d[k] = r[k]
+        return d
+
+    out = {"exercise_id": ex["id"], "name": ex["name"], "set_count": len(rows)}
+    if heaviest := max((r for r in rows if r["weight_lbs"] is not None),
+                       key=lambda r: r["weight_lbs"], default=None):
+        out["heaviest"] = _brief(heaviest)
+    if most_reps := max((r for r in rows if r["reps"] is not None),
+                        key=lambda r: r["reps"], default=None):
+        out["most_reps"] = _brief(most_reps)
+    best_e1rm, best_e1rm_value = None, 0.0
+    for r in rows:
+        if r["weight_lbs"] and r["reps"]:
+            e1rm = r["weight_lbs"] * (1 + r["reps"] / 30)
+            if e1rm > best_e1rm_value:
+                best_e1rm, best_e1rm_value = r, e1rm
+    if best_e1rm:
+        out["best_e1rm"] = {**_brief(best_e1rm),
+                            "estimated_1rm_lbs": round(best_e1rm_value, 1)}
+    if longest_dist := max((r for r in rows if r["distance_miles"] is not None),
+                           key=lambda r: r["distance_miles"], default=None):
+        out["longest_distance"] = _brief(longest_dist)
+    if longest_dur := max((r for r in rows if r["duration_seconds"] is not None),
+                          key=lambda r: r["duration_seconds"], default=None):
+        out["longest_duration"] = _brief(longest_dur)
+    paced = [(r, r["duration_seconds"] / r["distance_miles"] / 60) for r in rows
+             if r["duration_seconds"] and r["distance_miles"] and r["distance_miles"] >= 1.0]
+    if paced:
+        fastest, mpm = min(paced, key=lambda x: x[1])
+        out["fastest_pace"] = {**_brief(fastest), "minutes_per_mile": round(mpm, 2)}
+    return out
 
 
 @trainer_mcp.tool()
