@@ -1485,6 +1485,69 @@ def get_exercise_history(exercise_id: Optional[int] = None,
 
 
 @trainer_mcp.tool()
+def get_personal_records(exercise_id: Optional[int] = None,
+                         name: Optional[str] = None) -> dict:
+    """Personal bests for one exercise — the data layer for "have I ever done X?"
+    or "what's my heaviest Y?". Pass `exercise_id` or `name` (fuzzy-matched like
+    get_exercise_history). Returns only the fields that apply to what's been
+    logged; nothing for an empty exercise.
+
+    Lift PRs (any set with weight+reps): `heaviest` (max weight_lbs), `most_reps`
+    (most reps in a single set), `best_e1rm` (Epley estimate: w × (1 + reps/30)).
+    Cardio PRs (sets with duration/distance): `longest_distance`,
+    `longest_duration`, and `fastest_pace` (minutes per mile, only computed for
+    sets where distance ≥ 1 mile, to avoid noisy warm-up bouts)."""
+    with db() as conn:
+        ex = (conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+              if exercise_id is not None else _resolve_exercise(conn, name or ""))
+        if not ex:
+            return {"error": "no matching exercise"}
+        rows = conn.execute(
+            """SELECT s.id, s.weight_lbs, s.reps, s.rpe, s.duration_seconds,
+                      s.distance_miles, w.workout_date
+               FROM sets s JOIN workouts w ON w.id = s.workout_id
+               WHERE s.exercise_id=?""",
+            (ex["id"],),
+        ).fetchall()
+
+    def _brief(r: dict) -> dict:
+        d = {"set_id": r["id"], "date": r["workout_date"]}
+        for k in ("weight_lbs", "reps", "rpe", "duration_seconds", "distance_miles"):
+            if r[k] is not None:
+                d[k] = r[k]
+        return d
+
+    out = {"exercise_id": ex["id"], "name": ex["name"], "set_count": len(rows)}
+    if heaviest := max((r for r in rows if r["weight_lbs"] is not None),
+                       key=lambda r: r["weight_lbs"], default=None):
+        out["heaviest"] = _brief(heaviest)
+    if most_reps := max((r for r in rows if r["reps"] is not None),
+                        key=lambda r: r["reps"], default=None):
+        out["most_reps"] = _brief(most_reps)
+    best_e1rm, best_e1rm_value = None, 0.0
+    for r in rows:
+        if r["weight_lbs"] and r["reps"]:
+            e1rm = r["weight_lbs"] * (1 + r["reps"] / 30)
+            if e1rm > best_e1rm_value:
+                best_e1rm, best_e1rm_value = r, e1rm
+    if best_e1rm:
+        out["best_e1rm"] = {**_brief(best_e1rm),
+                            "estimated_1rm_lbs": round(best_e1rm_value, 1)}
+    if longest_dist := max((r for r in rows if r["distance_miles"] is not None),
+                           key=lambda r: r["distance_miles"], default=None):
+        out["longest_distance"] = _brief(longest_dist)
+    if longest_dur := max((r for r in rows if r["duration_seconds"] is not None),
+                          key=lambda r: r["duration_seconds"], default=None):
+        out["longest_duration"] = _brief(longest_dur)
+    paced = [(r, r["duration_seconds"] / r["distance_miles"] / 60) for r in rows
+             if r["duration_seconds"] and r["distance_miles"] and r["distance_miles"] >= 1.0]
+    if paced:
+        fastest, mpm = min(paced, key=lambda x: x[1])
+        out["fastest_pace"] = {**_brief(fastest), "minutes_per_mile": round(mpm, 2)}
+    return out
+
+
+@trainer_mcp.tool()
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
                    notes: Optional[str] = None) -> dict:
