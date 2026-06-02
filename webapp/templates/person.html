@@ -10,7 +10,7 @@
   {% if p.role %}<p class="text-sm text-gray-500 mt-1">{{ p.role }}</p>{% endif %}
   {% if p.groups %}
   <div class="flex flex-wrap gap-2 mt-3">
-    {% for g in p.groups %}<span class="badge">{{ g }}</span>{% endfor %}
+    {% for g in p.groups %}<a href="{{ base }}/group/{{ g }}" class="badge hover:border-black hover:text-black transition-colors">{{ g }}</a>{% endfor %}
   </div>
   {% endif %}
 </div>
