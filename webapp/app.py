@@ -312,10 +312,12 @@ async def workouts(request: Request):
         "exercises": sum(s["exercise_count"] for s in sessions),
         "sets": sum(s["set_count"] for s in sessions),
     }
+    months = data.calendar_months([s["date"] for s in sessions], today=server.today())
     return page(request, "workouts.html", active="workouts",
                 sessions=sessions, totals=totals,
                 muscles=brief.get("muscle_recency", []),
-                profile=brief.get("profile", {}))
+                profile=brief.get("profile", {}),
+                months=months)
 
 
 @app.get("/drinking")

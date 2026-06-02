@@ -14,3 +14,6 @@ venv/
 
 # OS / editor
 .DS_Store
+
+# DB backups from local seeding
+*.db.bak

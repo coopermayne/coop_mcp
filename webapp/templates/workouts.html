@@ -3,6 +3,8 @@
 {% block title %}Training · Journal{% endblock %}
 {% block content %}
 
+{{ m.floating_calendar(months) }}
+
 <h1 class="text-2xl font-bold tracking-tight mb-6">Training</h1>
 
 <div class="grid grid-cols-3 gap-6 mb-12">
@@ -38,7 +40,7 @@
 
 {% if sessions %}
   {% for s in sessions %}
-  <article class="border border-gray-200 rounded-[4px] mb-8">
+  <article id="day-{{ s.date }}" class="scroll-mt-20 border border-gray-200 rounded-[4px] mb-8">
     <div class="px-5 sm:px-6 pt-5 sm:pt-6 pb-4">
       <p class="text-xs uppercase tracking-widest text-gray-400">{{ s.date | long_date }}</p>
       <h2 class="text-xl sm:text-2xl font-semibold tracking-tight mt-1">{{ s.focus or "Workout" }}</h2>
