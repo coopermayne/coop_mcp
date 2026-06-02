@@ -435,6 +435,25 @@ def drinking(days: int = 30) -> dict:
         cur += timedelta(days=1)
     s["series"] = series
     s["peak"] = max([x["total"] for x in series] + [1.0])
+
+    today_d = date.fromisoformat(server.today())
+    with server.db() as conn:
+        agg = conn.execute(
+            "SELECT MIN(drink_date) AS first, ROUND(SUM(standard_drinks),2) AS total FROM drinks"
+        ).fetchone()
+        first_iso, total_all = agg["first"], agg["total"] or 0.0
+        if first_iso:
+            span = (today_d - date.fromisoformat(first_iso)).days + 1
+            s["avg_alltime"] = round(total_all / span, 2) if span > 0 else 0.0
+        else:
+            s["avg_alltime"] = 0.0
+        six_start = (today_d - timedelta(days=6)).isoformat()
+        six_end = (today_d - timedelta(days=1)).isoformat()
+        r6 = conn.execute(
+            "SELECT ROUND(SUM(standard_drinks),2) AS t FROM drinks WHERE drink_date BETWEEN ? AND ?",
+            (six_start, six_end),
+        ).fetchone()
+        s["avg_6d_excl_today"] = round((r6["t"] or 0.0) / 6, 2)
     return s
 
 
