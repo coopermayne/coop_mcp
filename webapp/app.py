@@ -324,7 +324,23 @@ async def people(request: Request, q: str = ""):
     q = (q or "").strip()
     res = server.list_people(query=q or None)
     return page(request, "people.html", active="people",
-                q=q, people=res["people"], count=res["count"])
+                q=q, people=res["people"], count=res["count"],
+                groups=data.groups_overview())
+
+
+@app.get("/groups")
+async def groups(request: Request):
+    return page(request, "groups.html", active="people",
+                groups=data.groups_overview())
+
+
+@app.get("/group/{name}")
+async def group(request: Request, name: str):
+    g = data.group_members(name)
+    if g is None:
+        return page(request, "notfound.html", active="people",
+                    status_code=404, what="group")
+    return page(request, "group.html", active="people", g=g)
 
 
 @app.get("/person/{person_id}")

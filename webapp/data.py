@@ -181,6 +181,47 @@ def pending_mentions(limit: int = 200) -> list:
 # People
 # --------------------------------------------------------------------------- #
 
+def groups_overview() -> list:
+    """All groups with member counts, sorted by size descending. Empty groups
+    (no current members) drop out so the page reflects what's actually wired up."""
+    with server.db() as conn:
+        rows = conn.execute(
+            """SELECT g.name, COUNT(pg.person_id) AS n
+               FROM groups g LEFT JOIN person_groups pg ON pg.group_id = g.id
+               GROUP BY g.id HAVING n > 0
+               ORDER BY n DESC, g.name"""
+        ).fetchall()
+    return [{"name": r["name"], "member_count": r["n"]} for r in rows]
+
+
+def group_members(name: str) -> dict | None:
+    """Members of one group with the same compact shape as /people rows (id, name,
+    role, last_mentioned, alias count, other groups). Returns None if the group
+    doesn't exist."""
+    with server.db() as conn:
+        g = conn.execute("SELECT id, name FROM groups WHERE name=?", (name,)).fetchone()
+        if not g:
+            return None
+        rows = conn.execute(
+            """SELECT p.id, p.canonical_name, p.role,
+                      (SELECT COUNT(*) FROM aliases a WHERE a.person_id=p.id) AS aliases,
+                      (SELECT MAX(e.entry_date) FROM mentions m
+                         JOIN entries e ON e.id = m.entry_id
+                        WHERE m.person_id = p.id) AS last_mentioned
+               FROM people p JOIN person_groups pg ON pg.person_id = p.id
+               WHERE pg.group_id = ?
+               ORDER BY last_mentioned IS NULL, last_mentioned DESC, p.canonical_name""",
+            (g["id"],),
+        ).fetchall()
+        members = []
+        for r in rows:
+            other = [og for og in server._groups_for(conn, r["id"]) if og != g["name"]]
+            members.append({"person_id": r["id"], "name": r["canonical_name"],
+                            "role": r["role"], "aliases": r["aliases"],
+                            "last_mentioned": r["last_mentioned"], "groups": other})
+    return {"name": g["name"], "members": members, "count": len(members)}
+
+
 def person_detail(person_id: int, history_limit: int = 60):
     """Everything the read UI shows for one person."""
     with server.db() as conn:

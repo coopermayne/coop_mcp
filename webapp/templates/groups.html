@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "macros.html" as m with context %}
+{% block title %}Groups · Journal{% endblock %}
+{% block content %}
+
+<a href="{{ base }}/people" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← People</a>
+
+<div class="mt-4 flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">Groups</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ groups | length }}</span>
+</div>
+
+{% if groups %}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for g in groups %}
+  <a href="{{ base }}/group/{{ g.name }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors flex items-baseline justify-between gap-3">
+    <span class="text-sm font-medium">{{ g.name }}</span>
+    <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ g.member_count }} {% if g.member_count == 1 %}person{% else %}people{% endif %}</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400">No groups yet.</p>
+{% endif %}
+
+{% endblock %}
