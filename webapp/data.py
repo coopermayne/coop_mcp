@@ -329,16 +329,46 @@ def workouts_full(limit: int = 20) -> list:
                      "distance_miles": s["distance_miles"], "note": s["note"]}
                 )
             exercises = [by_ex[i] for i in order]
+            # latest bodyweight reading on the day of this session, if any
+            bw = conn.execute(
+                "SELECT weight_lbs FROM body_weight WHERE weigh_date=? ORDER BY id DESC LIMIT 1",
+                (w["workout_date"],),
+            ).fetchone()
             out.append({
                 "workout_id": w["id"],
                 "date": w["workout_date"],
                 "focus": w["focus"],
                 "feeling": w["feeling"],
                 "notes": w["notes"],
+                "bodyweight": bw["weight_lbs"] if bw else None,
                 "exercises": exercises,
                 "exercise_count": len(exercises),
                 "set_count": len(srows),
             })
+    return out
+
+
+def bodyweight_overview() -> dict | None:
+    """Latest bodyweight plus 30-day change for the training page header. None if no
+    readings yet. Mirrors get_fitness_briefing's bodyweight block (latest reading; the
+    baseline is the most recent reading on or before 30 days ago)."""
+    with server.db() as conn:
+        latest = conn.execute(
+            "SELECT weigh_date, weight_lbs FROM body_weight ORDER BY weigh_date DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if not latest:
+            return None
+        from datetime import date as _date
+        thirty_ago = _date.fromordinal(
+            _date.fromisoformat(server.today()).toordinal() - 30).isoformat()
+        base = conn.execute(
+            """SELECT weight_lbs FROM body_weight WHERE weigh_date <= ?
+               ORDER BY weigh_date DESC, id DESC LIMIT 1""",
+            (thirty_ago,),
+        ).fetchone()
+    out = {"latest_lbs": latest["weight_lbs"], "date": latest["weigh_date"]}
+    if base:
+        out["change_30d_lbs"] = round(latest["weight_lbs"] - base["weight_lbs"], 1)
     return out
 
 

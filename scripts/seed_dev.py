@@ -348,6 +348,18 @@ print(f"workouts logged: {len(WORKOUTS)}")
 
 
 # --------------------------------------------------------------------------- #
+# Bodyweight — a gentle downward trend over the period (weight-loss journey),
+# logged on training days near the workout.
+WEIGHTS = [
+    ("2026-04-12", 198.6), ("2026-04-26", 197.2), ("2026-05-10", 195.8),
+    ("2026-05-18", 194.9), ("2026-05-28", 193.4), ("2026-05-31", 192.8),
+]
+for wd, lbs in WEIGHTS:
+    server.log_bodyweight(weight_lbs=lbs, weigh_date=wd)
+print(f"bodyweight readings logged: {len(WEIGHTS)}")
+
+
+# --------------------------------------------------------------------------- #
 # Profile
 server.update_profile({
     "injuries": "occasional right shoulder twinge on overhead pressing",
