@@ -281,9 +281,10 @@ async def journal(request: Request, q: str = ""):
     for day in res["days"]:
         for e in day["entries"]:
             e["body_html"] = linkify_people(e["body"], e["people"], base)
+    months = data.calendar_months([d["date"] for d in res["days"]], today=server.today())
     return page(request, "journal.html", active="journal",
                 q="", days=res["days"], count=res["total"], searching=False,
-                pending_count=pending_n)
+                pending_count=pending_n, months=months)
 
 
 @app.get("/pending")
