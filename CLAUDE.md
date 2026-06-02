@@ -169,6 +169,15 @@ working.
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
   `muscle_recency`.
+- `body_weight` — bodyweight readings, one row per weigh-in, keyed by `weigh_date`
+  (the drinks pattern, not a `workouts` column: weight is a daily metric you may log on
+  rest days too, and the point is the trend). The latest reading on a day is "the"
+  weight for that day; a day with no row simply wasn't weighed. `log_bodyweight` adds
+  one (returning `change_lbs` vs the prior weigh-in) and `get_fitness_briefing` surfaces
+  the latest reading + 30-day change; the longer trend lives in the webapp (which joins
+  the reading onto each session by date, shown inline, and as a header trend), not a
+  dedicated server tool. There is NO weight-goal/target logic in the server — the
+  coaching is the model's, as everywhere else.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
   `update_profile` and surfaced by `get_fitness_briefing`.
 

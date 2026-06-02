@@ -339,6 +339,7 @@ async def workouts(request: Request):
                 sessions=sessions, totals=totals,
                 muscles=brief.get("muscle_recency", []),
                 profile=brief.get("profile", {}),
+                weight=data.bodyweight_overview(),
                 months=months)
 
 
