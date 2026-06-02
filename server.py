@@ -761,28 +761,77 @@ def get_entry(entry_id: int, include_raw: bool = True) -> dict:
 
 @mcp.tool()
 def update_entry(entry_id: int, entry_date: Optional[str] = None,
-                 body: Optional[str] = None, raw_body: Optional[str] = None) -> dict:
+                 body: Optional[str] = None, raw_body: Optional[str] = None,
+                 mentions: Optional[list[str]] = None) -> dict:
     """Edit an existing journal entry. Only non-null args are written.
 
     Use `entry_date` (YYYY-MM-DD, Pacific) to correct the day an entry is ABOUT —
     e.g. the user said "that was actually yesterday". Dates are Pacific time; resolve
     relative phrases ("yesterday") against the current Pacific date (see get_briefing's
     `now`) before passing a concrete date here. `body` replaces the cleaned journal
-    text; `raw_body` replaces the verbatim original. This does NOT re-run people
-    matching — to fix who's mentioned, leave the mention pending / use link_mentions."""
+    text; `raw_body` replaces the verbatim original.
+
+    `mentions` reconciles WHO the entry references when you change the text. As in
+    add_journal_entry, the server does NOT read the text — YOU pass the full new list
+    of surface forms for the entry, and the rows are reconciled deterministically:
+      - a surface form already on the entry is KEPT (its resolved person-link is
+        preserved — you don't re-link people you'd already sorted out);
+      - a NEW surface form is added as a pending mention; its candidates come back in
+        the result so you can resolve it with link_mentions (learn_alias as usual);
+      - a surface form no longer in the list has its mention row REMOVED. (Any alias
+        learned from it stays on the person — aliases are independent of the entry.)
+    Omit `mentions` (leave it null) to edit text/date only and leave mentions
+    untouched — the common typo/date fix. Pass [] to clear all of the entry's mentions."""
     if err := _bad_date(entry_date, "entry_date"):
         return err
     fields = {"entry_date": entry_date, "body": body, "raw_body": raw_body}
     sets = {k: v for k, v in fields.items() if v is not None}
-    if not sets:
+    if not sets and mentions is None:
         return {"entry_id": entry_id, "updated": []}
     with db() as conn:
-        exists = conn.execute("SELECT 1 FROM entries WHERE id=?", (entry_id,)).fetchone()
-        if not exists:
+        row = conn.execute(
+            "SELECT body, raw_body FROM entries WHERE id=?", (entry_id,)
+        ).fetchone()
+        if not row:
             return {"error": f"no entry with id {entry_id}"}
-        cols = ", ".join(f"{k}=?" for k in sets)
-        conn.execute(f"UPDATE entries SET {cols} WHERE id=?", (*sets.values(), entry_id))
-    return {"entry_id": entry_id, "updated": list(sets)}
+        if sets:
+            cols = ", ".join(f"{k}=?" for k in sets)
+            conn.execute(f"UPDATE entries SET {cols} WHERE id=?", (*sets.values(), entry_id))
+        out = {"entry_id": entry_id, "updated": list(sets)}
+        if mentions is not None:
+            # Snippet against the new text where given, else the stored text.
+            snippet_source = (raw_body if raw_body is not None else row["raw_body"]) \
+                or (body if body is not None else row["body"]) or ""
+            existing = [dict(m) for m in conn.execute(
+                "SELECT id, surface_form FROM mentions WHERE entry_id=?", (entry_id,)
+            ).fetchall()]
+            kept, created = [], []
+            for surface in mentions:
+                key = surface.lower()
+                match = next((m for m in existing if m["surface_form"].lower() == key), None)
+                if match:  # already referenced — keep its link, refresh its snippet
+                    existing.remove(match)
+                    kept.append(match["id"])
+                    conn.execute(
+                        "UPDATE mentions SET context_snippet=? WHERE id=?",
+                        (_snippet(snippet_source, surface), match["id"]),
+                    )
+                else:  # newly referenced — queue it for resolution
+                    mid = conn.execute(
+                        """INSERT INTO mentions(entry_id, surface_form, context_snippet,
+                           status, created_at) VALUES (?,?,?, 'pending', ?)""",
+                        (entry_id, surface, _snippet(snippet_source, surface), now()),
+                    ).lastrowid
+                    created.append({
+                        "mention_id": mid,
+                        "surface_form": surface,
+                        "candidates": find_candidates(conn, surface),
+                    })
+            removed = [m["id"] for m in existing]  # no longer referenced
+            for mid in removed:
+                conn.execute("DELETE FROM mentions WHERE id=?", (mid,))
+            out["mentions"] = {"created": created, "kept": kept, "removed": removed}
+        return out
 
 
 def _delete_record(kind: str, id: int) -> dict:
