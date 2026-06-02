@@ -60,7 +60,7 @@
     </div>
   </header>
   {% endif %}
-  <main class="max-w-3xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
+  <main class="{% block main_max %}max-w-3xl{% endblock %} mx-auto px-4 sm:px-6 py-10 sm:py-14">
     {% block content %}{% endblock %}
   </main>
 </body>
