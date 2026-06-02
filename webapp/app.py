@@ -249,7 +249,12 @@ async def health():
 
 @app.get("/")
 async def index(request: Request):
-    return page(request, "index.html", active="home", d=data.dashboard())
+    base = base_path(request)
+    d = data.home()
+    for day in d["days"]:
+        for e in day["entries"]:
+            e["body_html"] = linkify_people(e["body"], e["people"], base)
+    return page(request, "index.html", active="home", d=d)
 
 
 def _pending_count() -> int:
