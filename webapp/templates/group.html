@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "macros.html" as m with context %}
+{% block title %}{{ g.name }} · Groups{% endblock %}
+{% block content %}
+
+<a href="{{ base }}/groups" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Groups</a>
+
+<div class="mt-4 flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">{{ g.name }}</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ g.count }}</span>
+</div>
+
+{% if g.members %}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for p in g.members %}
+  <a href="{{ base }}/person/{{ p.person_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    <div class="flex items-baseline justify-between gap-3">
+      <div class="min-w-0">
+        <span class="text-sm font-medium">{{ p.name }}</span>
+        {% if p.role %}<span class="text-xs text-gray-500 ml-2">{{ p.role }}</span>{% endif %}
+      </div>
+      {% if p.last_mentioned %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ p.last_mentioned | short_date }}</span>{% endif %}
+    </div>
+    {% if p.groups %}
+    <div class="flex flex-wrap items-center gap-2 mt-1.5">
+      {% for other in p.groups %}<span class="badge">{{ other }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400">No one in this group yet.</p>
+{% endif %}
+
+{% endblock %}
