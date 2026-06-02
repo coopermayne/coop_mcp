@@ -3,42 +3,83 @@
 {% block title %}Journal{% endblock %}
 {% block content %}
 
-{% if d.recent_entries %}
-<div class="mb-12">
+{% if d.days %}
+<section class="mb-12">
   <div class="flex items-baseline justify-between mb-4">
     <h2 class="text-xl font-semibold tracking-tight">Recent</h2>
     <a href="{{ base }}/journal" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">All entries</a>
   </div>
-  {% for e in d.recent_entries %}{{ m.entry_card(e) }}{% endfor %}
-</div>
+  {% for day in d.days %}{{ m.day_block(day) }}{% endfor %}
+</section>
 {% else %}
 <p class="text-sm text-gray-400 mb-12">No entries yet.</p>
 {% endif %}
 
-{% if d.last_session %}
-{% set s = d.last_session %}
-<div class="mb-12">
+{% set s = d.drink %}
+<section class="mb-12">
   <div class="flex items-baseline justify-between mb-4">
-    <h2 class="text-xl font-semibold tracking-tight">Last Session</h2>
+    <h2 class="text-xl font-semibold tracking-tight">Drinking</h2>
+    <a href="{{ base }}/drinking" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Last {{ s.window_days }} days</a>
+  </div>
+  <a href="{{ base }}/drinking" class="block border border-gray-200 rounded-[4px] px-5 sm:px-6 py-5 hover:border-black transition-colors">
+    <div class="flex items-end gap-px h-32">
+      {% for day in s.series %}
+        {% set t = day.total %}
+        {% if t <= 0 %}{% set c = '' %}
+        {% elif t <= 2 %}{% set c = '#d0d0d0' %}
+        {% elif t <= 4 %}{% set c = '#808080' %}
+        {% else %}{% set c = '#2a2a2a' %}{% endif %}
+        {% set h = (t / s.peak * 120) %}
+        <div class="flex-1 flex items-end h-full" title="{{ day.date }} — {{ t | num }}">
+          {% if t > 0 %}
+            <div class="w-full rounded-t-[2px]" style="height: {{ [h, 3] | max }}px; background: {{ c }}"></div>
+          {% else %}
+            <div class="w-full border-b border-dashed border-gray-200"></div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    <div class="flex justify-between text-[10px] uppercase tracking-widest text-gray-400 mt-2">
+      <span>{{ s.since | short_date }}</span>
+      <span>{{ s.until | short_date }}</span>
+    </div>
+  </a>
+</section>
+
+{% if d.last_session %}
+{% set w = d.last_session %}
+<section>
+  <div class="flex items-baseline justify-between mb-4">
+    <h2 class="text-xl font-semibold tracking-tight">Last Workout</h2>
     <a href="{{ base }}/workouts" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">All training</a>
   </div>
-  <a href="{{ base }}/workouts" class="block border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 hover:border-black transition-colors">
-    <p class="text-xs uppercase tracking-widest text-gray-400">{{ s.date | short_date }}</p>
-    <p class="text-base font-semibold tracking-tight mt-1">{{ s.focus or "Workout" }}</p>
-    <p class="text-xs text-gray-500 mt-1">{{ s.exercise_count }} exercises · {{ s.set_count }} sets{% if s.feeling %} · {{ s.feeling }}{% endif %}</p>
-  </a>
-</div>
+  <article class="border border-gray-200 rounded-[4px]">
+    <div class="px-5 sm:px-6 pt-5 sm:pt-6 pb-4">
+      <p class="text-xs uppercase tracking-widest text-gray-400">{{ w.date | long_date }}</p>
+      <h3 class="text-xl sm:text-2xl font-semibold tracking-tight mt-1">{{ w.focus or "Workout" }}</h3>
+      <p class="text-sm text-gray-500 mt-0.5">{{ w.exercise_count }} exercises · {{ w.set_count }} sets</p>
+    </div>
+    <div class="border-t border-gray-100 px-5 sm:px-6 py-3">
+      {% for ex in w.exercises %}
+      <div class="flex items-start justify-between gap-3 py-1.5">
+        <div class="min-w-0">
+          <span class="text-sm font-medium">{{ ex.name }}</span>
+          {% if ex.category and ex.category != 'strength' %}<span class="badge ml-1.5">{{ ex.category }}</span>{% endif %}
+        </div>
+        <div class="flex flex-wrap gap-1 justify-end">
+          {% for st in ex.sets %}<span class="set-pill" {% if st.note %}title="{{ st.note }}"{% endif %}>{{ st | set_label }}</span>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if w.feeling or w.notes %}
+    <div class="border-t border-gray-100 px-5 sm:px-6 py-4 space-y-1.5">
+      {% if w.feeling %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Feeling:</span> {{ w.feeling }}</p>{% endif %}
+      {% if w.notes %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Notes:</span> {{ w.notes }}</p>{% endif %}
+    </div>
+    {% endif %}
+  </article>
+</section>
 {% endif %}
-
-<div class="grid grid-cols-2 gap-6">
-  <a href="{{ base }}/drinking" class="border border-gray-200 rounded-[4px] px-5 py-4 hover:border-black transition-colors">
-    <p class="text-2xl font-semibold tracking-tight">{{ d.drinks_30d | num }}</p>
-    <p class="text-xs uppercase tracking-widest text-gray-400 mt-1">Drinks · 30d</p>
-  </a>
-  <a href="{{ base }}/people" class="border border-gray-200 rounded-[4px] px-5 py-4 hover:border-black transition-colors">
-    <p class="text-2xl font-semibold tracking-tight">{{ d.pending_mentions }}</p>
-    <p class="text-xs uppercase tracking-widest text-gray-400 mt-1">Pending Mentions</p>
-  </a>
-</div>
 
 {% endblock %}

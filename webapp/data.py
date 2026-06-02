@@ -339,31 +339,17 @@ def recent_drinks(limit: int = 30) -> list:
 
 
 # --------------------------------------------------------------------------- #
-# Dashboard
+# Home (landing page)
 # --------------------------------------------------------------------------- #
 
-def dashboard() -> dict:
-    """One roll-up for the landing page."""
-    with server.db() as conn:
-        entries_n = conn.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"]
-        people_n = conn.execute("SELECT COUNT(*) AS n FROM people").fetchone()["n"]
-        pending_n = conn.execute(
-            "SELECT COUNT(*) AS n FROM mentions WHERE status='pending'"
-        ).fetchone()["n"]
-        workouts_n = conn.execute("SELECT COUNT(*) AS n FROM workouts").fetchone()["n"]
-        last_workout = conn.execute(
-            "SELECT MAX(workout_date) AS d FROM workouts"
-        ).fetchone()["d"]
-    drink = server.get_drink_summary(days=30)
+def home() -> dict:
+    """The landing page roll-up: two most recent journal entries (day-grouped,
+    with their resolved people attached for inline linking), the 30-day drink
+    series for the chart, and the most recent workout. The route layer is
+    responsible for converting the entry bodies to body_html (needs the request's
+    base path)."""
     return {
-        "entries_count": entries_n,
-        "people_count": people_n,
-        "pending_mentions": pending_n,
-        "workouts_count": workouts_n,
-        "last_workout": last_workout,
-        "days_since_workout": server._days_since(last_workout),
-        "sober_streak": drink.get("current_sober_streak"),
-        "drinks_30d": drink.get("total_standard_drinks"),
-        "recent_entries": list_entries(limit=5)["entries"],
+        "days": list_days(limit_entries=2)["days"],
+        "drink": drinking(days=30),
         "last_session": (workouts_full(limit=1) or [None])[0],
     }
