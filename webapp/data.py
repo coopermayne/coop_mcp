@@ -153,6 +153,30 @@ def entry_with_people(entry_id: int):
     return e
 
 
+def pending_mentions(limit: int = 200) -> list:
+    """The resolution queue, enriched for the web view: each pending mention with
+    its surface form, context snippet, entry_date, entry_id (so you can jump to
+    the entry), and the same candidate matches `list_pending_mentions` returns —
+    this UI is read-only, so resolution still happens in conversation with Claude.
+    """
+    out = server.list_pending_mentions(limit=limit)["pending"]
+    with server.db() as conn:
+        ids = {p["mention_id"] for p in out}
+        if ids:
+            qs = ",".join("?" * len(ids))
+            entry_by_mention = {
+                r["mid"]: r["eid"] for r in conn.execute(
+                    f"SELECT id AS mid, entry_id AS eid FROM mentions WHERE id IN ({qs})",
+                    list(ids),
+                )
+            }
+        else:
+            entry_by_mention = {}
+    for p in out:
+        p["entry_id"] = entry_by_mention.get(p["mention_id"])
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # People
 # --------------------------------------------------------------------------- #
