@@ -127,7 +127,13 @@ All dates here are Pacific (America/Los_Angeles). get_fitness_briefing returns `
 computing any date.
 
 Start a training session with get_fitness_briefing to load the profile (injuries,
-split, goals), per-muscle recency, and recent sessions before recommending work.""")
+split, goals), per-muscle recency, recent sessions (with their notes), and the latest
+bodyweight before recommending work. Recent-session notes are durable context — read
+them so a "left shoulder twinge" last time shapes what you program next.
+
+After a session is logged, nudge the user to weigh in and capture it with
+log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
+only useful if the readings are regular.""")
 if _trainer_auth is not None:
     trainer_mcp.add_middleware(AllowlistMiddleware())
 
@@ -282,6 +288,18 @@ CREATE TABLE IF NOT EXISTS sets (
 );
 CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);
 CREATE INDEX IF NOT EXISTS idx_sets_exercise ON sets(exercise_id);
+
+-- Bodyweight readings — a standalone daily health metric (like drinks), keyed by
+-- the day weighed, NOT tied to a workout row. Several readings on a day are allowed
+-- (the latest is "the" weight for that day); a day with no row simply wasn't weighed.
+CREATE TABLE IF NOT EXISTS body_weight (
+    id          INTEGER PRIMARY KEY,
+    weigh_date  TEXT NOT NULL,        -- YYYY-MM-DD (Pacific): the day weighed
+    weight_lbs  REAL NOT NULL,
+    note        TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bodyweight_date ON body_weight(weigh_date);
 
 -- Generic JSON settings (trainer profile: injury, split, goals, preferences).
 CREATE TABLE IF NOT EXISTS settings (
@@ -852,7 +870,8 @@ def _delete_record(kind: str, id: int) -> dict:
     """Shared delete implementation behind both servers' delete_record tools. Maps
     `kind` to its table, deletes the row, and (for sets) renumbers the remaining
     set_index so it stays contiguous."""
-    tables = {"entry": "entries", "drink": "drinks", "workout": "workouts", "set": "sets"}
+    tables = {"entry": "entries", "drink": "drinks", "workout": "workouts",
+              "set": "sets", "weight": "body_weight"}
     table = tables.get(kind)
     if not table:
         return {"error": f"unknown kind {kind!r}; use one of {sorted(tables)}"}
@@ -1550,23 +1569,36 @@ def get_personal_records(exercise_id: Optional[int] = None,
 @trainer_mcp.tool()
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
-                   notes: Optional[str] = None) -> dict:
+                   notes: Optional[str] = None,
+                   append_note: Optional[str] = None) -> dict:
     """Edit a session's metadata. Only non-null args are written. Use `workout_date`
     (YYYY-MM-DD, Pacific) to move a session to the right day, or set focus/feeling/
-    notes after the fact. To change the SETS, use update_set, log_workout (with
-    `workout_id` to append), or delete_record(kind="set"); to remove the whole session
-    use delete_record(kind="workout")."""
+    notes after the fact.
+
+    `notes` REPLACES the note; `append_note` ADDS a line to whatever's already there
+    (newline-joined) — use it to jot observations as they come up mid- or post-session
+    ("right knee felt tight on the last set") without clobbering earlier notes. These
+    notes resurface in get_fitness_briefing, so they're how a niggle today becomes a
+    caution next session. Pass one or the other, not both.
+
+    To change the SETS, use update_set, log_workout (with `workout_id` to append), or
+    delete_record(kind="set"); to remove the whole session use
+    delete_record(kind="workout")."""
     if err := _bad_date(workout_date, "workout_date"):
         return err
     fields = {"workout_date": workout_date, "focus": focus,
               "feeling": feeling, "notes": notes}
     sets = {k: v for k, v in fields.items() if v is not None}
-    if not sets:
-        return {"workout_id": workout_id, "updated": []}
     with db() as conn:
         exists = conn.execute("SELECT 1 FROM workouts WHERE id=?", (workout_id,)).fetchone()
         if not exists:
             return {"error": f"no workout with id {workout_id}"}
+        if append_note:
+            cur = conn.execute("SELECT notes FROM workouts WHERE id=?", (workout_id,)).fetchone()
+            existing = (cur["notes"] or "").strip()
+            sets["notes"] = f"{existing}\n{append_note}".strip() if existing else append_note
+        if not sets:
+            return {"workout_id": workout_id, "updated": []}
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(f"UPDATE workouts SET {cols} WHERE id=?", (*sets.values(), workout_id))
     return {"workout_id": workout_id, "updated": list(sets)}
@@ -1602,12 +1634,114 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
     return {"set_id": set_id, "updated": list(sets)}
 
 
+# --------------------------------------------------------------------------- #
+# Trainer: bodyweight
+# --------------------------------------------------------------------------- #
+
+@trainer_mcp.tool()
+def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
+                   note: Optional[str] = None) -> dict:
+    """Record a bodyweight reading, in POUNDS. The user weighs in around training (a
+    standing habit on their weight-loss journey) — log it whenever they report a number.
+
+    One reading per occasion; the latest reading on a day is treated as that day's
+    weight, and a day with no reading just wasn't weighed (nothing is stored for it).
+    Returns the reading plus `change_lbs` versus the previous weigh-in (negative = down).
+
+    Args:
+        weight_lbs: The scale reading in pounds.
+        weigh_date: Day weighed, YYYY-MM-DD (Pacific). Defaults to today.
+        note: Optional context, e.g. "morning, before coffee".
+    """
+    if err := _bad_date(weigh_date, "weigh_date"):
+        return err
+    if weight_lbs <= 0:
+        return {"error": f"weight_lbs must be positive, got {weight_lbs}"}
+    d = weigh_date or today()
+    with db() as conn:
+        rid = conn.execute(
+            "INSERT INTO body_weight(weigh_date, weight_lbs, note, created_at) VALUES (?,?,?,?)",
+            (d, weight_lbs, note, now()),
+        ).lastrowid
+        prev = conn.execute(
+            """SELECT weight_lbs FROM body_weight
+               WHERE weigh_date < ? ORDER BY weigh_date DESC, id DESC LIMIT 1""",
+            (d,),
+        ).fetchone()
+    out = {"bodyweight_id": rid, "weigh_date": d, "weight_lbs": weight_lbs}
+    if prev:
+        out["change_lbs"] = round(weight_lbs - prev["weight_lbs"], 1)
+    return out
+
+
+@trainer_mcp.tool()
+def get_weight_summary(days: int = 90, since: Optional[str] = None,
+                       until: Optional[str] = None, include_rows: bool = False) -> dict:
+    """Bodyweight trend over a window — the data layer for "how's the weight going?".
+
+    Uses the default `days` window or an explicit `since`/`until` range. Returns one
+    point per day (the latest reading that day), newest first, plus `latest`,
+    `change_in_window_lbs` (latest minus the oldest day in the window; negative = down),
+    `min`, `max`, and the reading `count`. The trend judgment is yours to make from it.
+
+    Set `include_rows=True` to also get individual readings WITH ids (`readings`) —
+    needed to FIX a mistyped weigh-in: find the `bodyweight_id`, then
+    delete_record(kind="weight", id=...) and re-log it.
+
+    Args:
+        days: Trailing window size in days (ignored if `since` is given).
+        since: Start date YYYY-MM-DD (inclusive).
+        until: End date YYYY-MM-DD (inclusive). Defaults to today.
+        include_rows: Also return individual readings (with `bodyweight_id`) for editing.
+    """
+    if err := _bad_date(since, "since") or _bad_date(until, "until"):
+        return err
+    until = until or today()
+    if since is None:
+        since = date.fromordinal(
+            date.fromisoformat(until).toordinal() - max(days, 1) + 1).isoformat()
+    with db() as conn:
+        # one point per day: the latest reading (highest id) on each date in range
+        rows = conn.execute(
+            """SELECT weigh_date, weight_lbs FROM body_weight
+               WHERE id IN (SELECT MAX(id) FROM body_weight
+                            WHERE weigh_date BETWEEN ? AND ? GROUP BY weigh_date)
+               ORDER BY weigh_date DESC""",
+            (since, until),
+        ).fetchall()
+        row_list = None
+        if include_rows:
+            rr = conn.execute(
+                """SELECT id, weigh_date, weight_lbs, note FROM body_weight
+                   WHERE weigh_date BETWEEN ? AND ?
+                   ORDER BY weigh_date DESC, id DESC""",
+                (since, until),
+            ).fetchall()
+            row_list = [{"bodyweight_id": r["id"], "weigh_date": r["weigh_date"],
+                         "weight_lbs": r["weight_lbs"], "note": r["note"]} for r in rr]
+    daily = [{"date": r["weigh_date"], "weight_lbs": r["weight_lbs"]} for r in rows]
+    window_days = date.fromisoformat(until).toordinal() - date.fromisoformat(since).toordinal() + 1
+    out = {"since": since, "until": until, "window_days": window_days,
+           "count": len(daily), "daily": daily}
+    if daily:
+        weights = [d["weight_lbs"] for d in daily]
+        out["latest"] = daily[0]
+        out["change_in_window_lbs"] = round(daily[0]["weight_lbs"] - daily[-1]["weight_lbs"], 1)
+        out["min"] = min(weights)
+        out["max"] = max(weights)
+    if row_list is not None:
+        out["readings"] = row_list
+    return out
+
+
 @trainer_mcp.tool()
 def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
-    in the last 7 days), and recent sessions. Call this at the start of a training
+    in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
+    logged last time is a caution this time), and `bodyweight` (latest reading, days
+    since, and 30-day change; negative = down). Call this at the start of a training
     conversation to decide what to work and what to rest: muscles with the most
     days_since (and low recent volume) are recovered and due; ones trained in the last
     ~1-2 days should rest. Cardio is tracked separately because it carries no muscle
@@ -1638,7 +1772,7 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
             (week_ago, week_ago),
         ).fetchall()
         recent = conn.execute(
-            "SELECT id, workout_date, focus, feeling FROM workouts ORDER BY workout_date DESC, id DESC LIMIT ?",
+            "SELECT id, workout_date, focus, feeling, notes FROM workouts ORDER BY workout_date DESC, id DESC LIMIT ?",
             (recent_workouts,),
         ).fetchall()
         recent_out = []
@@ -1647,9 +1781,29 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                 "SELECT COUNT(DISTINCT exercise_id) AS e, COUNT(*) AS s FROM sets WHERE workout_id=?",
                 (w["id"],),
             ).fetchone()
-            recent_out.append({"workout_id": w["id"], "date": w["workout_date"],
-                               "focus": w["focus"], "feeling": w["feeling"],
-                               "exercises": n["e"], "sets": n["s"]})
+            row = {"workout_id": w["id"], "date": w["workout_date"],
+                   "focus": w["focus"], "feeling": w["feeling"],
+                   "exercises": n["e"], "sets": n["s"]}
+            if w["notes"]:
+                row["notes"] = w["notes"]
+            recent_out.append(row)
+        # latest bodyweight + 30-day trend (negative change = losing)
+        bw_latest = conn.execute(
+            "SELECT weigh_date, weight_lbs FROM body_weight ORDER BY weigh_date DESC, id DESC LIMIT 1"
+        ).fetchone()
+        bodyweight = None
+        if bw_latest:
+            thirty_ago = date.fromordinal(date.fromisoformat(today()).toordinal() - 30).isoformat()
+            base = conn.execute(
+                """SELECT weight_lbs FROM body_weight WHERE weigh_date <= ?
+                   ORDER BY weigh_date DESC, id DESC LIMIT 1""",
+                (thirty_ago,),
+            ).fetchone()
+            bodyweight = {"latest_lbs": bw_latest["weight_lbs"],
+                          "date": bw_latest["weigh_date"],
+                          "days_since": _days_since(bw_latest["weigh_date"])}
+            if base:
+                bodyweight["change_30d_lbs"] = round(bw_latest["weight_lbs"] - base["weight_lbs"], 1)
     recency = sorted(
         ({"muscle": r["muscle"], "last_trained": r["last_date"],
           "days_since": _days_since(r["last_date"]), "sets_last_7d": r["sets_7d"]}
@@ -1666,7 +1820,7 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     )
     return {"now": current_clock(), "profile": profile,
             "muscle_recency": recency, "cardio_recency": cardio,
-            "recent_workouts": recent_out}
+            "bodyweight": bodyweight, "recent_workouts": recent_out}
 
 
 @trainer_mcp.tool()
@@ -1696,10 +1850,12 @@ def delete_training_record(kind: str, id: int) -> dict:
       - "workout" — a whole session (all its sets go too).
       - "set"     — one logged set (remaining sets for that exercise are renumbered
                     so set_index stays contiguous).
-    Find ids with get_fitness_briefing or get_exercise_history."""
-    if kind not in ("workout", "set"):
+      - "weight"  — one bodyweight reading.
+    Find ids with get_fitness_briefing, get_exercise_history, or
+    get_weight_summary(include_rows=True)."""
+    if kind not in ("workout", "set", "weight"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['set', 'workout'] (use the journal server for entry/drink)"}
+                         "['set', 'weight', 'workout'] (use the journal server for entry/drink)"}
     return _delete_record(kind, id)
 
 

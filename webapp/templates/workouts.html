@@ -7,11 +7,24 @@
 
 <h1 class="text-2xl font-bold tracking-tight mb-6">Training</h1>
 
-<div class="grid grid-cols-3 gap-6 mb-12">
+<div class="grid grid-cols-3 gap-6 mb-{{ '6' if weight else '12' }}">
   {{ m.stat(totals.sessions, "Sessions") }}
   {{ m.stat(totals.exercises, "Exercises") }}
   {{ m.stat(totals.sets, "Total Sets") }}
 </div>
+
+{% if weight %}
+<p class="text-sm text-gray-500 mb-12">
+  <span class="text-gray-400 uppercase tracking-widest text-xs">Weight</span>
+  <span class="tabular-nums font-medium text-gray-700 ml-2">{{ weight.latest_lbs | num }} lbs</span>
+  {% if weight.change_30d_lbs is not none and weight.change_30d_lbs != 0 %}
+    {% set down = weight.change_30d_lbs < 0 %}
+    <span class="tabular-nums text-xs ml-1.5 {{ 'text-emerald-600' if down else 'text-gray-400' }}">
+      {{ '▼' if down else '▲' }} {{ weight.change_30d_lbs | abs | num }} lbs / 30d
+    </span>
+  {% endif %}
+</p>
+{% endif %}
 
 {% if muscles %}
 <div class="mb-12">
@@ -61,10 +74,11 @@
       {% endfor %}
     </div>
 
-    {% if s.feeling or s.notes %}
+    {% if s.feeling or s.notes or s.bodyweight is not none %}
     <div class="border-t border-gray-100 px-5 sm:px-6 py-4 space-y-1.5">
+      {% if s.bodyweight is not none %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Weight:</span> <span class="tabular-nums">{{ s.bodyweight | num }} lbs</span></p>{% endif %}
       {% if s.feeling %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Feeling:</span> {{ s.feeling }}</p>{% endif %}
-      {% if s.notes %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Notes:</span> {{ s.notes }}</p>{% endif %}
+      {% if s.notes %}<p class="text-xs text-gray-500 whitespace-pre-line"><span class="text-gray-400 font-medium">Notes:</span> {{ s.notes }}</p>{% endif %}
     </div>
     {% endif %}
   </article>
