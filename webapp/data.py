@@ -306,7 +306,8 @@ def workouts_full(limit: int = 20) -> list:
         ).fetchall()
         for w in ws:
             srows = conn.execute(
-                """SELECT s.weight_lbs, s.reps, s.rpe, s.note,
+                """SELECT s.weight_lbs, s.reps, s.rpe,
+                          s.duration_seconds, s.distance_miles, s.note,
                           e.id AS eid, e.name AS ename, e.category
                    FROM sets s JOIN exercises e ON e.id = s.exercise_id
                    WHERE s.workout_id = ? ORDER BY s.id""",
@@ -324,7 +325,8 @@ def workouts_full(limit: int = 20) -> list:
                     order.append(s["eid"])
                 by_ex[s["eid"]]["sets"].append(
                     {"weight_lbs": s["weight_lbs"], "reps": s["reps"],
-                     "rpe": s["rpe"], "note": s["note"]}
+                     "rpe": s["rpe"], "duration_seconds": s["duration_seconds"],
+                     "distance_miles": s["distance_miles"], "note": s["note"]}
                 )
             exercises = [by_ex[i] for i in order]
             out.append({

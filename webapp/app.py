@@ -85,14 +85,36 @@ def num(x):
     return f"{x:g}"
 
 
+def dur_label(seconds):
+    """Compact duration: '45m', '1h05m', '30s'."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m"
+    return f"{sec}s"
+
+
 def set_label(s):
-    w, r, rpe = s.get("weight_lbs"), s.get("reps"), s.get("rpe")
+    w, r = s.get("weight_lbs"), s.get("reps")
+    rpe = s.get("rpe")
+    dur, dist = s.get("duration_seconds"), s.get("distance_miles")
     if w is not None and r is not None:
         base = f"{num(w)} × {r}"
     elif r is not None:
         base = f"{r} rep" + ("" if r == 1 else "s")
     elif w is not None:
         base = f"{num(w)} lb"
+    elif dist is not None or dur is not None:
+        # Cardio: distance and/or time, whichever is recorded.
+        parts = []
+        if dist is not None:
+            parts.append(f"{num(dist)} mi")
+        if dur is not None:
+            parts.append(dur_label(dur))
+        base = " · ".join(parts)
     else:
         base = "—"
     if rpe is not None:
