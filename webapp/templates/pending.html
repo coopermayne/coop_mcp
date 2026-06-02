@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% import "macros.html" as m with context %}
+{% block title %}Pending mentions · Journal{% endblock %}
+{% block content %}
+
+<a href="{{ base }}/journal" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Journal</a>
+
+<div class="mt-4 flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">Pending mentions</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }}</span>
+</div>
+
+<p class="text-sm text-gray-500 mb-8 leading-relaxed">
+  Mentions captured but not yet pinned to a person. Resolution happens in conversation
+  with Claude — this page just makes the queue visible so you know what's waiting.
+</p>
+
+{% if items %}
+<div class="space-y-6">
+  {% for p in items %}
+  <article class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4">
+    <div class="flex items-baseline justify-between gap-3 mb-2">
+      <div class="min-w-0">
+        <span class="text-sm font-medium">{{ p.surface_form }}</span>
+        {% if p.entry_date %}<span class="text-[10px] uppercase tracking-widest text-gray-400 ml-2 tabular-nums">{{ p.entry_date | short_date }}</span>{% endif %}
+      </div>
+      {% if p.entry_id %}
+      <a href="{{ base }}/entry/{{ p.entry_id }}" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors shrink-0">Entry ›</a>
+      {% endif %}
+    </div>
+    {% if p.context %}
+    <p class="text-sm text-gray-600 leading-relaxed italic mb-3">"{{ p.context }}"</p>
+    {% endif %}
+    {% if p.candidates %}
+    <div>
+      {{ m.section_label("Candidates") }}
+      <div class="flex flex-wrap gap-2">
+        {% for c in p.candidates %}
+        <a href="{{ base }}/person/{{ c.person_id }}" class="set-pill hover:border-black transition-colors">
+          {{ c.name }}{% if c.role %}<span class="text-gray-400 ml-1.5">{{ c.role }}</span>{% endif %}<span class="text-gray-400 ml-1.5 tabular-nums">{{ "%.2f"|format(c.score) }}</span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <p class="text-xs text-gray-400">No candidates — likely a new person.</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400">Nothing pending. Queue's clean.</p>
+{% endif %}
+
+{% endblock %}
