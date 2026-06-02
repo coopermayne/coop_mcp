@@ -366,7 +366,8 @@ def bodyweight_overview() -> dict | None:
                ORDER BY weigh_date DESC, id DESC LIMIT 1""",
             (thirty_ago,),
         ).fetchone()
-    out = {"latest_lbs": latest["weight_lbs"], "date": latest["weigh_date"]}
+    out = {"latest_lbs": latest["weight_lbs"], "date": latest["weigh_date"],
+           "change_30d_lbs": None}
     if base:
         out["change_30d_lbs"] = round(latest["weight_lbs"] - base["weight_lbs"], 1)
     return out

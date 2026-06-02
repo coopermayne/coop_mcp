@@ -17,7 +17,7 @@
 <p class="text-sm text-gray-500 mb-12">
   <span class="text-gray-400 uppercase tracking-widest text-xs">Weight</span>
   <span class="tabular-nums font-medium text-gray-700 ml-2">{{ weight.latest_lbs | num }} lbs</span>
-  {% if weight.change_30d_lbs is not none and weight.change_30d_lbs != 0 %}
+  {% if weight.change_30d_lbs %}
     {% set down = weight.change_30d_lbs < 0 %}
     <span class="tabular-nums text-xs ml-1.5 {{ 'text-emerald-600' if down else 'text-gray-400' }}">
       {{ '▼' if down else '▲' }} {{ weight.change_30d_lbs | abs | num }} lbs / 30d
