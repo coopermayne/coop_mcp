@@ -28,14 +28,32 @@
     return n;
   }
 
-  // Label for a set: weight × reps (+ @rpe), using actuals when done, targets when not.
+  // Compact duration: '45m', '1h05m', '30s' — mirrors app.py's dur_label.
+  function durLabel(sec) {
+    sec = Math.round(sec);
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    if (h) return h + 'h' + String(m).padStart(2, '0') + 'm';
+    if (m) return m + 'm';
+    return s + 's';
+  }
+
+  // Label for a set: weight × reps for lifts, distance · time for cardio (+ @rpe),
+  // using actuals when done, targets when not. Cardio metrics are actual-only (no
+  // target columns), so they show whenever present. Mirrors app.py's set_label.
   function setText(s, done) {
     var w = done ? s.weight_lbs : s.target_weight_lbs;
     var r = done ? s.reps : s.target_reps;
+    var dur = s.duration_seconds, dist = s.distance_miles;
     var parts;
     if (w != null && r != null) parts = num(w) + ' × ' + r;
     else if (r != null) parts = r + ' rep' + (r === 1 ? '' : 's');
     else if (w != null) parts = num(w) + ' lb';
+    else if (dist != null || dur != null) {
+      var cardio = [];
+      if (dist != null) cardio.push(num(dist) + ' mi');
+      if (dur != null) cardio.push(durLabel(dur));
+      parts = cardio.join(' · ');
+    }
     else parts = '—';
     if (done && s.rpe != null) parts += '  @' + num(s.rpe);
     return parts;

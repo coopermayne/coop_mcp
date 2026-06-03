@@ -2163,7 +2163,8 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
     rows = conn.execute(
         """SELECT s.id, s.exercise_id, e.name, s.set_index, s.status,
                   s.target_weight_lbs, s.target_reps,
-                  s.weight_lbs, s.reps, s.rpe, s.note
+                  s.weight_lbs, s.reps, s.rpe,
+                  s.duration_seconds, s.distance_miles, s.note
            FROM sets s JOIN exercises e ON e.id = s.exercise_id
            WHERE s.workout_id=? ORDER BY s.id""",
         (wid,),
@@ -2179,6 +2180,7 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
             "set_id": r["id"], "set_index": r["set_index"], "status": r["status"],
             "target_weight_lbs": r["target_weight_lbs"], "target_reps": r["target_reps"],
             "weight_lbs": r["weight_lbs"], "reps": r["reps"], "rpe": r["rpe"],
+            "duration_seconds": r["duration_seconds"], "distance_miles": r["distance_miles"],
             "note": r["note"],
         })
         if r["status"] == "done":
