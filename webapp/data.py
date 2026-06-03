@@ -417,7 +417,7 @@ def active_plan() -> dict:
 def muscle_breakdown() -> dict:
     """Per-muscle training breakdown for the /workouts body heatmap.
 
-    Keyed by every muscle in `server.MUSCLES` — all 15 are always present (zeroed
+    Keyed by every muscle in `server.MUSCLES` — all of them are always present (zeroed
     when never trained) so the diagram can render cold regions too. Each value
     carries the recency/volume the diagram colors by (`days_since`, `last_trained`,
     `sets_last_7d`, `sets_last_14d`) plus the per-exercise breakdown the recency
