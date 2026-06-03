@@ -1639,7 +1639,8 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
     video/image links, so you can coach proper form. An unresolved `name` returns
     `candidates` (the closest real entries) — pick from those, don't guess.
 
-    A LIST — narrow the registry with `muscle` (matches any emphasis tier), an `equipment`
+    A LIST — narrow the registry with `muscle` (matches the PRIMARY tier only — exercises
+    the muscle is actually *for*, not ones that merely assist), an `equipment`
     fragment, `category`, or `rotation_only=True`. Rows are compact (name, category,
     equipment, muscles, `level`, `mechanic`, in_rotation) — `level`/`mechanic` let you
     weigh difficulty and pick compounds before isolation. The full catalog is large
@@ -1700,7 +1701,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
             if rotation_only and not r["in_rotation"]:
                 continue
             m = _muscles_for(conn, r["id"])
-            if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"] + m["tertiary"]):
+            if muscle and muscle.strip().lower() not in m["primary"]:
                 continue
             if equipment and (not r["equipment"] or equipment.lower() not in r["equipment"].lower()):
                 continue

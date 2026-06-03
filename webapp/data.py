@@ -390,10 +390,9 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
         if in_rotation:
             rotation_count += 1
         m = mmap.get(r["id"], {"primary": [], "secondary": [], "tertiary": []})
-        all_m = m["primary"] + m["secondary"] + m["tertiary"]
         if rotation and not in_rotation:
             continue
-        if muscle and muscle not in all_m:
+        if muscle and muscle not in m["primary"]:
             continue
         if q and q.lower() not in r["name"].lower():
             continue
