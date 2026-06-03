@@ -99,9 +99,15 @@ There is no exercise-selection or progression logic in the server either.
 - `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
   `app.py` thin). Read-only — writes go through `server.py`'s tools.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
-  architectural-rule note). System prompt + tool schemas are lifted live from each
-  FastMCP instance's `instructions` + tool docstrings, so changing a docstring updates
-  the chat. Off unless `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
+  architectural-rule note). Server-bound agents (`journal`, `trainer`) lift their system
+  prompt + tool schemas live from a FastMCP instance's `instructions` + tool docstrings,
+  so changing a docstring updates the chat. The `exercise` agent is different: it's a
+  WEBAPP-DEFINED agent (its `instructions` and its two tools — `check_library`,
+  `create_exercise` — are hand-written here, NOT lifted from a server) so the
+  exercise-creation path stays OFF the MCP tool surface. It backs the library page's
+  "+ Add an exercise" panel and is the one place an LLM can grow the catalog — reachable
+  only by the authenticated user, never by the journal/trainer connectors. Off unless
+  `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
   `chat.js`, manifest); the app is an installable PWA.
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
@@ -207,9 +213,13 @@ working.
   `EX_CONFIDENT` is high so Hack/Back Squat surfaces as a candidate, not a silent
   mis-resolve) and a name with no match is SKIPPED and returned under `unmatched` with its
   closest `candidates`, never auto-created. New exercises enter ONLY through the website's
-  manual **Add an exercise** form (`/trainer/library` → `create_exercise`, plus the bulk
-  importer — both NON-tool paths the assistant can't reach); the model-facing
-  `save_exercise` only *enriches* existing rows or toggles `in_rotation`.
+  **+ Add an exercise** panel on `/trainer/library` — an AI helper (the webapp-defined
+  `exercise` chat agent in `webapp/chat.py`) that dedupes, fills every field from the
+  user's words plus its own knowledge, and calls `create_exercise` — plus the bulk
+  importer. Both are NON-tool paths the *connectors* can't reach: `create_exercise` is
+  never a FastMCP tool, so the journal/trainer servers still can't grow the catalog; only
+  the authenticated user, through the website, can. The model-facing `save_exercise` only
+  *enriches* existing rows or toggles `in_rotation`.
   `exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
   mechanic).
 - `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a

@@ -23,102 +23,77 @@
   <strong>rotation</strong>: the curated pool the trainer actually programs your sessions
   from. Logging a workout adds its movements automatically. The catalog is closed to the
   trainer — it programs only from what's here and never invents a movement; add your own
-  with the form below.
+  with the AI panel below.
 </p>
 
 {% if error %}
 <div class="mb-5 px-4 py-3 border border-amber-200 bg-amber-50 text-sm text-amber-800 rounded-[4px]">{{ error }}</div>
 {% endif %}
 
-{# Manual add — the ONLY way a new exercise enters the closed catalog (the AI can't). #}
+{# AI add — the ONLY way a new exercise enters the closed catalog. It runs as a webapp
+   agent (the journal/trainer MCP connectors still can't create exercises); it dedupes,
+   fills every field from what you say plus its own knowledge, and asks if unsure. #}
+{% if chat_enabled %}
 <details class="mb-6 border border-gray-200 rounded-[4px]">
   <summary class="cursor-pointer list-none px-5 py-3 text-sm font-medium flex items-center justify-between">
     <span>+ Add an exercise</span>
-    <span class="text-[10px] uppercase tracking-widest text-gray-400">manual</span>
+    <span class="text-[10px] uppercase tracking-widest text-gray-400">AI</span>
   </summary>
-  <form method="post" action="{{ base }}/trainer/library/add" class="px-5 pb-5 pt-1 space-y-3">
-    <div>
-      <label class="text-[10px] uppercase tracking-widest text-gray-400">Name *</label>
-      <input type="text" name="name" required placeholder="e.g. Bulgarian Split Squat"
-             class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-    </div>
-    <div class="grid grid-cols-2 gap-3">
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Category</label>
-        <input type="text" name="category" placeholder="push / pull / legs / core / cardio"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+  <div class="px-5 pb-5 pt-1">
+    <p class="text-xs text-gray-400 mb-3 leading-relaxed">
+      Describe the movement — a name is enough. I check it isn't already here, then fill in
+      the muscles, difficulty, technique and cautions from what you tell me plus what I
+      know, and add it to your library and rotation. I'll ask if anything's unclear.
+    </p>
+    <div data-chat-root>
+      <div data-chat-log class="h-80 overflow-y-auto border border-gray-100 rounded-[4px] px-3 py-3 space-y-4 mb-3">
+        <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
+          e.g. “Add the Karlerson deadlift” · “Pallof press, cable, for my core” ·
+          “Spanish squat with a band”.
+        </p>
       </div>
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Equipment</label>
-        <input type="text" name="equipment" placeholder="barbell, dumbbell, machine…"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-      </div>
-    </div>
-    <div class="grid grid-cols-2 gap-3">
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Level (difficulty)</label>
-        <select name="level" class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm bg-white focus:outline-none focus:border-black">
-          <option value="">—</option><option value="beginner">beginner</option>
-          <option value="intermediate" selected>intermediate</option><option value="expert">expert</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Mechanic</label>
-        <select name="mechanic" class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm bg-white focus:outline-none focus:border-black">
-          <option value="">—</option><option value="compound">compound</option><option value="isolation">isolation</option>
-        </select>
+      <form data-chat-form class="flex items-end gap-2">
+        <textarea data-chat-input rows="1" autocomplete="off" placeholder="Name the exercise…"
+                  class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
+        <button type="submit" data-chat-send aria-label="Send"
+                class="shrink-0 h-[42px] w-[42px] flex items-center justify-center bg-black text-white rounded-[4px] hover:bg-gray-800 transition-colors disabled:opacity-30">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </button>
+      </form>
+      <div class="mt-2 flex justify-end">
+        <button type="button" data-chat-reset class="text-[10px] uppercase tracking-widest text-gray-400 hover:text-black transition-colors">New</button>
       </div>
     </div>
-    <div class="grid grid-cols-3 gap-3">
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Primary muscles</label>
-        <input type="text" name="muscles" placeholder="quadriceps, glutes"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-      </div>
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Secondary</label>
-        <input type="text" name="secondary_muscles" placeholder="hamstrings"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-      </div>
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Tertiary</label>
-        <input type="text" name="tertiary_muscles" placeholder="calves"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-      </div>
-    </div>
-    <p class="text-[11px] text-gray-400 -mt-1">Comma-separated. Canonical labels: {{ muscles | join(", ") }}.</p>
-    <div>
-      <label class="text-[10px] uppercase tracking-widest text-gray-400">Technique notes</label>
-      <textarea name="technique_notes" rows="2" placeholder="setup + key cues"
-                class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black"></textarea>
-    </div>
-    <div class="grid grid-cols-2 gap-3">
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Common mistakes</label>
-        <textarea name="common_mistakes" rows="2"
-                  class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black"></textarea>
-      </div>
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Cautions</label>
-        <textarea name="cautions" rows="2"
-                  class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black"></textarea>
-      </div>
-    </div>
-    <div class="grid grid-cols-2 gap-3">
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Video link</label>
-        <input type="url" name="video_link" placeholder="https://…"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-      </div>
-      <div>
-        <label class="text-[10px] uppercase tracking-widest text-gray-400">Image / gif link</label>
-        <input type="url" name="image_link" placeholder="https://…"
-               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-      </div>
-    </div>
-    <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Add to library (into rotation)</button>
-  </form>
+  </div>
 </details>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="{{ base }}/static/chat.js"></script>
+<script>
+(function () {
+  var root = document.querySelector('[data-chat-root]');
+  if (!root) return;
+  var endpoint = {{ base | tojson }} + '/chat/exercise';
+  ChatWidget.init({
+    root: root,
+    endpoint: endpoint,
+    // A new exercise landed: clear the thread so the next add starts fresh, then reload
+    // so the list shows it — after a beat so the confirmation stays readable.
+    onWrite: function () {
+      fetch(endpoint + '/reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      }).catch(function () {}).finally(function () {
+        setTimeout(function () { window.location.reload(); }, 1800);
+      });
+    },
+  });
+})();
+</script>
+{% else %}
+<div class="mb-6 px-4 py-3 border border-gray-200 rounded-[4px] text-sm text-gray-400 leading-relaxed">
+  Adding exercises is handled by the AI assistant — set <code>ANTHROPIC_API_KEY</code> to
+  enable it.
+</div>
+{% endif %}
 
 {# Rotation / All toggle, preserving the current name + muscle filters. #}
 <div class="mb-4 flex gap-2">
@@ -214,7 +189,7 @@
 </div>
 {% else %}
 <p class="text-sm text-gray-400">
-  {% if rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the form above.{% endif %}
+  {% if rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the AI panel above.{% endif %}
 </p>
 {% endif %}
 
