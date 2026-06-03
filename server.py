@@ -136,7 +136,9 @@ Two ways to record training:
   - PLAN-AS-YOU-LIFT (the live routine): start_workout_plan lays out today's session as
     PENDING sets with target weights/reps; the user completes them with complete_set as
     they go (omitted numbers default to the targets). swap_exercise substitutes a
-    busy/broken movement (keep the muscle group), add_to_plan tacks on more, update_set
+    busy/broken movement with its CLOSEST like-for-like peer — same movement pattern and
+    role (compound→compound, isolation→isolation), not just any exercise sharing a
+    muscle — add_to_plan tacks on more, update_set
     retargets a pending set, and finish_workout closes it out (leftover pending sets are
     skipped). get_workout_plan returns the current state. Only ONE plan is active at a
     time. Design the routine yourself from the briefing — progress what was easy (low
@@ -2028,8 +2030,14 @@ def swap_exercise(from_exercise: str, to_exercise: str,
                   sets: Optional[list[dict]] = None,
                   workout_id: Optional[int] = None) -> dict:
     """Substitute an exercise in the active plan — for a busy/broken machine, a tweak,
-    or preference. Keep the same muscle group so the session still does its job. The
-    PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
+    or preference. Pick the CLOSEST like-for-like replacement, not just anything that
+    touches the same muscle: match the movement pattern (vertical pull→vertical pull,
+    horizontal press→horizontal press), the role (compound→compound, isolation→
+    isolation), and roughly the loading character. A Lat Pulldown's peer is a Close-/
+    Neutral-Grip Pulldown or a Pull-up — NOT a Straight-Arm Pulldown, which isolates
+    the same lats but is a single-joint accessory and a different stimulus. Only drop
+    to a narrower or different-pattern move when no true peer is available, and say so.
+    The PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
     log) and `to_exercise` is added with fresh pending sets.
 
     By default the substitute mirrors the count and targets of the swapped-out pending
