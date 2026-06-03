@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 
 COPY server.py .
 COPY webapp ./webapp
+# Maintenance/seed scripts (e.g. import_exercises.py for seeding the exercise library) —
+# run inside the container against the mounted DB.
+COPY scripts ./scripts
 
 # Remote mode. DB lives on a mounted volume so it survives redeploys. One process serves
 # the journal MCP (+ read-only UI at /app) on PUBLIC_URL and, when TRAINER_PUBLIC_URL is
