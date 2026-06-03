@@ -240,18 +240,20 @@ CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
 END;
 
 -- ----------------------------------------------------------------------- --
--- Drinking tracker. One row per logged drinking occasion; days with no row
--- are sober days. Aggregation (daily totals, streaks) is deterministic SQL.
+-- Drinking tracker. EXACTLY ONE row per day (drink_date is unique): the first
+-- log of the day creates it, later logs accumulate onto it (standard_drinks add
+-- up, kinds merge into a deduped list). Days with no row are sober days.
+-- Aggregation (daily totals, streaks) is deterministic SQL.
 -- ----------------------------------------------------------------------- --
 CREATE TABLE IF NOT EXISTS drinks (
     id              INTEGER PRIMARY KEY,
     drink_date      TEXT NOT NULL,    -- YYYY-MM-DD the drinks were consumed
     standard_drinks REAL NOT NULL,    -- in standard-drink units (beer/wine ~1, cocktail ~1.5)
-    kind            TEXT,             -- optional: "beer", "wine", "cocktail"
+    kind            TEXT,             -- merged label list, e.g. "beer, wine"
     notes           TEXT,
     created_at      TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
 
 -- ----------------------------------------------------------------------- --
 -- Personal trainer. `exercises` is a catalog of stable exercise ENTITIES
@@ -342,6 +344,36 @@ def db() -> sqlite3.Connection:
     return conn
 
 
+def _merge_kinds(*kinds: Optional[str]) -> Optional[str]:
+    """Union drink-`kind` labels into one deduped, order-preserving comma list.
+    Each input may itself be a comma list ("beer, wine"); matching is
+    case-insensitive so "beer" + "Beer" stays "beer". Returns None if empty."""
+    seen: list[str] = []
+    lowered = set()
+    for k in kinds:
+        if not k:
+            continue
+        for part in str(k).split(","):
+            part = part.strip()
+            if part and part.lower() not in lowered:
+                seen.append(part)
+                lowered.add(part.lower())
+    return ", ".join(seen) or None
+
+
+def _merge_notes(*notes: Optional[str]) -> Optional[str]:
+    """Join non-empty notes with '; ', skipping exact duplicates. Returns None
+    if nothing to keep (so empty appends don't litter a day's row)."""
+    seen: list[str] = []
+    for n in notes:
+        if not n:
+            continue
+        n = str(n).strip()
+        if n and n not in seen:
+            seen.append(n)
+    return "; ".join(seen) or None
+
+
 def init_db() -> None:
     with db() as conn:
         conn.executescript(SCHEMA)
@@ -366,6 +398,31 @@ def init_db() -> None:
         # and sets are completed history, so they read back as 'done'.
         conn.execute("UPDATE workouts SET status='done' WHERE status IS NULL OR status=''")
         conn.execute("UPDATE sets SET status='done' WHERE status IS NULL OR status=''")
+        # Drinks are now one row per day. Collapse any legacy multi-row days
+        # (sum the drinks, merge the kinds/notes onto the earliest row) before
+        # enforcing the unique index — an old DB's non-unique index survives the
+        # IF NOT EXISTS in SCHEMA, so rebuild it here.
+        dup_days = conn.execute(
+            "SELECT drink_date FROM drinks GROUP BY drink_date HAVING COUNT(*) > 1"
+        ).fetchall()
+        for d in dup_days:
+            rows = conn.execute(
+                "SELECT id, standard_drinks, kind, notes FROM drinks "
+                "WHERE drink_date=? ORDER BY id", (d["drink_date"],),
+            ).fetchall()
+            keep = rows[0]["id"]
+            total = sum(r["standard_drinks"] for r in rows)
+            kind = _merge_kinds(*(r["kind"] for r in rows))
+            notes = _merge_notes(*(r["notes"] for r in rows))
+            conn.execute(
+                "UPDATE drinks SET standard_drinks=?, kind=?, notes=? WHERE id=?",
+                (total, kind, notes, keep),
+            )
+            conn.execute(
+                "DELETE FROM drinks WHERE drink_date=? AND id<>?", (d["drink_date"], keep),
+            )
+        conn.execute("DROP INDEX IF EXISTS idx_drinks_date")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date)")
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -950,7 +1007,7 @@ def delete_record(kind: str, id: int) -> dict:
 
     `kind` selects what `id` refers to:
       - "entry" — a journal entry (its mentions go too; FTS stays in sync).
-      - "drink" — one logged drink row (a day with no rows left is sober again).
+      - "drink" — one day's drink row (that day becomes sober again).
     Find ids with get_entry/search_entries or get_drink_summary(include_rows=True).
     (Workouts and sets are deleted via the trainer server's own delete_record.)"""
     if kind not in ("entry", "drink"):
@@ -1164,11 +1221,16 @@ def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
     Convert what the user describes into standard drinks before calling: one
     regular beer (12oz/5%), one glass of wine (5oz), or one shot of spirits each
     count as ~1.0; a strong cocktail or a large pour is ~1.5; a tallboy/double is
-    ~2.0. "Two beers and a glass of wine" -> standard_drinks=3.0. You can call this
-    more than once for the same day (rows accumulate); days with no row are sober.
+    ~2.0. "Two beers and a glass of wine" -> standard_drinks=3.0.
+
+    A day has EXACTLY ONE row. The first call of the day creates it; later calls
+    for the same day accumulate onto it — `standard_drinks` ADD up and `kind`
+    merges into a deduped list (a beer then a wine logs as 2.0, kind "beer, wine").
+    So pass only the increment, not the running total. Days with no row are sober;
+    to correct a day down (or overwrite it) use update_drink, which sets absolutes.
 
     Args:
-        standard_drinks: Total standard drinks for this occasion.
+        standard_drinks: Standard drinks to ADD for this day (the increment).
         drink_date: Day consumed, YYYY-MM-DD. Defaults to today.
         kind: Optional label, e.g. "beer", "wine", "cocktail".
         notes: Optional context, e.g. "dinner with Hallie".
@@ -1179,15 +1241,24 @@ def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
         return {"error": f"standard_drinks must be positive, got {standard_drinks}"}
     d = drink_date or today()
     with db() as conn:
-        rid = conn.execute(
-            """INSERT INTO drinks(drink_date, standard_drinks, kind, notes, created_at)
-               VALUES (?,?,?,?,?)""",
-            (d, standard_drinks, kind, notes, now()),
-        ).lastrowid
-        day_total = conn.execute(
-            "SELECT COALESCE(SUM(standard_drinks),0) AS t FROM drinks WHERE drink_date=?",
-            (d,),
-        ).fetchone()["t"]
+        existing = conn.execute(
+            "SELECT id, standard_drinks, kind, notes FROM drinks WHERE drink_date=?", (d,),
+        ).fetchone()
+        if existing:
+            day_total = existing["standard_drinks"] + standard_drinks
+            conn.execute(
+                "UPDATE drinks SET standard_drinks=?, kind=?, notes=? WHERE id=?",
+                (day_total, _merge_kinds(existing["kind"], kind),
+                 _merge_notes(existing["notes"], notes), existing["id"]),
+            )
+            rid = existing["id"]
+        else:
+            rid = conn.execute(
+                """INSERT INTO drinks(drink_date, standard_drinks, kind, notes, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (d, standard_drinks, kind, notes, now()),
+            ).lastrowid
+            day_total = standard_drinks
     return {"drink_id": rid, "drink_date": d, "logged": standard_drinks,
             "day_total": round(day_total, 2)}
 
@@ -1259,12 +1330,15 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
 def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
                  drink_date: Optional[str] = None, kind: Optional[str] = None,
                  notes: Optional[str] = None) -> dict:
-    """Correct a logged drink row. Only non-null args are written.
+    """Correct a logged day's drink row. Only non-null args are written; the values
+    are absolute (they REPLACE, not add — unlike log_drinks, which accumulates).
 
-    Use this to fix a mistake in either direction — e.g. lower `standard_drinks`
-    from 3 to 1 (logging can only add, so corrections downward must go through here),
-    or move it to the right day with `drink_date` (YYYY-MM-DD, Pacific). Find the
-    `drink_id` with get_drink_summary(include_rows=True). To remove a row entirely use
+    Use this to fix a mistake in either direction — e.g. set `standard_drinks` to 1
+    when the day was over-logged (log_drinks only adds, so corrections downward go
+    through here), relabel `kind`, or move the day with `drink_date` (YYYY-MM-DD,
+    Pacific). Since a day has exactly one row, moving onto a day that already has one
+    is refused — edit that day instead. Find the `drink_id` with
+    get_drink_summary(include_rows=True). To remove a day entirely use
     delete_record(kind="drink", id=...)."""
     if err := _bad_date(drink_date, "drink_date"):
         return err
@@ -1279,6 +1353,13 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
         exists = conn.execute("SELECT 1 FROM drinks WHERE id=?", (drink_id,)).fetchone()
         if not exists:
             return {"error": f"no drink with id {drink_id}"}
+        if drink_date is not None:
+            clash = conn.execute(
+                "SELECT id FROM drinks WHERE drink_date=? AND id<>?", (drink_date, drink_id),
+            ).fetchone()
+            if clash:
+                return {"error": f"{drink_date} already has a drink row (id {clash['id']}); "
+                                 "edit that day instead"}
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(f"UPDATE drinks SET {cols} WHERE id=?", (*sets.values(), drink_id))
     return {"drink_id": drink_id, "updated": list(sets)}

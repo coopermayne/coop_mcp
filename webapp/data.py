@@ -468,10 +468,11 @@ def drinking(days: int = 30) -> dict:
 
 
 def recent_drinks(limit: int = 30) -> list:
-    """Individual drinking occasions (kind/notes the summary doesn't carry)."""
+    """Recent drinking days (one row per day), with the `id` the edit/delete forms
+    need plus the kind/notes the summary doesn't carry."""
     with server.db() as conn:
         rows = conn.execute(
-            "SELECT drink_date, standard_drinks, kind, notes FROM drinks "
+            "SELECT id, drink_date, standard_drinks, kind, notes FROM drinks "
             "ORDER BY drink_date DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
