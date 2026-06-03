@@ -3,7 +3,57 @@
 {% block title %}Drinking · Journal{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold tracking-tight mb-12">Drinking</h1>
+<h1 class="text-2xl font-bold tracking-tight mb-8">Drinking</h1>
+
+{% if error %}
+<div class="border border-red-300 text-red-600 rounded-[4px] px-4 py-2.5 mb-6 text-sm">{{ error }}</div>
+{% endif %}
+
+{# Direct entry — no AI. Quick buttons for the common case (1 standard drink),
+   plus a form for a custom amount/date/notes. Each POST hits /drinking/add and
+   redirects back (server.log_drinks validates). #}
+<div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-5 mb-8">
+  {{ m.section_label("Log a Drink") }}
+  <div class="flex flex-wrap gap-2 mt-1 mb-5">
+    {% for k in ["beer", "wine", "cocktail"] %}
+    <form method="post" action="{{ base }}/drinking/add">
+      <input type="hidden" name="standard_drinks" value="1" />
+      <input type="hidden" name="kind" value="{{ k }}" />
+      <button type="submit"
+              class="border border-gray-200 rounded-full px-4 py-1.5 text-sm hover:bg-black hover:text-white hover:border-black transition-colors">
+        + 1 {{ k }}
+      </button>
+    </form>
+    {% endfor %}
+  </div>
+
+  <form method="post" action="{{ base }}/drinking/add" class="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
+    <label class="block">
+      <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Std drinks</span>
+      <input type="number" name="standard_drinks" step="0.5" min="0" required placeholder="1.5"
+             class="w-full px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+    </label>
+    <label class="block">
+      <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Kind</span>
+      <input type="text" name="kind" placeholder="beer, wine…"
+             class="w-full px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+    </label>
+    <label class="block">
+      <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Date</span>
+      <input type="date" name="drink_date" value="{{ today }}"
+             class="w-full px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+    </label>
+    <button type="submit"
+            class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">
+      Log drink
+    </button>
+    <label class="block col-span-2 sm:col-span-4">
+      <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Notes (optional)</span>
+      <input type="text" name="notes" placeholder="with dinner, celebrating…"
+             class="w-full px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+    </label>
+  </form>
+</div>
 
 <div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-5 mb-12">
   {{ m.section_label("Daily Standard Drinks") }}

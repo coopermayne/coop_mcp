@@ -1,0 +1,177 @@
+/*
+ * Reusable chat client for the in-app AI surfaces (journal panel now, trainer
+ * page later). Wires one chat widget inside a root element: a streaming POST to
+ * `${endpoint}/send` whose SSE frames append assistant text and tool chips, plus
+ * a `${endpoint}/reset` for "new chat". No framework — matches the app.
+ *
+ *   ChatWidget.init({ root, endpoint });
+ *
+ * The root must contain elements tagged with these data attributes:
+ *   [data-chat-log]    scrollable transcript container
+ *   [data-chat-form]   the composer <form>
+ *   [data-chat-input]  the <textarea>
+ *   [data-chat-send]   the submit <button>
+ *   [data-chat-reset]  optional "new chat" trigger
+ *   [data-chat-seed]   optional first-prompt hint, removed on first send
+ */
+(function () {
+  function init(opts) {
+    var root = opts.root;
+    var endpoint = opts.endpoint; // e.g. "/app/chat/journal"
+    var log = root.querySelector('[data-chat-log]');
+    var form = root.querySelector('[data-chat-form]');
+    var input = root.querySelector('[data-chat-input]');
+    var sendBtn = root.querySelector('[data-chat-send]');
+    var resetBtn = root.querySelector('[data-chat-reset]');
+    var seed = root.querySelector('[data-chat-seed]');
+    var busy = false;
+
+    if (root.dataset.chatReady) return; // idempotent
+    root.dataset.chatReady = '1';
+
+    function autosize() {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+    }
+    input.addEventListener('input', autosize);
+
+    // Enter sends; Shift+Enter inserts a newline.
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+    });
+
+    function scrollDown() { log.scrollTop = log.scrollHeight; }
+
+    function bubble(role) {
+      var wrap = document.createElement('div');
+      if (role === 'user') {
+        wrap.className = 'flex justify-end';
+        var b = document.createElement('div');
+        b.className = 'max-w-[85%] bg-black text-white rounded-[4px] px-3.5 py-2 text-[15px] leading-relaxed whitespace-pre-wrap break-words';
+        wrap.appendChild(b);
+        log.appendChild(wrap);
+        return b;
+      }
+      wrap.className = 'space-y-2';
+      log.appendChild(wrap);
+      return wrap; // assistant container: holds tool chips + a text node
+    }
+
+    function chip(ev) {
+      var el = document.createElement(ev.href ? 'a' : 'span');
+      el.className = 'inline-flex items-center gap-1.5 text-[11px] rounded-[3px] px-2 py-1 border transition-colors '
+        + (ev.kind === 'write'
+            ? 'border-gray-300 text-gray-700 hover:border-black hover:text-black'
+            : 'border-gray-100 text-gray-400');
+      if (ev.href) el.href = ev.href;
+      var dot = document.createElement('span');
+      dot.className = 'inline-block w-1.5 h-1.5 rounded-full ' + (ev.kind === 'write' ? 'bg-black' : 'bg-gray-300');
+      el.appendChild(dot);
+      el.appendChild(document.createTextNode(ev.summary || ev.name));
+      return el;
+    }
+
+    function assistantText(container) {
+      var p = container.querySelector('[data-text]');
+      if (!p) {
+        p = document.createElement('p');
+        p.setAttribute('data-text', '');
+        p.className = 'text-[15px] text-gray-800 leading-relaxed whitespace-pre-wrap break-words';
+        container.appendChild(p);
+      }
+      return p;
+    }
+
+    function setBusy(b) {
+      busy = b;
+      sendBtn.disabled = b;
+      input.disabled = b;
+    }
+
+    async function send(text) {
+      if (seed) { seed.remove(); seed = null; }
+      bubble('user').textContent = text;
+      scrollDown();
+      var container = bubble('assistant');
+      setBusy(true);
+
+      var res;
+      try {
+        res = await fetch(endpoint + '/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text }),
+        });
+      } catch (e) {
+        assistantText(container).textContent = 'Network error: ' + e.message;
+        setBusy(false); return;
+      }
+      if (!res.ok || !res.body) {
+        assistantText(container).textContent = 'Error: ' + res.status;
+        setBusy(false); return;
+      }
+
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+      var wrote = false; // did any write tool fire this turn?
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var frames = buf.split('\n\n');
+        buf = frames.pop();
+        for (var i = 0; i < frames.length; i++) {
+          var line = frames[i].trim();
+          if (line.slice(0, 5) !== 'data:') continue;
+          var payload = line.replace(/^data:\s*/, '');
+          if (!payload) continue;
+          var ev;
+          try { ev = JSON.parse(payload); } catch (e) { continue; }
+          if (ev.type === 'text') {
+            assistantText(container).textContent += ev.text;
+          } else if (ev.type === 'tool') {
+            if (ev.kind === 'write') wrote = true;
+            var p = container.querySelector('[data-text]');
+            if (p) container.insertBefore(chip(ev), p);
+            else container.appendChild(chip(ev));
+          } else if (ev.type === 'error') {
+            var e1 = assistantText(container);
+            e1.textContent += (e1.textContent ? '\n\n' : '') + '⚠ ' + ev.message;
+            // Drop the gray class first: the dark-mode override for text-gray-800
+            // outranks the bare text-red-500 utility, so red only wins once gray
+            // is gone.
+            e1.classList.remove('text-gray-800');
+            e1.classList.add('text-red-500');
+          }
+          scrollDown();
+        }
+      }
+      setBusy(false);
+      input.focus();
+      // A write landed in the DB — let the host page refresh its live regions
+      // (e.g. the journal feed behind the panel) without a full reload.
+      if (wrote && typeof opts.onWrite === 'function') opts.onWrite();
+    }
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (busy) return;
+      var text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      autosize();
+      send(text);
+    });
+
+    if (resetBtn) {
+      resetBtn.addEventListener('click', async function () {
+        if (busy) return;
+        try { await fetch(endpoint + '/reset', { method: 'POST' }); } catch (e) {}
+        log.innerHTML = '';
+      });
+    }
+  }
+
+  window.ChatWidget = { init: init };
+})();
