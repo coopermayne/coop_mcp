@@ -135,7 +135,7 @@
   {# Each exercise is a collapsible row: the summary carries name + muscle emphasis +
      how much it's been trained; expanding reveals equipment, coaching text and the clip.
      data-ex-row marks it as a target for j/k keyboard navigation (see the script below). #}
-  <details data-ex-row tabindex="-1" class="group px-5 sm:px-6 py-3.5 scroll-mt-4 focus:outline-none [&.ex-active]:bg-amber-50">
+  <details data-ex-row tabindex="-1" class="group px-5 sm:px-6 py-3.5 scroll-mt-4 focus:outline-none">
     <summary class="cursor-pointer list-none flex items-baseline justify-between gap-3">
       <div class="min-w-0">
         <div class="flex items-baseline gap-2 flex-wrap">
@@ -272,10 +272,11 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
   });
 });
 
-// j / k step through the exercise rows (vim-style: j down, k up), scrolling the
-// highlighted row into view. Disabled while typing so the keys still reach search,
-// the AI composer, or any other field — we bail whenever focus is in an input,
-// textarea, select, or contenteditable element.
+// j / k step through the exercise rows (vim-style: j down, k up). The focused row
+// opens so its details are readable, every other row closes, and the open row's top
+// is scrolled to the top of the viewport. Disabled while typing so the keys still
+// reach search, the AI composer, or any other field — we bail whenever focus is in an
+// input, textarea, select, or contenteditable element.
 (function () {
   var rows = Array.prototype.slice.call(document.querySelectorAll("[data-ex-row]"));
   if (!rows.length) return;
@@ -288,12 +289,14 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
   }
 
-  function focusRow(i) {
+  function openRow(i) {
     current = Math.max(0, Math.min(rows.length - 1, i));
-    rows.forEach(function (r, idx) { r.classList.toggle("ex-active", idx === current); });
+    // Open only the focused row; collapse the rest so the list stays a single read.
+    rows.forEach(function (r, idx) { r.open = idx === current; });
     var row = rows[current];
     row.focus({ preventScroll: true });
-    row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    // Top of the opened row to the top of the page (scroll-mt-4 leaves a little gap).
+    row.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
   document.addEventListener("keydown", function (e) {
@@ -301,7 +304,7 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;      // leave shortcuts alone
     if (typingInField(e.target)) return;                 // don't hijack text entry
     e.preventDefault();
-    focusRow(e.key === "j" ? current + 1 : current - 1);
+    openRow(e.key === "j" ? current + 1 : current - 1);
   });
 })();
 </script>
