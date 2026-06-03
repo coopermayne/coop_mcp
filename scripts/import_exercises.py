@@ -1,10 +1,15 @@
 """
 Import the exercise catalog from the open, public-domain **free-exercise-db**
-(https://github.com/yuhonas/free-exercise-db, Unlicense) into the library — name,
-equipment, primary/secondary muscles, step-by-step technique notes, category, and a
-demo image. ~870 exercises. Each record is written through `server.save_exercise`
-(the one catalog write path), so muscle tiers, the /trainer/library page, and per-muscle
-recency all line up exactly as if the trainer had entered them.
+(https://github.com/yuhonas/free-exercise-db, Unlicense) into the LIBRARY — slug, name,
+force, level, mechanic, equipment, category, primary/secondary muscles, step-by-step
+technique notes, and a demo image. ~870 exercises. Our `exercises` schema is lined up
+with this dataset, so the fields map 1:1. Each record is written through
+`server.save_exercise` (the one catalog write path), so muscle tiers, the /trainer/library
+page, and per-muscle recency all line up exactly as if the trainer had entered them.
+
+This populates the searchable LIBRARY only; everything lands with in_rotation=0. The
+ROTATION (the curated pool the trainer programs from) is built afterwards — by logging
+workouts, by set_rotation, or by toggling rows on the library page.
 
 Run it against your LIVE DB (the throwaway dev DB here won't reach production):
 
@@ -134,9 +139,15 @@ def main():
         images = ex.get("images") or []
         image_link = None if (args.no_images or not images) else IMAGE_BASE + images[0]
 
+        # in_rotation is left at its default (0): the import builds the LIBRARY; the
+        # rotation is curated afterwards (set_rotation / logging / the library page).
         kwargs = dict(
             name=name,
+            slug=ex.get("id"),
             category=ex.get("category"),
+            force=ex.get("force"),
+            level=ex.get("level"),
+            mechanic=ex.get("mechanic"),
             equipment=equipment,
             muscles=primary or None,
             secondary_muscles=secondary or None,

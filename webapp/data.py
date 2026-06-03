@@ -350,16 +350,18 @@ def workouts_full(limit: int = 20) -> list:
     return out
 
 
-def exercise_library(muscle: str | None = None, q: str | None = None) -> dict:
+def exercise_library(muscle: str | None = None, q: str | None = None,
+                     rotation: bool = False) -> dict:
     """The exercise catalog as a browsable LIBRARY: every movement in full — muscles in
     their three emphasis tiers (primary/secondary/tertiary), equipment, technique notes,
-    common mistakes, cautions, and a form gif/video — plus how much it's actually been
-    trained (`sessions`, `last_done`) so "things I do" sort ahead of "things to introduce
-    later". Optionally filtered by `muscle` (any tier) or a name fragment `q`.
+    common mistakes, cautions, and a form gif/video — plus `in_rotation` (is it in the
+    user's programming pool) and how much it's actually been trained (`sessions`,
+    `last_done`). Optionally filtered by `muscle` (any tier), a name fragment `q`, or
+    `rotation=True` to show only the rotation.
 
-    Also returns `muscles` (the canonical list, for the filter chips) and the active
-    `muscle`/`q` so the template can render the current filter. Read-only; the trainer
-    (server.save_exercise) is the only writer."""
+    Also returns `muscles` (the canonical list, for the filter chips), `rotation_count`,
+    and the active `muscle`/`q`/`rotation` so the template can render the current filter.
+    Read-only; writes go through server.save_exercise / server.set_rotation."""
     from urllib.parse import quote_plus
     muscle = (muscle or "").strip().lower() or None
     q = (q or "").strip() or None
@@ -382,9 +384,15 @@ def exercise_library(muscle: str | None = None, q: str | None = None) -> dict:
         ):
             vol[vr["exercise_id"]] = {"sessions": vr["sessions"], "last_done": vr["last_done"]}
     out = []
+    rotation_count = 0
     for r in rows:
+        in_rotation = bool(r["in_rotation"])
+        if in_rotation:
+            rotation_count += 1
         m = mmap.get(r["id"], {"primary": [], "secondary": [], "tertiary": []})
         all_m = m["primary"] + m["secondary"] + m["tertiary"]
+        if rotation and not in_rotation:
+            continue
         if muscle and muscle not in all_m:
             continue
         if q and q.lower() not in r["name"].lower():
@@ -392,7 +400,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None) -> dict:
         v = vol.get(r["id"], {"sessions": 0, "last_done": None})
         out.append({
             "exercise_id": r["id"], "name": r["name"], "category": r["category"],
-            "equipment": r["equipment"], "muscles": m,
+            "equipment": r["equipment"], "muscles": m, "in_rotation": in_rotation,
             "technique_notes": r["technique_notes"],
             "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
             "video_link": r["video_link"], "image_link": r["image_link"],
@@ -401,10 +409,11 @@ def exercise_library(muscle: str | None = None, q: str | None = None) -> dict:
             "has_notes": bool(r["technique_notes"] or r["common_mistakes"] or r["cautions"]),
             "sessions": v["sessions"], "last_done": v["last_done"],
         })
-    # "things I do" first (most-trained), then untried, each alphabetical
-    out.sort(key=lambda e: (-e["sessions"], e["name"].lower()))
+    # rotation first, then most-trained, then alphabetical
+    out.sort(key=lambda e: (not e["in_rotation"], -e["sessions"], e["name"].lower()))
     return {"exercises": out, "count": len(out), "muscles": server.MUSCLES,
-            "muscle": muscle, "q": q or ""}
+            "rotation_count": rotation_count, "muscle": muscle, "q": q or "",
+            "rotation": rotation}
 
 
 def active_plan() -> dict:
