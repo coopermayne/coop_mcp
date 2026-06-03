@@ -477,20 +477,3 @@ def recent_drinks(limit: int = 30) -> list:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
-
-
-# --------------------------------------------------------------------------- #
-# Home (landing page)
-# --------------------------------------------------------------------------- #
-
-def home() -> dict:
-    """The landing page roll-up: two most recent journal entries (day-grouped,
-    with their resolved people attached for inline linking), the 30-day drink
-    series for the chart, and the most recent workout. The route layer is
-    responsible for converting the entry bodies to body_html (needs the request's
-    base path)."""
-    return {
-        "days": list_days(limit_entries=2)["days"],
-        "drink": drinking(days=30),
-        "last_session": (workouts_full(limit=1) or [None])[0],
-    }
