@@ -3,17 +3,7 @@
 {% block title %}Drinking · Journal{% endblock %}
 {% block content %}
 
-<div class="flex items-baseline justify-between mb-6">
-  <h1 class="text-2xl font-bold tracking-tight">Drinking</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400">Last {{ s.window_days }} days</span>
-</div>
-
-<div class="grid grid-cols-2 sm:grid-cols-4 gap-6 mb-12">
-  {{ m.stat(s.total_standard_drinks | num, "Std Drinks") }}
-  {{ m.stat(s.drinking_days, "Drinking Days") }}
-  {{ m.stat(s.sober_days, "Sober Days") }}
-  {{ m.stat(s.current_sober_streak if s.current_sober_streak is not none else "—", "Sober Streak") }}
-</div>
+<h1 class="text-2xl font-bold tracking-tight mb-12">Drinking</h1>
 
 <div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-5 mb-12">
   {{ m.section_label("Daily Standard Drinks") }}

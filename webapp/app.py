@@ -46,6 +46,11 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 WEB_BASE_URL = (os.environ.get("WEB_BASE_URL") or os.environ.get("PUBLIC_URL") or "").rstrip("/")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-insecure-change-me")
 AUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+# Whether the nav shows the logout icon. On automatically with auth; SHOW_LOGOUT=1
+# forces it on in authless dev so the icon can be previewed (logout still works —
+# it clears the session and redirects to /login, which bounces to home when auth
+# is off).
+SHOW_LOGOUT = AUTH_ENABLED or os.environ.get("SHOW_LOGOUT", "").lower() in ("1", "true", "yes")
 ALLOWED_EMAILS = server.ALLOWED_EMAILS  # reuse the MCP server's allowlist
 
 app = FastAPI(title="Journal")
@@ -174,7 +179,7 @@ def base_path(request: Request) -> str:
 
 
 def page(request: Request, template: str, active: str = "", status_code: int = 200, **ctx):
-    ctx.update(active=active, auth_enabled=AUTH_ENABLED,
+    ctx.update(active=active, auth_enabled=AUTH_ENABLED, show_logout=SHOW_LOGOUT,
                user=request.session.get("email"), base=base_path(request))
     return templates.TemplateResponse(request=request, name=template,
                                       context=ctx, status_code=status_code)
