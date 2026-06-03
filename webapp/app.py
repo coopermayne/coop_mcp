@@ -592,6 +592,53 @@ async def drinking_add(request: Request):
     return RedirectResponse(base + "/drinking", status_code=303)
 
 
+@app.post("/drinking/edit")
+async def drinking_edit(request: Request):
+    """Edit one past day in place — overwrites the day's total/kind/notes/date with
+    absolute values via server.update_drink (PRG back). Blank fields are left
+    unchanged (update_drink only writes non-null args); to clear a day, delete it."""
+    from urllib.parse import quote_plus
+    form = await request.form()
+    base = base_path(request)
+    try:
+        drink_id = int((form.get("drink_id") or "").strip())
+    except ValueError:
+        return RedirectResponse(base + "/drinking", status_code=303)
+    raw = (form.get("standard_drinks") or "").strip()
+    amount = None
+    if raw:
+        try:
+            amount = float(raw)
+        except ValueError:
+            return RedirectResponse(base + "/drinking?error=Enter+a+number+of+drinks.",
+                                    status_code=303)
+    res = server.update_drink(
+        drink_id=drink_id,
+        standard_drinks=amount,
+        drink_date=(form.get("drink_date") or "").strip() or None,
+        kind=(form.get("kind") or "").strip() or None,
+        notes=(form.get("notes") or "").strip() or None,
+    )
+    if isinstance(res, dict) and res.get("error"):
+        return RedirectResponse(base + "/drinking?error=" + quote_plus(res["error"]),
+                                status_code=303)
+    return RedirectResponse(base + "/drinking", status_code=303)
+
+
+@app.post("/drinking/delete")
+async def drinking_delete(request: Request):
+    """Remove one logged day entirely (server.delete_record kind='drink'); the day
+    reverts to sober. PRG back to the drinking page."""
+    form = await request.form()
+    base = base_path(request)
+    try:
+        drink_id = int((form.get("drink_id") or "").strip())
+    except ValueError:
+        return RedirectResponse(base + "/drinking", status_code=303)
+    server.delete_record(kind="drink", id=drink_id)
+    return RedirectResponse(base + "/drinking", status_code=303)
+
+
 # --------------------------------------------------------------------------- #
 # AI chat — a write path for prose (the journal). Browse pages above stay
 # read-only; drinks have their own direct-entry form. Each surface is scoped to
