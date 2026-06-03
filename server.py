@@ -152,6 +152,15 @@ Two ways to record training:
 Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
 yet-done set doesn't, so the briefing stays honest mid-session.
 
+Keep the catalog coached, not bare. Whenever you put an exercise into a workout or plan
+and it's NEW to the catalog (the return lists it under `new_exercises`), immediately
+enrich that entry with save_exercise — fill technique_notes (how to do it, the key
+cues), common_mistakes, and cautions (especially the user's left-shoulder limits) from
+your own knowledge of the movement, plus a video_link if you have a good one. Don't make
+the user ask; the notes are what the /trainer page and future sessions show, so a stub
+left empty is why "No saved technique notes yet" appears. Do this once per exercise — a
+name already in the catalog keeps its existing notes and needs no re-write.
+
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
 only useful if the readings are regular.""")
@@ -1386,10 +1395,13 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     write tool for the catalog.
 
     Target it by `exercise_id`, or by `name` (resolved case-insensitively): a KNOWN
-    name updates that exercise, an UNKNOWN name creates it. `log_workout` already
-    auto-stubs unknown lifts, so the usual job here is enriching one with coaching
-    content — how to do it (`technique_notes`), what to watch for (`common_mistakes`),
-    injury caveats (`cautions`, e.g. the user's left-shoulder limits). Only non-null
+    name updates that exercise, an UNKNOWN name creates it. The logging/planning tools
+    (log_workout, start_workout_plan, add_to_plan, swap_exercise) already auto-stub
+    unknown lifts and return them under `new_exercises`, so the usual job here is
+    enriching one with coaching content right after — how to do it (`technique_notes`),
+    what to watch for (`common_mistakes`), injury caveats (`cautions`, e.g. the user's
+    left-shoulder limits). Filling these in is what keeps the /trainer page from showing
+    "No saved technique notes yet"; do it for every newly created exercise. Only non-null
     scalar fields are written. Providing `muscles` and/or `secondary_muscles` REPLACES
     those links wholesale (pass both to set both). Use the canonical muscle labels so
     recency lines up: chest, upper back, lats, traps, shoulders, biceps, triceps,
@@ -1504,8 +1516,11 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
         }
     Names are resolved against the catalog case-insensitively; an unknown name is
     auto-stubbed as a new exercise (using `muscles` if given) so logging never
-    blocks — flag any `created` exercises to the user afterward so they can add
-    technique notes via save_exercise. weight_lbs is null for bodyweight/cardio.
+    blocks. Any auto-stubbed names come back under `new_exercises` (and `created` per
+    item) with EMPTY technique notes — enrich each one right away with save_exercise
+    (technique_notes, common_mistakes, cautions) so the catalog isn't left bare and the
+    /trainer page stops showing "No saved technique notes yet". weight_lbs is null for
+    bodyweight/cardio.
     rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
     judge whether to add weight next time. Returns per-exercise ids and which were
     newly created.
@@ -1855,10 +1870,15 @@ def _insert_planned(conn: sqlite3.Connection, wid: int, exercises: list[dict]) -
     return results
 
 
-def _plan_payload(conn: sqlite3.Connection, wid: int) -> dict:
+def _plan_payload(conn: sqlite3.Connection, wid: int,
+                  new_exercises: Optional[list[str]] = None) -> dict:
     """The plan for one workout: exercises in insertion order, each with its sets
     (target + actual + status), plus a done/total progress count (skipped sets are
-    excluded from the total). Used by every plan tool's return and by the web UI."""
+    excluded from the total). Used by every plan tool's return and by the web UI.
+
+    `new_exercises` (names auto-stubbed by this call) is surfaced so the model knows
+    which catalog entries are bare and should be enriched with technique notes via
+    save_exercise — the same `new_exercises` signal log_workout returns."""
     w = conn.execute(
         "SELECT id, workout_date, focus, feeling, notes, status FROM workouts WHERE id=?",
         (wid,),
@@ -1891,10 +1911,13 @@ def _plan_payload(conn: sqlite3.Connection, wid: int) -> dict:
             total += 1
         elif r["status"] == "pending":
             total += 1
-    return {"active": w["status"] == "active", "workout_id": w["id"],
-            "workout_date": w["workout_date"], "focus": w["focus"],
-            "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
-            "progress": {"done": done, "total": total}, "exercises": exercises}
+    payload = {"active": w["status"] == "active", "workout_id": w["id"],
+               "workout_date": w["workout_date"], "focus": w["focus"],
+               "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
+               "progress": {"done": done, "total": total}, "exercises": exercises}
+    if new_exercises:
+        payload["new_exercises"] = new_exercises
+    return payload
 
 
 def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> dict:
@@ -1962,7 +1985,10 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
         {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
          "target_reps": 12, "target_weight_lbs": 25}
     Unknown names are auto-stubbed (seeded with `muscles`). Use the canonical muscle
-    labels (chest, lats, quads, …) so recency lines up.
+    labels (chest, lats, quads, …) so recency lines up. Any auto-stubbed names come back
+    under `new_exercises` with EMPTY technique notes — enrich each one with save_exercise
+    (technique_notes, common_mistakes, cautions) so the catalog stays coached and the
+    /trainer page doesn't show "No saved technique notes yet".
 
     Only ONE plan is active at a time. If a plan is already active, this APPENDS the new
     exercises to it (focus/notes ignored) — unless `replace=True`, which discards the
@@ -1982,8 +2008,9 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
                    VALUES (?,?,?, 'active', ?)""",
                 (today(), focus, notes, now()),
             ).lastrowid
-        _insert_planned(conn, wid, exercises)
-        return _plan_payload(conn, wid)
+        results = _insert_planned(conn, wid, exercises)
+        new = [r["name"] for r in results if r["created"]]
+        return _plan_payload(conn, wid, new_exercises=new)
 
 
 @trainer_mcp.tool()
@@ -2043,7 +2070,9 @@ def swap_exercise(from_exercise: str, to_exercise: str,
     By default the substitute mirrors the count and targets of the swapped-out pending
     sets — but those targets came from a DIFFERENT exercise, so pass `sets`
     (e.g. [{"target_weight_lbs": 60, "target_reps": 10}, …]) whenever the right weight
-    differs (it usually does). Unknown `to_exercise` is auto-stubbed with `muscles`.
+    differs (it usually does). Unknown `to_exercise` is auto-stubbed with `muscles` and
+    returned under `new_exercises` — enrich it with save_exercise (technique_notes,
+    common_mistakes, cautions) so the new catalog entry isn't left bare.
     Returns the updated plan."""
     with db() as conn:
         w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
@@ -2072,8 +2101,9 @@ def swap_exercise(from_exercise: str, to_exercise: str,
             "UPDATE sets SET status='skipped' WHERE workout_id=? AND exercise_id=? AND status='pending'",
             (w["id"], frm["id"]),
         )
-        _insert_planned(conn, w["id"], spec)
-        return _plan_payload(conn, w["id"])
+        results = _insert_planned(conn, w["id"], spec)
+        new = [r["name"] for r in results if r["created"]]
+        return _plan_payload(conn, w["id"], new_exercises=new)
 
 
 @trainer_mcp.tool()
@@ -2081,7 +2111,9 @@ def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict
     """Append exercises (or extra sets of an exercise already present) to the active
     plan mid-session — e.g. "add some calf raises" or "give me one more drop set". Same
     `exercises` shape as start_workout_plan. Errors if no plan is active. Returns the
-    updated plan. (To retarget an existing pending set, use update_set with
+    updated plan; any newly auto-stubbed names come back under `new_exercises` — enrich
+    each with save_exercise (technique_notes, common_mistakes, cautions) so the catalog
+    isn't left bare. (To retarget an existing pending set, use update_set with
     target_weight_lbs/target_reps; to drop one, delete_record(kind="set").)"""
     if err := _bad_planned(exercises):
         return err
@@ -2090,8 +2122,9 @@ def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict
              if workout_id is not None else _active_workout(conn))
         if not w:
             return {"error": "no active workout plan; start one with start_workout_plan"}
-        _insert_planned(conn, w["id"], exercises)
-        return _plan_payload(conn, w["id"])
+        results = _insert_planned(conn, w["id"], exercises)
+        new = [r["name"] for r in results if r["created"]]
+        return _plan_payload(conn, w["id"], new_exercises=new)
 
 
 @trainer_mcp.tool()
