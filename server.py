@@ -154,18 +154,26 @@ yet-done set doesn't, so the briefing stays honest mid-session.
 
 The exercise catalog is also a LIBRARY the user browses at /trainer/library — every
 movement they do or want to introduce later, with its muscles, equipment, technique, and
-a form gif/video. Keep it coached, not bare. Whenever you put an exercise into a workout
-or plan and it's NEW to the catalog (the return lists it under `new_exercises`),
-immediately enrich that entry with save_exercise from your own knowledge of the movement:
-the muscles it works in three EMPHASIS tiers (muscles = primary, secondary_muscles,
-tertiary_muscles — e.g. a Kettlebell Thruster is shoulders primary, quads/glutes
+a form gif/video. It comes PRE-LOADED with a broad public-domain catalog (~870 movements
+from free-exercise-db, via scripts/import_exercises.py) — each already carrying muscles,
+equipment, a demo image, and step-by-step technique. So when you program or log a
+movement, it is almost certainly ALREADY in the catalog with full data: look it up with
+`exercises` and reuse that entry rather than re-deriving it. Keep it coached, not bare.
+Whenever you put an exercise into a workout or plan and it's genuinely NEW to the catalog
+(the return lists it under `new_exercises`), immediately enrich that entry with
+save_exercise from your own knowledge of the movement, matching the imported entries'
+shape: the muscles it works in three EMPHASIS tiers (muscles = primary, secondary_muscles,
+tertiary_muscles — e.g. a Kettlebell Thruster is shoulders primary, quadriceps/glutes
 secondary, triceps tertiary), the `equipment` it needs, technique_notes (how to do it,
 the key cues), common_mistakes, cautions (especially the user's left-shoulder limits),
-and a video_link and/or image_link (a looping form gif) if you have a good one. Don't
-make the user ask; an empty stub is why "No saved technique notes yet" appears. Do this
-once per exercise — a name already in the catalog keeps what it has and needs no re-write.
-The user can also just ask you to add exercises to the library they don't do yet; treat
-that as a save_exercise with the same full enrichment.
+and a video_link and/or image_link (a looping form gif) if you have a good one. Use the
+canonical muscle labels (they mirror the library's vocabulary): abdominals, abductors,
+adductors, biceps, calves, chest, forearms, glutes, hamstrings, lats, lower back, middle
+back, neck, quadriceps, shoulders, traps, triceps. Don't make the user ask; an empty stub
+is why "No saved technique notes yet" appears. Do this once per exercise — a name already
+in the catalog keeps what it has and needs no re-write. The user can also just ask you to
+add exercises to the library they don't do yet; treat that as a save_exercise with the
+same full enrichment.
 
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
@@ -297,7 +305,7 @@ CREATE TABLE IF NOT EXISTS exercises (
 
 CREATE TABLE IF NOT EXISTS exercise_muscles (
     exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
-    muscle      TEXT NOT NULL,        -- canonical lowercase, e.g. 'chest', 'lats', 'quads'
+    muscle      TEXT NOT NULL,        -- canonical lowercase, e.g. 'chest', 'lats', 'quadriceps'
     role        TEXT NOT NULL DEFAULT 'primary',  -- 'primary' | 'secondary' | 'tertiary' (emphasis tier)
     PRIMARY KEY (exercise_id, muscle)
 );
@@ -417,6 +425,17 @@ def init_db() -> None:
         xcols = [r["name"] for r in conn.execute("PRAGMA table_info(exercises)")]
         if "image_link" not in xcols:
             conn.execute("ALTER TABLE exercises ADD COLUMN image_link TEXT")
+        # Muscle vocabulary now mirrors free-exercise-db (see MUSCLES); rename any rows
+        # stored under the old labels so existing data still aggregates. OR IGNORE skips a
+        # rename that would collide with a row already in the target tier; the trailing
+        # DELETE then clears those now-redundant legacy rows. Idempotent (old labels gone
+        # after the first run).
+        for old, new in (("abs", "abdominals"), ("obliques", "abdominals"),
+                         ("quads", "quadriceps"), ("upper back", "middle back")):
+            conn.execute("UPDATE OR IGNORE exercise_muscles SET muscle=? WHERE muscle=?",
+                         (new, old))
+        conn.execute(
+            "DELETE FROM exercise_muscles WHERE muscle IN ('abs','obliques','quads','upper back')")
         # Backfill any legacy rows that predate the status column: existing workouts
         # and sets are completed history, so they read back as 'done'.
         conn.execute("UPDATE workouts SET status='done' WHERE status IS NULL OR status=''")
@@ -1169,12 +1188,14 @@ def get_briefing(recent_entries: int = 5) -> dict:
 # Drinking + trainer helpers
 # --------------------------------------------------------------------------- #
 
-# Canonical muscle vocabulary — kept small and consistent so recency/volume
-# aggregates line up. The model should map onto these labels when logging.
+# Canonical muscle vocabulary — kept consistent so recency/volume aggregates line up.
+# Deliberately MIRRORS the free-exercise-db vocabulary (scripts/import_exercises.py), so
+# the imported library, its per-muscle filters, and the model's own enrichment all use
+# one shared label set with no mapping. The model should use these labels when logging.
 MUSCLES = [
-    "chest", "upper back", "lats", "traps", "shoulders", "biceps", "triceps",
-    "forearms", "abs", "obliques", "lower back", "glutes", "quads",
-    "hamstrings", "calves",
+    "abdominals", "abductors", "adductors", "biceps", "calves", "chest",
+    "forearms", "glutes", "hamstrings", "lats", "lower back", "middle back",
+    "neck", "quadriceps", "shoulders", "traps", "triceps",
 ]
 
 
@@ -1434,12 +1455,13 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
     `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
     so "how hard each muscle is worked" is captured, e.g. a Kettlebell Thruster is
-    muscles=["shoulders"], secondary_muscles=["quads","glutes"],
+    muscles=["shoulders"], secondary_muscles=["quadriceps","glutes"],
     tertiary_muscles=["triceps"]. Passing ANY tier REPLACES the whole mapping (a muscle
     listed in two tiers lands in the higher one), so send every tier you want kept. Use
-    the canonical muscle labels so recency lines up: chest, upper back, lats, traps,
-    shoulders, biceps, triceps, forearms, abs, obliques, lower back, glutes, quads,
-    hamstrings, calves. Returns the exercise_id and whether it was newly created."""
+    the canonical muscle labels so recency lines up (they mirror the imported library's
+    vocabulary): abdominals, abductors, adductors, biceps, calves, chest, forearms,
+    glutes, hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
+    triceps. Returns the exercise_id and whether it was newly created."""
     with db() as conn:
         if exercise_id is not None:
             row = conn.execute("SELECT id FROM exercises WHERE id=?", (exercise_id,)).fetchone()
@@ -1542,7 +1564,7 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     Each item in `exercises` is:
         {
           "name": "Leg Press",
-          "muscles": ["quads", "glutes"],   # optional; seeds the catalog if NEW
+          "muscles": ["quadriceps", "glutes"],   # optional; seeds the catalog if NEW
           "sets": [
             {"weight_lbs": 180, "reps": 10, "rpe": 7, "note": ""},
             {"weight_lbs": 180, "reps": 10, "rpe": 8},
@@ -2020,7 +2042,7 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
         {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
          "target_reps": 12, "target_weight_lbs": 25}
     Unknown names are auto-stubbed (seeded with `muscles`). Use the canonical muscle
-    labels (chest, lats, quads, …) so recency lines up. Any auto-stubbed names come back
+    labels (chest, lats, quadriceps, …) so recency lines up. Any auto-stubbed names come back
     under `new_exercises` with EMPTY technique notes — enrich each one with save_exercise
     (technique_notes, common_mistakes, cautions) so the catalog stays coached and the
     /trainer page doesn't show "No saved technique notes yet".
