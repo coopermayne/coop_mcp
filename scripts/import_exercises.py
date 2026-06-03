@@ -18,6 +18,11 @@ Run it against your LIVE DB (the throwaway dev DB here won't reach production):
 By default it SKIPS exercises that already exist (so it never clobbers anything you or
 the trainer have already curated) and pulls the dataset over the network. Useful flags:
 
+    --reset            DESTRUCTIVE: wipe the whole exercise library AND all workout
+                       history (workouts + sets + exercise_muscles) before importing,
+                       for a clean reseed. Bodyweight readings are preserved (a separate
+                       daily metric, not workout history). Honors --dry-run (reports the
+                       counts it would delete without touching anything).
     --overwrite        update exercises that already exist (re-sync from the dataset)
     --dry-run          show what would be written, touch nothing
     --limit N          import only the first N (after filtering) — handy for a test run
@@ -95,6 +100,9 @@ def load_source(source):
 def main():
     ap = argparse.ArgumentParser(description="Import free-exercise-db into the library.")
     ap.add_argument("--source", default=SOURCE_URL, help="dataset JSON URL or local path")
+    ap.add_argument("--reset", action="store_true",
+                    help="DESTRUCTIVE: wipe all exercises + workout history before importing "
+                         "(bodyweight preserved); honors --dry-run")
     ap.add_argument("--overwrite", action="store_true", help="update exercises that already exist")
     ap.add_argument("--dry-run", action="store_true", help="report only, write nothing")
     ap.add_argument("--limit", type=int, help="import only the first N (after filtering)")
@@ -103,6 +111,24 @@ def main():
     args = ap.parse_args()
 
     server.init_db()
+
+    if args.reset:
+        # Clean-slate reseed. Deleting workouts cascades to sets (ON DELETE CASCADE on
+        # workout_id); deleting exercises cascades to exercise_muscles. body_weight is a
+        # separate daily metric (not workout history) and is intentionally left intact.
+        with server.db() as conn:
+            nx = conn.execute("SELECT COUNT(*) FROM exercises").fetchone()[0]
+            nw = conn.execute("SELECT COUNT(*) FROM workouts").fetchone()[0]
+            ns = conn.execute("SELECT COUNT(*) FROM sets").fetchone()[0]
+            if args.dry_run:
+                print(f"  [reset] would delete {nx} exercises, {nw} workouts, {ns} sets "
+                      "(bodyweight preserved)")
+            else:
+                conn.execute("DELETE FROM workouts")   # cascades to sets
+                conn.execute("DELETE FROM exercises")  # cascades to exercise_muscles
+                print(f"reset: deleted {nx} exercises, {nw} workouts, {ns} sets "
+                      "(bodyweight preserved)")
+
     data = load_source(args.source)
     print(f"loaded {len(data)} exercises from {args.source}")
 
