@@ -231,6 +231,15 @@ working.
   Restore from the library's **Archived** view, or by re-adding the same name on the add
   form (`create_exercise` reuses & un-archives the row rather than colliding on the UNIQUE
   name).
+- `exercise_aliases` — AKAs (common alternative names) per exercise, the `aliases` table's
+  twin for the catalog: one canonical row, many surface forms ("rdl"→Romanian Deadlift,
+  "bench"→Barbell Bench Press). `_resolve_exercise`/`_match_exercises` score against the
+  canonical name AND its AKAs (archived rows still excluded), so a lift resolves and the
+  library search surfaces it by whatever the user calls it. Stored lowercased; an AKA never
+  creates a row (catalog stays closed). Set via `save_exercise`/`create_exercise`'s
+  `aliases=`; the default-library AKAs are seeded by `scripts/seed_exercise_akas.py` (keyed
+  by exact NAME, not id — ids differ between dev and prod — so it's safe to run against
+  production; merge, idempotent).
 - `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a
   plain GROUP BY. `role` is one of three EMPHASIS tiers — primary|secondary|tertiary
   ("how hard" each muscle is worked, e.g. a thruster = shoulders primary, quads/glutes

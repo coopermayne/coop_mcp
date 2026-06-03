@@ -113,7 +113,7 @@
 
 {# Name search + a Clear that also drops the muscle filter. #}
 <form method="get" action="{{ base }}/trainer/library" class="mb-4 flex gap-2">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search exercise name…"
+  <input type="search" name="q" value="{{ q }}" placeholder="Search name or AKA…"
          class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
   {% if muscle %}<input type="hidden" name="muscle" value="{{ muscle }}" />{% endif %}
   {% if rotation %}<input type="hidden" name="rotation" value="1" />{% endif %}
@@ -158,6 +158,11 @@
           {% if ex.muscles.primary %}<span><span class="text-gray-400">primary</span> {{ ex.muscles.primary | join(", ") }}</span>{% endif %}
           {% if ex.muscles.secondary %}<span><span class="text-gray-400">secondary</span> {{ ex.muscles.secondary | join(", ") }}</span>{% endif %}
           {% if ex.muscles.tertiary %}<span><span class="text-gray-400">tertiary</span> {{ ex.muscles.tertiary | join(", ") }}</span>{% endif %}
+        </div>
+        {% endif %}
+        {% if ex.aka %}
+        <div class="mt-1 text-xs text-gray-400">
+          <span class="text-[10px] uppercase tracking-widest">aka</span> {{ ex.aka | join(", ") }}
         </div>
         {% endif %}
       </div>
