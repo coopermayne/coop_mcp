@@ -18,6 +18,7 @@
   {% if q %}<a href="{{ base }}/people" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
+<div data-chat-refresh>
 {% if people %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for p in people %}
@@ -41,6 +42,15 @@
 </div>
 {% else %}
 <p class="text-sm text-gray-400">{% if q %}No one matched "{{ q }}".{% else %}No people yet.{% endif %}</p>
+{% endif %}
+</div>
+
+{% if chat_enabled %}
+  {% set panel_title = "People chat" %}
+  {% set chat_open_label = "Open people chat" %}
+  {% set chat_placeholder = "Add or edit a person…" %}
+  {% set chat_seed = "Add someone new, fix a role, merge duplicates, or ask who you’ve been seeing lately. I’ll update people the same way Claude does over the connector." %}
+  {% include "_chat_panel.html" %}
 {% endif %}
 
 {% endblock %}
