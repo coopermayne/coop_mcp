@@ -204,6 +204,11 @@
     form.appendChild(save);
     form.appendChild(cancel);
     slot.appendChild(form);
+    // For a logged set, blanking reps clears it — surface that gesture.
+    if (done) {
+      slot.appendChild(el('p', 'text-[11px] text-gray-400 mt-2',
+        'Clear reps and save to remove this set.'));
+    }
     // Enter in any field submits.
     form.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); save.click(); }

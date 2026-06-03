@@ -1910,6 +1910,36 @@ def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> 
         return _plan_payload(conn, w["id"])
 
 
+def clear_plan_set(set_id: int) -> dict:
+    """Clear a logged set from the /trainer plan card (the card's gesture: save with
+    reps blank). A PLANNED set (one carrying a target) reverts to 'pending' — its actuals
+    are blanked so it's a to-do again, the target kept; an ad-hoc set with no target is
+    deleted outright. A plain helper, not an MCP tool — the model corrects sets with
+    update_set / delete_record. Returns the updated plan."""
+    with db() as conn:
+        r = conn.execute(
+            "SELECT workout_id, target_weight_lbs, target_reps FROM sets WHERE id=?",
+            (set_id,),
+        ).fetchone()
+        if not r:
+            return {"error": f"no set with id {set_id}"}
+        wid = r["workout_id"]
+        if r["target_weight_lbs"] is not None or r["target_reps"] is not None:
+            conn.execute(
+                """UPDATE sets SET weight_lbs=NULL, reps=NULL, rpe=NULL,
+                   duration_seconds=NULL, distance_miles=NULL, note=NULL,
+                   status='pending' WHERE id=?""",
+                (set_id,),
+            )
+            return _plan_payload(conn, wid)
+    # No target — an ad-hoc logged set; remove the row entirely (renumbers the rest).
+    res = _delete_record("set", set_id)
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    with db() as conn:
+        return _plan_payload(conn, wid)
+
+
 @trainer_mcp.tool()
 def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
                        notes: Optional[str] = None, replace: bool = False) -> dict:
