@@ -521,51 +521,11 @@ async def trainer_library(request: Request, muscle: str = "", q: str = "",
     """The exercise library: browse the whole catalog — muscles (by emphasis tier),
     equipment, level/mechanic, technique, and a form gif/video per exercise. Filterable
     by muscle, name, or `rotation` (the curated programming pool). Each row toggles in/out
-    of the rotation. The user curates the closed catalog here: the add form
-    (server.create_exercise) is the only way a new exercise enters it — the trainer chat
-    can enrich technique but never creates one."""
+    of the rotation. The user curates the closed catalog here: the page's AI add panel
+    (the `exercise` chat agent → server.create_exercise) is the only way a new exercise
+    enters it — the trainer chat can enrich technique but never creates one."""
     lib = data.exercise_library(muscle=muscle, q=q, rotation=bool(rotation))
     return page(request, "library.html", active="library", error=error, **lib)
-
-
-@app.post("/trainer/library/add")
-async def trainer_library_add(request: Request):
-    """Manually add an exercise to the closed library — the ONLY creation path (the AI
-    can't reach it). Calls server.create_exercise (defaults the new movement into the
-    rotation) and redirects back (PRG). Muscle tiers arrive comma-separated; a blank name
-    is rejected."""
-    from urllib.parse import quote_plus
-    form = await request.form()
-    base = base_path(request)
-
-    def _muscles(field):
-        return [m.strip().lower() for m in (form.get(field) or "").split(",") if m.strip()]
-
-    name = (form.get("name") or "").strip()
-    if not name:
-        return RedirectResponse(base + "/trainer/library?error=Enter+an+exercise+name.",
-                                status_code=303)
-    res = server.create_exercise(
-        name=name,
-        in_rotation=True,  # a movement the user adds by hand is one they mean to train
-        category=(form.get("category") or "").strip() or None,
-        equipment=(form.get("equipment") or "").strip() or None,
-        level=(form.get("level") or "").strip() or None,
-        mechanic=(form.get("mechanic") or "").strip() or None,
-        force=(form.get("force") or "").strip() or None,
-        muscles=_muscles("muscles") or None,
-        secondary_muscles=_muscles("secondary_muscles") or None,
-        tertiary_muscles=_muscles("tertiary_muscles") or None,
-        technique_notes=(form.get("technique_notes") or "").strip() or None,
-        common_mistakes=(form.get("common_mistakes") or "").strip() or None,
-        cautions=(form.get("cautions") or "").strip() or None,
-        video_link=(form.get("video_link") or "").strip() or None,
-        image_link=(form.get("image_link") or "").strip() or None,
-    )
-    if isinstance(res, dict) and res.get("error"):
-        return RedirectResponse(base + "/trainer/library?error=" + quote_plus(res["error"]),
-                                status_code=303)
-    return RedirectResponse(base + "/trainer/library", status_code=303)
 
 
 @app.post("/trainer/exercise/{exercise_id}/rotation")
