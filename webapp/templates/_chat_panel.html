@@ -93,7 +93,11 @@
   // context (?q=) is preserved.
   async function refreshFeed() {
     try {
-      var res = await fetch(window.location.href, { headers: { 'X-Requested-With': 'fetch' } });
+      // Cache-bust + no-store so the refresh always reflects the just-written entry:
+      // a service worker (prod, HTTPS) must never hand back a stale cached page here.
+      var u = new URL(window.location.href);
+      u.searchParams.set('_', Date.now());
+      var res = await fetch(u, { cache: 'no-store', headers: { 'X-Requested-With': 'fetch' } });
       if (!res.ok) return;
       var doc = new DOMParser().parseFromString(await res.text(), 'text/html');
       ['[data-journal-feed]', '[data-pending]'].forEach(function (sel) {

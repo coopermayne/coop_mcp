@@ -346,7 +346,7 @@ async def manifest(request: Request):
 # static assets (icons/favicon). Cross-origin (Tailwind/Fonts CDNs) passes
 # straight through. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [
@@ -393,6 +393,15 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
+
+  // Only STATIC assets (icons/favicon/manifest) get the offline cache. Everything
+  // else — notably the authed journal HTML the in-app chat re-fetches to live-update
+  // the feed (a same-origin GET, but NOT a navigation, so it misses the rule above) —
+  // must always hit the network. Caching it here served a stale page back on the next
+  // refresh, so a freshly-added entry wouldn't appear until a full reload.
+  const isStatic = url.pathname.startsWith(BASE + '/static/')
+    || url.pathname === BASE + '/manifest.webmanifest';
+  if (!isStatic) return;
 
   event.respondWith(
     caches.match(req).then((cached) => {
