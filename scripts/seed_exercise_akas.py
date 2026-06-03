@@ -379,6 +379,7 @@ def main():
             if args.dry_run:
                 if new:
                     print(f"  [+] {name}: {', '.join(new)}")
+                aliases_added += len(new)
                 continue
             # Merge (replace=False): add the AKAs, leaving any already present untouched.
             before = len(existing)
