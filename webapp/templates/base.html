@@ -116,6 +116,11 @@
     html[data-theme="dark"] .text-gray-500                            { color: #a3a3a3; }
     html[data-theme="dark"] .text-gray-600                            { color: #d4d4d4; }
     html[data-theme="dark"] .text-gray-700, html[data-theme="dark"] .text-gray-800, html[data-theme="dark"] .text-gray-900 { color: #fafafa; }
+    /* The `hidden` attribute must beat Tailwind's display utilities. The Play CDN
+       injects `.flex{display:flex}` etc. AFTER this block, so at equal specificity
+       a flex+hidden element (the custom drink panel, the inline day-edit forms)
+       would render despite `hidden`. !important on the UA-equivalent rule wins. */
+    [hidden] { display: none !important; }
     html[data-theme="dark"] .border-gray-100                          { border-color: #171717; }
     html[data-theme="dark"] .border-gray-200                          { border-color: #262626; }
     /* Tailwind's `divide-*` utility uses a long, high-specificity selector

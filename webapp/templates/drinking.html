@@ -47,9 +47,9 @@
       <input type="hidden" name="kind" value="{{ k }}" />
       <input type="hidden" name="drink_date" value="{{ today }}" />
       <button type="submit" title="+1 {{ k }}" aria-label="Add one {{ k }}"
-              class="w-16 h-16 flex flex-col items-center justify-center gap-1 border border-gray-200 rounded-[10px] text-gray-600 hover:bg-black hover:text-white hover:border-black active:scale-95 transition-all">
-        <svg class="w-6 h-6"><use href="#i-{{ k }}"/></svg>
-        <span class="text-[10px]">{{ k }}</span>
+              class="relative w-16 h-16 flex items-center justify-center rounded-[10px] text-gray-600 hover:bg-black hover:text-white active:scale-95 transition-all">
+        <svg class="w-7 h-7"><use href="#i-{{ k }}"/></svg>
+        <span class="absolute top-1 right-1.5 text-[10px] font-semibold tabular-nums text-gray-400">+1</span>
       </button>
     </form>
     {% endfor %}
