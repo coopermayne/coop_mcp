@@ -285,6 +285,27 @@
       card.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400', label));
       card.appendChild(el('p', 'text-sm text-gray-700 leading-relaxed', text));
     }
+    // Muscle emphasis tiers (primary / secondary / tertiary), each only if present.
+    var m = info.muscles || {};
+    var tiers = [['primary', m.primary], ['secondary', m.secondary], ['tertiary', m.tertiary]]
+      .filter(function (t) { return t[1] && t[1].length; });
+    if (tiers.length) {
+      var mline = el('p', 'text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5');
+      tiers.forEach(function (t) {
+        var span = el('span', '');
+        span.appendChild(el('span', 'text-gray-400', t[0] + ' '));
+        span.appendChild(document.createTextNode(t[1].join(', ')));
+        mline.appendChild(span);
+      });
+      card.appendChild(mline);
+    }
+    // A saved gif/still of proper form, if any (a gif loops on its own).
+    if (info.image_link) {
+      var img = el('img', 'rounded-[4px] border border-gray-100 max-h-48 w-auto');
+      img.src = info.image_link; img.alt = (info.name || ex.name || '') + ' technique';
+      img.loading = 'lazy';
+      card.appendChild(img);
+    }
     block('Technique', info.technique_notes);
     block('Common mistakes', info.common_mistakes);
     block('Cautions', info.cautions);

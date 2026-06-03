@@ -94,7 +94,8 @@ There is no exercise-selection or progression logic in the server either.
   its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host` routing) or grafted at
   `/trainer/mcp` on the main origin (authless fallback).
 - `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
-  read-only browse pages, plus the direct drinks-entry form and the `/chat` panel mount).
+  read-only browse pages — including the `/trainer/library` exercise library — plus the
+  direct drinks-entry form and the `/chat` panel mount).
 - `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
   `app.py` thin). Read-only — writes go through `server.py`'s tools.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
@@ -195,10 +196,16 @@ working.
   day is sober if it has no row. `get_drink_summary` aggregates (daily totals, sober
   streak) in SQL; the webapp `/drinking` page edits/deletes past days inline.
 - `exercises` — the exercise catalog (stable entities, like people): `technique_notes`,
-  `common_mistakes`, `cautions`, `video_link`. Starts empty; `log_workout` auto-stubs a
-  bare record for any unknown name, which `save_exercise` later enriches.
-- `exercise_muscles` — normalizes muscle→exercise (`role` primary|secondary) so
-  per-muscle recency/volume is a plain GROUP BY. Canonical muscle list is `MUSCLES`.
+  `common_mistakes`, `cautions`, `video_link`, `image_link` (a form gif/still). Starts
+  empty; the logging/planning tools auto-stub a bare record for any unknown name (and
+  return it under `new_exercises`), which `save_exercise` then enriches — the contract
+  tells the model to do that immediately so the catalog isn't left bare. The catalog
+  doubles as the browsable **exercise library** at `/trainer/library`.
+- `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a
+  plain GROUP BY. `role` is one of three EMPHASIS tiers — primary|secondary|tertiary
+  ("how hard" each muscle is worked, e.g. a thruster = shoulders primary, quads/glutes
+  secondary, triceps tertiary); recency/volume count all tiers equally. Canonical muscle
+  list is `MUSCLES`.
 - `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), plus
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
   lifts, weight/reps NULL for cardio). The two-level log mirroring entries/mentions.

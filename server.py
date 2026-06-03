@@ -152,14 +152,20 @@ Two ways to record training:
 Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
 yet-done set doesn't, so the briefing stays honest mid-session.
 
-Keep the catalog coached, not bare. Whenever you put an exercise into a workout or plan
-and it's NEW to the catalog (the return lists it under `new_exercises`), immediately
-enrich that entry with save_exercise — fill technique_notes (how to do it, the key
-cues), common_mistakes, and cautions (especially the user's left-shoulder limits) from
-your own knowledge of the movement, plus a video_link if you have a good one. Don't make
-the user ask; the notes are what the /trainer page and future sessions show, so a stub
-left empty is why "No saved technique notes yet" appears. Do this once per exercise — a
-name already in the catalog keeps its existing notes and needs no re-write.
+The exercise catalog is also a LIBRARY the user browses at /trainer/library — every
+movement they do or want to introduce later, with its muscles, equipment, technique, and
+a form gif/video. Keep it coached, not bare. Whenever you put an exercise into a workout
+or plan and it's NEW to the catalog (the return lists it under `new_exercises`),
+immediately enrich that entry with save_exercise from your own knowledge of the movement:
+the muscles it works in three EMPHASIS tiers (muscles = primary, secondary_muscles,
+tertiary_muscles — e.g. a Kettlebell Thruster is shoulders primary, quads/glutes
+secondary, triceps tertiary), the `equipment` it needs, technique_notes (how to do it,
+the key cues), common_mistakes, cautions (especially the user's left-shoulder limits),
+and a video_link and/or image_link (a looping form gif) if you have a good one. Don't
+make the user ask; an empty stub is why "No saved technique notes yet" appears. Do this
+once per exercise — a name already in the catalog keeps what it has and needs no re-write.
+The user can also just ask you to add exercises to the library they don't do yet; treat
+that as a save_exercise with the same full enrichment.
 
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
@@ -285,13 +291,14 @@ CREATE TABLE IF NOT EXISTS exercises (
     common_mistakes TEXT,
     cautions        TEXT,             -- injury / shoulder considerations
     video_link      TEXT,
+    image_link      TEXT,             -- gif / still of proper technique (loops inline in the UI)
     created_at      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS exercise_muscles (
     exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
     muscle      TEXT NOT NULL,        -- canonical lowercase, e.g. 'chest', 'lats', 'quads'
-    role        TEXT NOT NULL DEFAULT 'primary',  -- 'primary' | 'secondary'
+    role        TEXT NOT NULL DEFAULT 'primary',  -- 'primary' | 'secondary' | 'tertiary' (emphasis tier)
     PRIMARY KEY (exercise_id, muscle)
 );
 CREATE INDEX IF NOT EXISTS idx_exmuscle_muscle ON exercise_muscles(muscle);
@@ -407,6 +414,9 @@ def init_db() -> None:
         wcols = [r["name"] for r in conn.execute("PRAGMA table_info(workouts)")]
         if "status" not in wcols:
             conn.execute("ALTER TABLE workouts ADD COLUMN status TEXT NOT NULL DEFAULT 'done'")
+        xcols = [r["name"] for r in conn.execute("PRAGMA table_info(exercises)")]
+        if "image_link" not in xcols:
+            conn.execute("ALTER TABLE exercises ADD COLUMN image_link TEXT")
         # Backfill any legacy rows that predate the status column: existing workouts
         # and sets are completed history, so they read back as 'done'.
         conn.execute("UPDATE workouts SET status='done' WHERE status IS NULL OR status=''")
@@ -1185,6 +1195,10 @@ def _resolve_exercise(conn: sqlite3.Connection, name: str):
 
 
 def _muscles_for(conn: sqlite3.Connection, exercise_id: int) -> dict:
+    """Muscles an exercise trains, split into the three emphasis tiers (each a list,
+    omitted-empty fine). primary = the muscle(s) the lift is *for*; secondary = real
+    assistance; tertiary = lightly involved. Tiers are how much each muscle is worked,
+    so the model and the library can rank them."""
     rows = conn.execute(
         "SELECT muscle, role FROM exercise_muscles WHERE exercise_id=? ORDER BY role, muscle",
         (exercise_id,),
@@ -1192,19 +1206,27 @@ def _muscles_for(conn: sqlite3.Connection, exercise_id: int) -> dict:
     return {
         "primary": [r["muscle"] for r in rows if r["role"] == "primary"],
         "secondary": [r["muscle"] for r in rows if r["role"] == "secondary"],
+        "tertiary": [r["muscle"] for r in rows if r["role"] == "tertiary"],
     }
 
 
 def _set_muscles(conn: sqlite3.Connection, exercise_id: int,
-                 primary: Optional[list[str]], secondary: Optional[list[str]]) -> None:
-    """Replace an exercise's muscle links (only when at least one list is given)."""
-    if primary is None and secondary is None:
+                 primary: Optional[list[str]], secondary: Optional[list[str]],
+                 tertiary: Optional[list[str]] = None) -> None:
+    """Replace an exercise's muscle links across the three emphasis tiers. Runs only
+    when at least one tier list is given; passing some-but-not-all clears the omitted
+    tiers (the whole mapping is rewritten), so send every tier you want kept. A muscle
+    named in more than one tier lands in the first (primary > secondary > tertiary)."""
+    if primary is None and secondary is None and tertiary is None:
         return
     conn.execute("DELETE FROM exercise_muscles WHERE exercise_id=?", (exercise_id,))
-    for role, names in (("primary", primary or []), ("secondary", secondary or [])):
+    seen: set[str] = set()
+    for role, names in (("primary", primary or []), ("secondary", secondary or []),
+                        ("tertiary", tertiary or [])):
         for m in names:
             m = m.strip().lower()
-            if m:
+            if m and m not in seen:
+                seen.add(m)
                 conn.execute(
                     """INSERT OR IGNORE INTO exercise_muscles(exercise_id, muscle, role)
                        VALUES (?,?,?)""",
@@ -1387,12 +1409,16 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   category: Optional[str] = None, equipment: Optional[str] = None,
                   muscles: Optional[list[str]] = None,
                   secondary_muscles: Optional[list[str]] = None,
+                  tertiary_muscles: Optional[list[str]] = None,
                   technique_notes: Optional[str] = None,
                   common_mistakes: Optional[str] = None,
                   cautions: Optional[str] = None,
-                  video_link: Optional[str] = None) -> dict:
+                  video_link: Optional[str] = None,
+                  image_link: Optional[str] = None) -> dict:
     """Create or enrich a catalog exercise (a stable entity, like a person) — the one
-    write tool for the catalog.
+    write tool for the catalog, which doubles as the exercise LIBRARY (browsable at
+    /trainer/library). Fill an exercise in fully the first time you meet it: the lift
+    you do AND ones you plan to introduce later all belong here.
 
     Target it by `exercise_id`, or by `name` (resolved case-insensitively): a KNOWN
     name updates that exercise, an UNKNOWN name creates it. The logging/planning tools
@@ -1400,13 +1426,20 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     unknown lifts and return them under `new_exercises`, so the usual job here is
     enriching one with coaching content right after — how to do it (`technique_notes`),
     what to watch for (`common_mistakes`), injury caveats (`cautions`, e.g. the user's
-    left-shoulder limits). Filling these in is what keeps the /trainer page from showing
-    "No saved technique notes yet"; do it for every newly created exercise. Only non-null
-    scalar fields are written. Providing `muscles` and/or `secondary_muscles` REPLACES
-    those links wholesale (pass both to set both). Use the canonical muscle labels so
-    recency lines up: chest, upper back, lats, traps, shoulders, biceps, triceps,
-    forearms, abs, obliques, lower back, glutes, quads, hamstrings, calves. Returns the
-    exercise_id and whether it was newly created."""
+    left-shoulder limits), the `equipment` it needs, and a `video_link` and/or
+    `image_link` (a looping gif/still of proper form). Filling these in is what keeps
+    the /trainer page from showing "No saved technique notes yet"; do it for every newly
+    created exercise. Only non-null scalar fields are written.
+
+    MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
+    `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
+    so "how hard each muscle is worked" is captured, e.g. a Kettlebell Thruster is
+    muscles=["shoulders"], secondary_muscles=["quads","glutes"],
+    tertiary_muscles=["triceps"]. Passing ANY tier REPLACES the whole mapping (a muscle
+    listed in two tiers lands in the higher one), so send every tier you want kept. Use
+    the canonical muscle labels so recency lines up: chest, upper back, lats, traps,
+    shoulders, biceps, triceps, forearms, abs, obliques, lower back, glutes, quads,
+    hamstrings, calves. Returns the exercise_id and whether it was newly created."""
     with db() as conn:
         if exercise_id is not None:
             row = conn.execute("SELECT id FROM exercises WHERE id=?", (exercise_id,)).fetchone()
@@ -1421,7 +1454,7 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
             created = False
             fields = {"category": category, "equipment": equipment,
                       "technique_notes": technique_notes, "common_mistakes": common_mistakes,
-                      "cautions": cautions, "video_link": video_link}
+                      "cautions": cautions, "video_link": video_link, "image_link": image_link}
             sets_ = {k: v for k, v in fields.items() if v is not None}
             if sets_:
                 cols = ", ".join(f"{k}=?" for k in sets_)
@@ -1429,19 +1462,20 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
         else:
             eid = conn.execute(
                 """INSERT INTO exercises(name, category, equipment, technique_notes,
-                   common_mistakes, cautions, video_link, created_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   common_mistakes, cautions, video_link, image_link, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (name.strip(), category, equipment, technique_notes, common_mistakes,
-                 cautions, video_link, now()),
+                 cautions, video_link, image_link, now()),
             ).lastrowid
             created, sets_ = True, {}
-        _set_muscles(conn, eid, muscles, secondary_muscles)
+        _set_muscles(conn, eid, muscles, secondary_muscles, tertiary_muscles)
         out_name = conn.execute("SELECT name FROM exercises WHERE id=?", (eid,)).fetchone()["name"]
     if created:
         return {"exercise_id": eid, "name": out_name, "created": True}
+    muscles_changed = (muscles is not None or secondary_muscles is not None
+                       or tertiary_muscles is not None)
     return {"exercise_id": eid, "name": out_name, "created": False,
-            "updated": list(sets_)
-                       + (["muscles"] if (muscles is not None or secondary_muscles is not None) else [])}
+            "updated": list(sets_) + (["muscles"] if muscles_changed else [])}
 
 
 @trainer_mcp.tool()
@@ -1450,11 +1484,12 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
               category: Optional[str] = None) -> dict:
     """Read the exercise catalog — one full record, or a filtered list.
 
-    Pass `name` or `exercise_id` to get ONE exercise in full, including technique
-    notes, common mistakes, and cautions, so you can coach proper form. Otherwise it
+    Pass `name` or `exercise_id` to get ONE exercise in full, including its muscle
+    emphasis tiers (primary/secondary/tertiary), technique notes, common mistakes,
+    cautions, and any video_link/image_link, so you can coach proper form. Otherwise it
     returns the compact registry (id, name, category, equipment, muscles); narrow it
-    with `muscle`, an `equipment` fragment, or `category` to pick exercises for a
-    session."""
+    with `muscle` (matches any emphasis tier), an `equipment` fragment, or `category` to
+    pick exercises for a session."""
     with db() as conn:
         if name is not None or exercise_id is not None:
             if exercise_id is not None:
@@ -1468,12 +1503,12 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                     "equipment": r["equipment"], "muscles": m,
                     "technique_notes": r["technique_notes"],
                     "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
-                    "video_link": r["video_link"]}
+                    "video_link": r["video_link"], "image_link": r["image_link"]}
         rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
         out = []
         for r in rows:
             m = _muscles_for(conn, r["id"])
-            if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"]):
+            if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"] + m["tertiary"]):
                 continue
             if equipment and (not r["equipment"] or equipment.lower() not in r["equipment"].lower()):
                 continue

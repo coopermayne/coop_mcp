@@ -208,10 +208,14 @@
          [hidden] and closes it on outside-click / Escape. #}
       <div class="relative">
         <button type="button" data-menu-toggle aria-label="Menu" aria-haspopup="true" aria-expanded="false" title="Menu"
-                class="flex hover:text-black transition-colors {% if active == 'people' %}text-black{% endif %}">
+                class="flex hover:text-black transition-colors {% if active in ['people', 'library'] %}text-black{% endif %}">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div data-menu hidden class="absolute right-0 top-full mt-2 w-44 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-20">
+          <a href="{{ base }}/trainer/library" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'library' %}text-black{% else %}text-gray-500{% endif %}">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
+            <span>Exercise library</span>
+          </a>
           <a href="{{ base }}/people" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'people' %}text-black{% else %}text-gray-500{% endif %}">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span>People</span>
