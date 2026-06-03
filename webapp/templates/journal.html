@@ -13,12 +13,6 @@
     <span class="text-xs uppercase tracking-widest text-gray-400" data-entry-count>
       {% if searching %}{{ count }} match{{ '' if count == 1 else 'es' }}{% else %}{{ count }} entries{% endif %}
     </span>
-    {% if chat_enabled %}
-    <button type="button" data-chat-open aria-label="Open journal chat" title="Journal chat"
-            class="text-gray-400 hover:text-black transition-colors">
-      <svg class="w-5 h-5 text-yellow-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
-    </button>
-    {% endif %}
   </div>
 </div>
 
