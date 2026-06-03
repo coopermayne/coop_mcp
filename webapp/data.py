@@ -351,7 +351,7 @@ def workouts_full(limit: int = 20) -> list:
 
 
 def exercise_library(muscle: str | None = None, q: str | None = None,
-                     rotation: bool = False) -> dict:
+                     rotation: bool = False, archived: bool = False) -> dict:
     """The exercise catalog as a browsable LIBRARY: every movement in full — muscles in
     their three emphasis tiers (primary/secondary/tertiary), equipment, technique notes,
     common mistakes, cautions, and a form gif/video — plus `in_rotation` (is it in the
@@ -359,14 +359,22 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
     `last_done`). Optionally filtered by `muscle` (any tier), a name fragment `q`, or
     `rotation=True` to show only the rotation.
 
+    By default only LIVE movements are listed; `archived=True` instead shows the
+    soft-deleted ones (the Archived view, where each row offers Restore). Archived
+    movements are hidden from every other view — and from the trainer — but their rows and
+    past-workout links are kept.
+
     Also returns `muscles` (the canonical list, for the filter chips), `rotation_count`,
-    and the active `muscle`/`q`/`rotation` so the template can render the current filter.
-    Read-only; writes go through server.save_exercise / server.set_rotation."""
+    and the active `muscle`/`q`/`rotation`/`archived` so the template can render the
+    current filter. Read-only; writes go through server.save_exercise /
+    server.set_rotation / server.set_archived."""
     from urllib.parse import quote_plus
     muscle = (muscle or "").strip().lower() or None
     q = (q or "").strip() or None
     with server.db() as conn:
-        rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM exercises WHERE archived=? ORDER BY name", (int(archived),)
+        ).fetchall()
         # one pass over the muscle map: {exercise_id: {primary:[], secondary:[], tertiary:[]}}
         mmap: dict[int, dict] = {}
         for mr in conn.execute("SELECT exercise_id, muscle, role FROM exercise_muscles ORDER BY muscle"):
@@ -401,7 +409,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             continue
         if muscle and muscle not in all_m:
             continue
-        if q and q.lower() not in r["name"].lower() \
+        if q and not server._name_query_match(r["name"], q) \
                 and not any(q.lower() in a for a in aka):
             continue
         v = vol.get(r["id"], {"sessions": 0, "last_done": None})
@@ -421,7 +429,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
     out.sort(key=lambda e: (not e["in_rotation"], -e["sessions"], e["name"].lower()))
     return {"exercises": out, "count": len(out), "muscles": server.MUSCLES,
             "rotation_count": rotation_count, "muscle": muscle, "q": q or "",
-            "rotation": rotation}
+            "rotation": rotation, "archived": archived}
 
 
 def active_plan() -> dict:
