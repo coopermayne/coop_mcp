@@ -516,12 +516,24 @@ async def trainer(request: Request):
 
 
 @app.get("/trainer/library")
-async def trainer_library(request: Request, muscle: str = "", q: str = ""):
-    """The exercise library: a read-only browse of the whole catalog — muscles (by
-    emphasis tier), equipment, technique, and a form gif/video per exercise. Filterable
-    by muscle or name. The trainer chat (server.save_exercise) is what fills it in."""
-    lib = data.exercise_library(muscle=muscle, q=q)
+async def trainer_library(request: Request, muscle: str = "", q: str = "", rotation: str = ""):
+    """The exercise library: browse the whole catalog — muscles (by emphasis tier),
+    equipment, technique, and a form gif/video per exercise. Filterable by muscle, name,
+    or `rotation` (the curated programming pool). Each row can be toggled in/out of the
+    rotation; the trainer chat (server.save_exercise) fills the coaching content in."""
+    lib = data.exercise_library(muscle=muscle, q=q, rotation=bool(rotation))
     return page(request, "library.html", active="library", **lib)
+
+
+@app.post("/trainer/exercise/{exercise_id}/rotation")
+async def trainer_set_rotation(request: Request, exercise_id: int):
+    """Toggle one exercise in/out of the rotation (the library page's star button). Body:
+    {"in_rotation": true|false}. Writes through server.set_rotation."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    res = server.set_rotation(exercise_id=exercise_id, in_rotation=bool(body.get("in_rotation")))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
 
 
 def _num(v):
