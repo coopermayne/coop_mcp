@@ -331,4 +331,8 @@
   <p class="text-sm text-gray-400">No workouts logged yet.</p>
 {% endif %}
 
+{# Floating trainer chat — same panel as /trainer, just the opener + slide-in here.
+   TrainerPlan isn't bootstrapped on this page, so its refresh hook is a no-op (guarded). #}
+{% if chat_enabled %}{% include "_trainer_chat_panel.html" %}{% endif %}
+
 {% endblock %}
