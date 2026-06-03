@@ -121,9 +121,16 @@
 {# Lurking sidebar: fixed to the right edge on lg+, invisible by default, fades
    in when the cursor enters the strip. The outer aside reserves the hover area
    (w-56) even while the inner content is transparent — divs still register
-   hover at opacity-0. Hidden entirely on mobile/tablet. #}
+   hover at opacity-0. Hidden entirely on mobile/tablet.
+
+   overflow-x-hidden is load-bearing: the inner div's idle `translate-x-2`
+   (the slide-in start state) pushes its content 8px past the strip's right
+   edge, and `overflow-y-auto` alone silently coerces overflow-x from `visible`
+   to `auto` (CSS spec), so that 8px would surface a phantom horizontal
+   scrollbar that flickers as the cursor nears. Pin overflow-x to hidden to clip
+   it; overflow-y stays auto purely as a tall-viewport safety net. #}
 {% if months %}
-<aside class="hidden lg:block fixed right-0 top-20 w-56 max-h-[calc(100vh-6rem)] overflow-y-auto z-20 group/cal pointer-events-auto">
+<aside class="hidden lg:block fixed right-0 top-20 w-56 max-h-[calc(100vh-6rem)] overflow-x-hidden overflow-y-auto z-20 group/cal pointer-events-auto">
   <div class="px-4 py-2 opacity-0 translate-x-2 group-hover/cal:opacity-100 group-hover/cal:translate-x-0 transition-all duration-200 motion-reduce:transition-none">
     {{ mini_calendar(months) }}
   </div>
