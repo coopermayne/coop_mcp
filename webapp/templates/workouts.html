@@ -41,13 +41,13 @@
   #muscle-tip .mt-list li { display: flex; justify-content: space-between; gap: 1rem;
                             font-variant-numeric: tabular-nums; }
   #muscle-tip .mt-ct   { color: #9ca3af; }
-  @media (prefers-color-scheme: dark){
-    #muscle-tip          { background: #171717; border-color: #262626;
-                           box-shadow: 0 6px 20px rgba(0,0,0,.5); }
-    #muscle-tip .mt-sub  { color: #a3a3a3; }
-    #muscle-tip .mt-list { border-top-color: #262626; }
-    #muscle-tip .mt-ct   { color: #737373; }
-  }
+  {# Dark mode is driven by the data-theme attribute on <html> (set by base.html),
+     not the OS media query, so the nav toggle reaches these tooltip styles too. #}
+  html[data-theme="dark"] #muscle-tip          { background: #171717; border-color: #262626;
+                                                 box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+  html[data-theme="dark"] #muscle-tip .mt-sub  { color: #a3a3a3; }
+  html[data-theme="dark"] #muscle-tip .mt-list { border-top-color: #262626; }
+  html[data-theme="dark"] #muscle-tip .mt-ct   { color: #737373; }
 </style>
 <div class="mb-12">
   {{ m.section_label("Muscle Recency") }}
