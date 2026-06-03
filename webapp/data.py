@@ -350,6 +350,63 @@ def workouts_full(limit: int = 20) -> list:
     return out
 
 
+def exercise_library(muscle: str | None = None, q: str | None = None) -> dict:
+    """The exercise catalog as a browsable LIBRARY: every movement in full — muscles in
+    their three emphasis tiers (primary/secondary/tertiary), equipment, technique notes,
+    common mistakes, cautions, and a form gif/video — plus how much it's actually been
+    trained (`sessions`, `last_done`) so "things I do" sort ahead of "things to introduce
+    later". Optionally filtered by `muscle` (any tier) or a name fragment `q`.
+
+    Also returns `muscles` (the canonical list, for the filter chips) and the active
+    `muscle`/`q` so the template can render the current filter. Read-only; the trainer
+    (server.save_exercise) is the only writer."""
+    from urllib.parse import quote_plus
+    muscle = (muscle or "").strip().lower() or None
+    q = (q or "").strip() or None
+    with server.db() as conn:
+        rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
+        # one pass over the muscle map: {exercise_id: {primary:[], secondary:[], tertiary:[]}}
+        mmap: dict[int, dict] = {}
+        for mr in conn.execute("SELECT exercise_id, muscle, role FROM exercise_muscles ORDER BY muscle"):
+            d = mmap.setdefault(mr["exercise_id"],
+                                {"primary": [], "secondary": [], "tertiary": []})
+            d.setdefault(mr["role"], []).append(mr["muscle"])
+        # training volume per exercise (completed sets only): session count + last done
+        vol: dict[int, dict] = {}
+        for vr in conn.execute(
+            """SELECT exercise_id,
+                      COUNT(DISTINCT workout_id) AS sessions,
+                      MAX(w.workout_date) AS last_done
+               FROM sets s JOIN workouts w ON w.id = s.workout_id
+               WHERE s.status='done' GROUP BY exercise_id"""
+        ):
+            vol[vr["exercise_id"]] = {"sessions": vr["sessions"], "last_done": vr["last_done"]}
+    out = []
+    for r in rows:
+        m = mmap.get(r["id"], {"primary": [], "secondary": [], "tertiary": []})
+        all_m = m["primary"] + m["secondary"] + m["tertiary"]
+        if muscle and muscle not in all_m:
+            continue
+        if q and q.lower() not in r["name"].lower():
+            continue
+        v = vol.get(r["id"], {"sessions": 0, "last_done": None})
+        out.append({
+            "exercise_id": r["id"], "name": r["name"], "category": r["category"],
+            "equipment": r["equipment"], "muscles": m,
+            "technique_notes": r["technique_notes"],
+            "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
+            "video_link": r["video_link"], "image_link": r["image_link"],
+            "youtube_search": "https://www.youtube.com/results?search_query="
+                              + quote_plus((r["name"] or "") + " proper form technique"),
+            "has_notes": bool(r["technique_notes"] or r["common_mistakes"] or r["cautions"]),
+            "sessions": v["sessions"], "last_done": v["last_done"],
+        })
+    # "things I do" first (most-trained), then untried, each alphabetical
+    out.sort(key=lambda e: (-e["sessions"], e["name"].lower()))
+    return {"exercises": out, "count": len(out), "muscles": server.MUSCLES,
+            "muscle": muscle, "q": q or ""}
+
+
 def active_plan() -> dict:
     """The active workout plan for the /trainer page, straight from the server (see
     server.get_workout_plan): {"active": False} or the full plan with exercises, sets
