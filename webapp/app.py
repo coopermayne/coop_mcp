@@ -61,7 +61,7 @@ import server          # noqa: E402  reused for db()/reads and ALLOWED_EMAILS
 import chat            # noqa: E402  in-app AI chat agent loop (the one write path)
 
 from fastapi import FastAPI, Request                          # noqa: E402
-from fastapi.responses import RedirectResponse                # noqa: E402
+from fastapi.responses import RedirectResponse, Response       # noqa: E402
 from fastapi.staticfiles import StaticFiles                   # noqa: E402
 from fastapi.templating import Jinja2Templates                # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware       # noqa: E402
@@ -218,7 +218,11 @@ def page(request: Request, template: str, active: str = "", status_code: int = 2
 # Auth
 # --------------------------------------------------------------------------- #
 
-PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health"}
+# The PWA wiring (manifest + service worker) must be fetchable without auth: the
+# browser pulls them itself, and an auth redirect to /login would hand back HTML
+# instead, breaking install. They expose no journal data — just app metadata.
+PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health",
+                "/manifest.webmanifest", "/sw.js"}
 
 oauth = None
 if AUTH_ENABLED:
@@ -297,6 +301,129 @@ async def health():
         return JSONResponse({"status": "ok"})
     except Exception as e:  # pragma: no cover
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
+
+
+# --------------------------------------------------------------------------- #
+# PWA — installable on phones (Add to Home Screen)
+#
+# Both the manifest and the service worker are generated per-request so their
+# URLs carry the mount prefix (root_path is '/app' embedded, '' standalone).
+# That keeps start_url / scope / icon paths correct in either deployment, and
+# lets the service worker default-scope itself to the app root.
+# --------------------------------------------------------------------------- #
+
+@app.get("/manifest.webmanifest")
+async def manifest(request: Request):
+    from fastapi.responses import JSONResponse
+    base = base_path(request)
+    return JSONResponse({
+        "name": "Journal",
+        "short_name": "Journal",
+        "description": "A private record — journal, training and drinking.",
+        "start_url": f"{base}/",
+        "scope": f"{base}/",
+        "display": "standalone",
+        "display_override": ["standalone", "minimal-ui"],
+        "orientation": "portrait",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        "icons": [
+            {"src": f"{base}/static/icon-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "any"},
+            {"src": f"{base}/static/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "any"},
+            {"src": f"{base}/static/icon-maskable-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "maskable"},
+            {"src": f"{base}/static/icon-maskable-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "maskable"},
+        ],
+    }, media_type="application/manifest+json")
+
+
+# Service worker. Network-first for navigations (the journal is auth-gated and
+# always live data, so we never cache authed HTML — only fall back to a baked
+# offline page when the network is gone), stale-while-revalidate for same-origin
+# static assets (icons/favicon). Cross-origin (Tailwind/Fonts CDNs) passes
+# straight through. Bump VERSION to retire old caches on the next visit.
+_SERVICE_WORKER_TMPL = """\
+const VERSION = 'v1';
+const CACHE = 'journal-' + VERSION;
+const BASE = '__BASE__';
+const PRECACHE = [
+  BASE + '/static/icon-192.png',
+  BASE + '/static/favicon.svg',
+  BASE + '/manifest.webmanifest',
+];
+const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">`
+  + `<meta name="viewport" content="width=device-width, initial-scale=1">`
+  + `<title>Offline</title><style>html{color-scheme:dark}`
+  + `body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;`
+  + `justify-content:center;gap:.5rem;background:#0a0a0a;color:#fafafa;`
+  + `font-family:system-ui,sans-serif;text-align:center;padding:2rem}`
+  + `p{color:#a3a3a3;font-size:.9rem;margin:0}h1{font-size:1.1rem;margin:0}</style></head>`
+  + `<body><h1>You're offline</h1><p>Reconnect to read your journal.</p></body></html>`;
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;  // let CDN/font requests pass
+
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req).catch(() =>
+        caches.match(req).then((hit) =>
+          hit || new Response(OFFLINE_HTML, { headers: { 'Content-Type': 'text/html' } })
+        )
+      )
+    );
+    return;
+  }
+
+  event.respondWith(
+    caches.match(req).then((cached) => {
+      const network = fetch(req).then((res) => {
+        if (res && res.status === 200 && res.type === 'basic') {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
+        return res;
+      }).catch(() => cached);
+      return cached || network;
+    })
+  );
+});
+"""
+
+
+@app.get("/sw.js")
+async def service_worker(request: Request):
+    js = _SERVICE_WORKER_TMPL.replace("__BASE__", base_path(request))
+    return Response(
+        js,
+        media_type="application/javascript",
+        headers={
+            # Default scope is the SW's own path; served at the app root that's
+            # already the whole app. Allow a broader scope just in case, and keep
+            # the worker itself uncached so VERSION bumps take effect promptly.
+            "Service-Worker-Allowed": (base_path(request) or "") + "/",
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #
