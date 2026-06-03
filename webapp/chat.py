@@ -82,11 +82,157 @@ _TRAINER_BLURB = (
     "consider saving them with save_exercise so they're there next time."
 )
 
-# The agent registry. Each entry binds a chat surface to one FastMCP instance and
-# an optional set of tool names to exclude. Extend, don't special-case.
+# --------------------------------------------------------------------------- #
+# Exercise-add agent — a WEBAPP-ONLY surface that can CREATE library exercises.
+# --------------------------------------------------------------------------- #
+# The library is closed to the model everywhere else: server.create_exercise is
+# deliberately NOT a FastMCP tool, so the journal/trainer connectors (Claude Desktop,
+# phone) can never grow the catalog — only the website's trusted code path can. This
+# agent is that path with an LLM in front of it: it lives here in the web app (the
+# client side of the no-LLM-in-the-server line, exactly like the rest of chat.py) and
+# is reachable only by the authenticated user on the library page. Its two tools are
+# hand-written here rather than lifted from a server instance, precisely so creating an
+# exercise stays off the MCP tool surface.
+
+_EXERCISE_INSTRUCTIONS = (
+    "You are the exercise-library assistant inside the user's training web app. Your one "
+    "job: take whatever the user tells you about a NEW exercise and add a single, well-"
+    "formed record to their library — filling EVERY field properly, from their info plus "
+    "your own knowledge of the movement.\n\n"
+    "The library is a closed catalog of strength/cardio movements. A record's fields:\n"
+    "- name: the canonical movement name in Title Case (e.g. \"Bulgarian Split Squat\").\n"
+    "- category: a coarse bucket — usually strength, stretching, plyometrics, or cardio "
+    "(or a simple split label like push/pull/legs/core if that's how the user frames it).\n"
+    "- equipment: barbell, dumbbell, machine, cable, kettlebell, body only, bands, etc.\n"
+    "- force: exactly one of push | pull | static.\n"
+    "- level: difficulty — exactly one of beginner | intermediate | expert.\n"
+    "- mechanic: compound | isolation.\n"
+    "- muscles / secondary_muscles / tertiary_muscles: the muscles worked, in three "
+    "EMPHASIS tiers — primary = what the lift is FOR, secondary = real assistance, "
+    "tertiary = lightly involved. Use ONLY these canonical labels: "
+    + ", ".join(server.MUSCLES) + ".\n"
+    "- technique_notes: a concise setup + execution walkthrough (the key cues).\n"
+    "- common_mistakes: the usual form errors.\n"
+    "- cautions: injury / safety caveats.\n"
+    "- video_link: optional, only if the user hands you a URL. Never ask for images.\n\n"
+    "How to work:\n"
+    "1. ALWAYS call check_library FIRST with the movement name (and any obvious variant) "
+    "before creating anything. If an exact or essentially-identical entry already exists, "
+    "STOP and tell the user it's already in the library, naming it — do NOT create a "
+    "duplicate. A close but genuinely DIFFERENT movement in the results (e.g. they want "
+    "Hack Squat and only Back Squat is on file) is fine — note it and carry on.\n"
+    "2. Fill EVERY field. Use what the user told you; infer the rest from your own "
+    "knowledge — the muscles and their tiers, force, level, mechanic, equipment, and a "
+    "genuinely useful technique walkthrough, common mistakes, and cautions. Don't leave "
+    "fields blank just because the user didn't mention them — filling them is the point.\n"
+    "3. Ask a follow-up ONLY when something is genuinely ambiguous and would change the "
+    "record — which variation they mean (barbell vs dumbbell), or a load-bearing detail "
+    "you truly can't infer. Don't interrogate the user over things you can reason out; "
+    "propose sensible values and proceed.\n"
+    "4. When the picture is complete, call create_exercise. It's added to the library and "
+    "to the user's training rotation automatically.\n"
+    "5. Then confirm briefly what you saved — the name, the primary muscle emphasis, and "
+    "that it's in their rotation now. Keep it to a couple of lines.\n\n"
+    "Add ONE exercise per request unless the user clearly lists several. Be concise and "
+    "practical — they're on their phone."
+)
+
+
+def _exercise_check(name: str) -> dict:
+    """Look `name` up in the closed library so the agent never makes a duplicate: returns
+    any exact/confident match (full enough to recognise) plus the closest existing
+    entries by fuzzy/phonetic score."""
+    with server.db() as conn:
+        row = server._resolve_exercise(conn, name)
+        match = None
+        if row:
+            match = {"exercise_id": row["id"], "name": row["name"],
+                     "category": row["category"], "equipment": row["equipment"],
+                     "muscles": server._muscles_for(conn, row["id"]),
+                     "in_rotation": bool(row["in_rotation"])}
+        candidates = server._match_exercises(conn, name)
+    return {"query": name, "exact_match": match, "candidates": candidates}
+
+
+def _exercise_create(name: str, category=None, equipment=None, muscles=None,
+                     secondary_muscles=None, tertiary_muscles=None,
+                     technique_notes=None, common_mistakes=None, cautions=None,
+                     force=None, level=None, mechanic=None, video_link=None) -> dict:
+    """Create the exercise through the website's trusted path (server.create_exercise),
+    defaulting it into the user's rotation just as the old manual add form did. Image
+    links are intentionally omitted — this surface doesn't handle images."""
+    return server.create_exercise(
+        name=name, in_rotation=True, category=category, equipment=equipment,
+        muscles=muscles, secondary_muscles=secondary_muscles,
+        tertiary_muscles=tertiary_muscles, technique_notes=technique_notes,
+        common_mistakes=common_mistakes, cautions=cautions, force=force, level=level,
+        mechanic=mechanic, video_link=video_link)
+
+
+def _exercise_tools():
+    """The exercise-add agent's tool schemas + name→fn dispatch. Hand-written (not lifted
+    from a FastMCP instance) so the create path stays off the MCP tool surface."""
+    muscle_enum = {"type": "array", "items": {"type": "string", "enum": server.MUSCLES}}
+    tools = [
+        {
+            "name": "check_library",
+            "description": (
+                "Search the existing library for a movement BEFORE creating it. Returns "
+                "any exact/confident match and the closest existing entries, so you can "
+                "avoid duplicates. Always call this first."),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string",
+                             "description": "The exercise name (or a close variant) to look up."},
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "create_exercise",
+            "description": (
+                "Add one new exercise to the library (and the user's rotation). Fill every "
+                "field you reasonably can. Only call this after check_library shows it's "
+                "not already on file."),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string",
+                             "description": "Canonical movement name, Title Case."},
+                    "category": {"type": "string",
+                                 "description": "Coarse bucket, e.g. strength, cardio, stretching, plyometrics."},
+                    "equipment": {"type": "string",
+                                  "description": "e.g. barbell, dumbbell, machine, cable, kettlebell, body only."},
+                    "force": {"type": "string", "enum": ["push", "pull", "static"]},
+                    "level": {"type": "string", "enum": ["beginner", "intermediate", "expert"]},
+                    "mechanic": {"type": "string", "enum": ["compound", "isolation"]},
+                    "muscles": {**muscle_enum, "description": "PRIMARY muscles — what the lift is for."},
+                    "secondary_muscles": {**muscle_enum, "description": "Real assistance muscles."},
+                    "tertiary_muscles": {**muscle_enum, "description": "Lightly-involved muscles."},
+                    "technique_notes": {"type": "string",
+                                        "description": "Concise setup + execution walkthrough / key cues."},
+                    "common_mistakes": {"type": "string", "description": "The usual form errors."},
+                    "cautions": {"type": "string", "description": "Injury / safety caveats."},
+                    "video_link": {"type": "string",
+                                   "description": "Optional URL, only if the user provides one."},
+                },
+                "required": ["name"],
+            },
+        },
+    ]
+    dispatch = {"check_library": _exercise_check, "create_exercise": _exercise_create}
+    return tools, dispatch
+
+
+# The agent registry. A server-bound entry binds a chat surface to one FastMCP instance
+# and an optional set of tool names to exclude. A webapp-defined entry instead carries
+# its own `instructions` + a `tools` builder (see the exercise-add agent above). Extend,
+# don't special-case.
 _AGENTS = {
-    "journal": {"server": server.mcp,         "exclude": _JOURNAL_DRINK_TOOLS, "blurb": _JOURNAL_BLURB},
-    "trainer": {"server": server.trainer_mcp, "exclude": set(),                "blurb": _TRAINER_BLURB},
+    "journal":  {"server": server.mcp,         "exclude": _JOURNAL_DRINK_TOOLS, "blurb": _JOURNAL_BLURB},
+    "trainer":  {"server": server.trainer_mcp, "exclude": set(),                "blurb": _TRAINER_BLURB},
+    "exercise": {"instructions": _EXERCISE_INSTRUCTIONS, "tools": _exercise_tools, "blurb": ""},
 }
 
 
@@ -146,29 +292,34 @@ _WRITE_TOOLS = {
     "log_workout", "update_workout", "update_set", "save_exercise",
     "log_bodyweight", "update_profile",
     "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
-    "finish_workout",
+    "finish_workout", "create_exercise",
 }
 
 
 async def _ensure_tools(agent: str):
-    """Build the Anthropic tool list + dispatch map for `agent` once, from that
-    server's list_tools() minus its excluded names. A cache_control breakpoint on
-    the last tool caches the whole (large, static) tool-schema block across turns."""
+    """Build the Anthropic tool list + dispatch map for `agent` once. A server-bound
+    agent lifts them from its FastMCP instance's list_tools() minus its excluded names;
+    a webapp-defined agent (the exercise-add surface) supplies its own via a `tools`
+    builder, keeping its create path off the MCP tool surface. A cache_control breakpoint
+    on the last tool caches the whole (large, static) tool-schema block across turns."""
     if agent in _TOOLS:
         return
     cfg = _AGENTS[agent]
-    exclude = cfg["exclude"]
-    tool_objs = await cfg["server"].list_tools()
-    tools, dispatch = [], {}
-    for t in tool_objs:
-        if t.name in exclude:
-            continue
-        tools.append({
-            "name": t.name,
-            "description": t.description or "",
-            "input_schema": t.parameters,
-        })
-        dispatch[t.name] = t.fn
+    if "tools" in cfg:
+        tools, dispatch = cfg["tools"]()
+    else:
+        exclude = cfg["exclude"]
+        tool_objs = await cfg["server"].list_tools()
+        tools, dispatch = [], {}
+        for t in tool_objs:
+            if t.name in exclude:
+                continue
+            tools.append({
+                "name": t.name,
+                "description": t.description or "",
+                "input_schema": t.parameters,
+            })
+            dispatch[t.name] = t.fn
     if tools:
         tools[-1]["cache_control"] = {"type": "ephemeral"}
     _TOOLS[agent], _DISPATCH[agent] = tools, dispatch
@@ -189,10 +340,13 @@ def _system_blocks(agent: str, context: dict | None = None) -> list[dict]:
     the clock advances or the user moves between profile pages)."""
     cfg = _AGENTS[agent]
     clock = server.current_clock()
+    # Server-bound agents take their system prompt from the live FastMCP instance's
+    # instructions; a webapp-defined agent carries its own.
+    instructions = cfg["instructions"] if "instructions" in cfg else cfg["server"].instructions
     blocks = [
         {
             "type": "text",
-            "text": cfg["server"].instructions + cfg["blurb"],
+            "text": instructions + cfg["blurb"],
             "cache_control": {"type": "ephemeral"},
         },
         {
@@ -260,6 +414,18 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
         summary = "Logged bodyweight"
     elif name == "save_exercise":
         summary = "Saved an exercise"
+    # Exercise-add agent (the library page's AI add).
+    elif name == "check_library":
+        summary = "Checked the library"
+    elif name == "create_exercise":
+        href = "/trainer/library"
+        if r.get("error"):
+            # A failed create (e.g. a name clash the model missed) shouldn't read as a
+            # write — that's what triggers the page reload on the library surface.
+            kind, summary = "read", "Exercise not added"
+        else:
+            nm = r.get("name") or g("name")
+            summary = f"Added {nm}" if nm else "Added an exercise"
     elif name == "get_fitness_briefing":
         summary = "Loaded training context"
     # Trainer plan tools (the /trainer page).

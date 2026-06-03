@@ -130,7 +130,10 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   `delete_record(kind="drink")`.
 - **A closed exercise library.** The catalog is a fixed set the trainer draws on but
   never grows: ~870 movements pre-loaded from free-exercise-db, plus any you add yourself
-  on the **Add an exercise** form at `/trainer/library`. The AI programs only from what's
+  through the AI **+ Add an exercise** panel at `/trainer/library` (describe a movement and
+  it dedupes, fills in the muscles/difficulty/technique/cautions, and adds it). That panel
+  runs on the website only — the journal/trainer connectors still can't create exercises.
+  The AI programs only from what's
   there. `log_workout` records a session — the whole thing in one call, or set-by-set as
   it happens by passing the first call's `workout_id` back on each later call so the sets
   append to one session instead of fragmenting it. Exercise names resolve against the
