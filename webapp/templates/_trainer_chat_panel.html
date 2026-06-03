@@ -1,24 +1,29 @@
-{# Journal AI chat as a slide-in panel. Included on the journal page, gated on
-   chat_enabled. The opener lives in the journal header (data-chat-open); on mobile
-   the panel covers almost the whole screen (slides up), on desktop it's a
-   right-edge side panel (slides in). The chat client itself is the shared
-   static/chat.js, pointed at the `journal` agent (journal + people tools). #}
+{# Trainer AI chat as a slide-in panel on the /trainer page. Mirrors the journal's
+   _chat_panel.html (shared static/chat.js) but is bound to the `trainer` agent and,
+   on every write, refreshes the live plan card via window.TrainerPlan.refresh().
+   Self-contained: it carries its own floating opener button. #}
+
+{# Floating opener — bottom-right, above the safe area. #}
+<button type="button" data-chat-open aria-label="Ask the trainer" title="Ask the trainer"
+        class="fixed z-30 bottom-5 right-5 h-12 w-12 flex items-center justify-center bg-black text-white rounded-full shadow-lg hover:bg-gray-800 transition-colors"
+        style="margin-bottom: env(safe-area-inset-bottom);">
+  <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
+</button>
 
 {# Backdrop — taps outside the panel to close. Hidden until open. #}
 <div data-chat-backdrop class="fixed inset-0 z-40 bg-black/30 opacity-0 pointer-events-none transition-opacity duration-300 hidden"></div>
 
-{# The panel. Closed transform differs by breakpoint: slide up on mobile, slide in
-   from the right on desktop. JS toggles the three translate classes. #}
+{# The panel. Slides up on mobile, in from the right on desktop. #}
 <div data-chat-panel
      class="fixed z-50 flex flex-col bg-white
             inset-x-0 bottom-0 top-10 rounded-t-2xl border-t border-gray-200
             sm:inset-y-0 sm:left-auto sm:right-0 sm:top-0 sm:w-[440px] sm:rounded-none sm:border-t-0 sm:border-l
             translate-y-full sm:translate-y-0 sm:translate-x-full
             transition-transform duration-300 motion-reduce:transition-none"
-     role="dialog" aria-label="Journal chat" aria-modal="true">
+     role="dialog" aria-label="Trainer chat" aria-modal="true">
 
   <div class="flex items-center justify-between px-4 sm:px-5 h-14 border-b border-gray-100 shrink-0">
-    <span class="text-sm font-semibold tracking-tight">Journal chat</span>
+    <span class="text-sm font-semibold tracking-tight">Trainer</span>
     <div class="flex items-center gap-4 text-gray-400">
       <button type="button" data-chat-reset
               class="text-xs uppercase tracking-widest hover:text-black transition-colors">New</button>
@@ -29,12 +34,12 @@
     </div>
   </div>
 
-  {# Transcript — scrolls inside the panel. #}
+  {# Transcript. #}
   <div data-chat-log class="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-5">
     <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
-      Tell me about your day or ask what you’ve been up to. I’ll capture entries and
-      resolve people the same way Claude does over the connector. (Drinks have their
-      own quick form on the Drinking page.)
+      Ask me to build today’s routine (“give me a push day”), log sets as you go
+      (“did 10 at 100, felt like an 8”), swap an exercise if a machine’s taken, or ask
+      how to do a movement. Your plan stays on this page as we go.
     </p>
   </div>
 
@@ -43,7 +48,7 @@
        style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
     <form data-chat-form class="flex items-end gap-2">
       <textarea data-chat-input rows="1" autocomplete="off"
-                placeholder="Message the journal…"
+                placeholder="Message the trainer…"
                 class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
       <button type="submit" data-chat-send aria-label="Send"
               class="shrink-0 h-[42px] w-[42px] flex items-center justify-center bg-black text-white rounded-[4px] hover:bg-gray-800 transition-colors disabled:opacity-30">
@@ -67,7 +72,6 @@
   function open() {
     panel.classList.remove.apply(panel.classList, closed);
     backdrop.classList.remove('hidden');
-    // next frame so the opacity transition runs
     requestAnimationFrame(function () {
       backdrop.classList.remove('opacity-0');
       backdrop.classList.add('pointer-events-auto');
@@ -87,29 +91,14 @@
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !backdrop.classList.contains('hidden')) close();
   });
-
-  // After the chat makes a change, re-fetch the current journal view and swap
-  // the live regions in place — the feed updates without a reload, and the open
-  // panel + its transcript are untouched. Fetches window.location so search
-  // context (?q=) is preserved.
-  async function refreshFeed() {
-    try {
-      var res = await fetch(window.location.href, { headers: { 'X-Requested-With': 'fetch' } });
-      if (!res.ok) return;
-      var doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-      ['[data-journal-feed]', '[data-pending]'].forEach(function (sel) {
-        var nu = doc.querySelector(sel), cur = document.querySelector(sel);
-        if (nu && cur) cur.innerHTML = nu.innerHTML;
-      });
-      var nc = doc.querySelector('[data-entry-count]'), cc = document.querySelector('[data-entry-count]');
-      if (nc && cc) cc.textContent = nc.textContent;
-    } catch (e) {}
-  }
+  // Let the plan card open the chat (its empty-state CTA).
+  document.addEventListener('trainer:open-chat', open);
 
   ChatWidget.init({
     root: panel,
-    endpoint: {{ base | tojson }} + '/chat/journal',
-    onWrite: refreshFeed,
+    endpoint: {{ base | tojson }} + '/chat/trainer',
+    // A trainer write (built/logged/swapped/finished) landed — refresh the plan card.
+    onWrite: function () { if (window.TrainerPlan) window.TrainerPlan.refresh(); },
   });
 })();
 </script>
