@@ -6,3 +6,7 @@ jinja2>=3.1
 authlib>=1.3
 itsdangerous>=2.1
 httpx>=0.27
+# In-app AI chat (/chat): drives server.py's journal/drinking tools via the
+# Anthropic API. Optional at runtime — the chat surface only turns on when
+# ANTHROPIC_API_KEY is set; the rest of the read-only app runs without it.
+anthropic>=0.40

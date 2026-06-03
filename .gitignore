@@ -11,6 +11,7 @@ venv/
 *.db-wal
 .env
 .env.*
+!.env.example
 
 # OS / editor
 .DS_Store
