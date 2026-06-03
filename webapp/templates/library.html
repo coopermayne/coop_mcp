@@ -99,12 +99,16 @@
 </div>
 {% endif %}
 
-{# Rotation / All toggle, preserving the current name + muscle filters. #}
+{# Rotation / All / Archived toggle, preserving the current name + muscle filters.
+   Archived is the soft-deleted view (each row offers Restore); rotation & All show live
+   movements only. #}
 <div class="mb-4 flex gap-2">
   <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}rotation=1"
-     class="badge hover:border-black hover:text-black transition-colors {% if rotation %}badge-dark{% endif %}">★ In rotation</a>
+     class="badge hover:border-black hover:text-black transition-colors {% if rotation and not archived %}badge-dark{% endif %}">★ In rotation</a>
   <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}{% endif %}{% if q and muscle %}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}{% endif %}"
-     class="badge hover:border-black hover:text-black transition-colors {% if not rotation %}badge-dark{% endif %}">All</a>
+     class="badge hover:border-black hover:text-black transition-colors {% if not rotation and not archived %}badge-dark{% endif %}">All</a>
+  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}archived=1"
+     class="badge hover:border-black hover:text-black transition-colors {% if archived %}badge-dark{% endif %}">Archived</a>
 </div>
 
 {# Name search + a Clear that also drops the muscle filter. #}
@@ -129,16 +133,20 @@
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for ex in exercises %}
   {# Each exercise is a collapsible row: the summary carries name + muscle emphasis +
-     how much it's been trained; expanding reveals equipment, coaching text and the clip. #}
-  <details class="group px-5 sm:px-6 py-3.5">
+     how much it's been trained; expanding reveals equipment, coaching text and the clip.
+     data-ex-row marks it as a target for j/k keyboard navigation (see the script below). #}
+  <details data-ex-row tabindex="-1" class="group px-5 sm:px-6 py-3.5 scroll-mt-4 focus:outline-none">
     <summary class="cursor-pointer list-none flex items-baseline justify-between gap-3">
       <div class="min-w-0">
         <div class="flex items-baseline gap-2 flex-wrap">
-          {# Star toggles rotation membership; click is intercepted so the row doesn't expand. #}
+          {# Star toggles rotation membership; click is intercepted so the row doesn't
+             expand. Hidden in the Archived view — an archived movement isn't programmable. #}
+          {% if not archived %}
           <button type="button" class="rotation-toggle shrink-0 text-base leading-none {% if ex.in_rotation %}text-amber-500{% else %}text-gray-300 hover:text-amber-400{% endif %}"
                   data-id="{{ ex.exercise_id }}" data-in="{{ '1' if ex.in_rotation else '0' }}"
                   aria-pressed="{{ 'true' if ex.in_rotation else 'false' }}"
                   title="{{ 'In your rotation — click to remove' if ex.in_rotation else 'Add to your rotation' }}">{{ '★' if ex.in_rotation else '☆' }}</button>
+          {% endif %}
           <span class="text-sm font-medium">{{ ex.name }}</span>
           {% if ex.category %}<span class="badge">{{ ex.category }}</span>{% endif %}
           {% if ex.mechanic %}<span class="badge">{{ ex.mechanic }}</span>{% endif %}
@@ -192,13 +200,26 @@
            class="text-gray-700 hover:text-black underline transition-colors">Saved video ↗</a>
         {% endif %}
       </div>
+
+      {# Archive (soft-delete) / Restore. Archiving hides the movement from the library,
+         search and the trainer without deleting it — past workouts keep their links. #}
+      <div class="pt-1 border-t border-gray-100">
+        {% if archived %}
+        <button type="button" class="archive-toggle text-xs text-gray-400 hover:text-emerald-600 transition-colors"
+                data-id="{{ ex.exercise_id }}" data-archived="0">↩ Restore to library</button>
+        {% else %}
+        <button type="button" class="archive-toggle text-xs text-gray-400 hover:text-red-600 transition-colors"
+                data-id="{{ ex.exercise_id }}" data-archived="1"
+                title="Hide from your library and the trainer; past workouts keep it">Archive — remove from library</button>
+        {% endif %}
+      </div>
     </div>
   </details>
   {% endfor %}
 </div>
 {% else %}
 <p class="text-sm text-gray-400">
-  {% if rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the AI panel above.{% endif %}
+  {% if archived %}Nothing archived{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} — archived movements show up here, where you can restore them.{% elif rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the AI panel above.{% endif %}
 </p>
 {% endif %}
 
@@ -228,6 +249,69 @@ document.querySelectorAll(".rotation-toggle").forEach(function (btn) {
     }).finally(function () { btn.disabled = false; });
   });
 });
+
+// Archive / Restore: soft-delete a movement (or bring it back). On success the row no
+// longer belongs in the current view, so drop it from the DOM.
+document.querySelectorAll(".archive-toggle").forEach(function (btn) {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var want = btn.dataset.archived === "1";   // true => archive, false => restore
+    if (want && !window.confirm(
+        "Remove this exercise from your library?\n\nIt'll be hidden from the library, "
+        + "search and the trainer — but your past workouts keep it, and you can restore "
+        + "it from the Archived view.")) return;
+    btn.disabled = true;
+    fetch("{{ base }}/trainer/exercise/" + btn.dataset.id + "/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: want }),
+    }).then(function (r) {
+      if (!r.ok) throw new Error("failed");
+      var row = btn.closest("details");
+      if (row) row.remove();
+    }).catch(function () {
+      btn.textContent = "!";
+      btn.disabled = false;
+    });
+  });
+});
+
+// j / k step through the exercise rows (vim-style: j down, k up). The focused row
+// opens so its details are readable, every other row closes, and the open row's top
+// is scrolled to the top of the viewport. Disabled while typing so the keys still
+// reach search, the AI composer, or any other field — we bail whenever focus is in an
+// input, textarea, select, or contenteditable element.
+(function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll("[data-ex-row]"));
+  if (!rows.length) return;
+  var current = -1;
+
+  function typingInField(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    var tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  function openRow(i) {
+    current = Math.max(0, Math.min(rows.length - 1, i));
+    // Open only the focused row; collapse the rest so the list stays a single read.
+    rows.forEach(function (r, idx) { r.open = idx === current; });
+    var row = rows[current];
+    row.focus({ preventScroll: true });
+    // Top of the opened row to the top of the page (scroll-mt-4 leaves a little gap).
+    row.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "j" && e.key !== "k") return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;      // leave shortcuts alone
+    if (typingInField(e.target)) return;                 // don't hijack text entry
+    e.preventDefault();
+    openRow(e.key === "j" ? current + 1 : current - 1);
+  });
+})();
 </script>
 
 {% endblock %}

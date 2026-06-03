@@ -320,6 +320,9 @@ CREATE TABLE IF NOT EXISTS exercises (
     video_link      TEXT,
     image_link      TEXT,             -- gif / still of proper technique (loops inline in the UI)
     in_rotation     INTEGER NOT NULL DEFAULT 0,  -- 1 = in the user's curated programming pool
+    archived        INTEGER NOT NULL DEFAULT 0,  -- 1 = soft-deleted: hidden everywhere the
+                                                 -- catalog is discovered, row kept so past
+                                                 -- workouts that reference it stay intact
     created_at      TEXT NOT NULL
 );
 -- NB: idx_exercises_rotation is created in init_db(), AFTER the ALTER that adds
@@ -462,11 +465,13 @@ def init_db() -> None:
         # Columns added when the catalog was lined up with free-exercise-db + rotation.
         for col, decl in (("slug", "TEXT"), ("force", "TEXT"), ("level", "TEXT"),
                           ("mechanic", "TEXT"),
-                          ("in_rotation", "INTEGER NOT NULL DEFAULT 0")):
+                          ("in_rotation", "INTEGER NOT NULL DEFAULT 0"),
+                          ("archived", "INTEGER NOT NULL DEFAULT 0")):
             if col not in xcols:
                 conn.execute(f"ALTER TABLE exercises ADD COLUMN {col} {decl}")
-        # Index lives here (not in SCHEMA) so it's created only after in_rotation exists.
+        # Indexes live here (not in SCHEMA) so they're created only after their columns exist.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_exercises_rotation ON exercises(in_rotation)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_exercises_archived ON exercises(archived)")
         # Muscle vocabulary now mirrors free-exercise-db (see MUSCLES); rename any rows
         # stored under the old labels so existing data still aggregates. OR IGNORE skips a
         # rename that would collide with a row already in the target tier; the trailing
@@ -1267,15 +1272,40 @@ def _norm_ex(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def _tokens_ex(s: str) -> list[str]:
+    """A name's words, lowercased and SORTED, so word order drops out: 'crunch cable'
+    and 'Cable Crunch' both become ['cable', 'crunch']. Catalog names routinely get
+    spoken back-to-front ('curl hammer', 'press incline db'), and order shouldn't cost a
+    match."""
+    return sorted(re.findall(r"[a-z0-9]+", (s or "").lower()))
+
+
+def _name_query_match(name: str, q: str) -> bool:
+    """True if EVERY word of `q` appears (as a substring) in `name`, order-independent —
+    so 'crunch cable' finds 'Cable Crunch' and a partial 'cable cru' still narrows. The
+    library page's name filter; a stricter, browse-style match than the fuzzy resolver
+    (no typo tolerance — it's filtering a list the user is reading, not resolving one
+    spoken name)."""
+    nl = (name or "").lower()
+    toks = re.findall(r"[a-z0-9]+", (q or "").lower())
+    return all(t in nl for t in toks) if toks else True
+
+
 def _score_exercise_name(surface: str, name: str) -> float:
-    """0..1 similarity of a spoken name to a catalog name. Exact, or a punctuation/
-    spacing-only difference, wins; phonetic agreement floors it (transcription noise)."""
+    """0..1 similarity of a spoken name to a catalog name. Exact, a punctuation/spacing-
+    only difference, OR the same words in a different order all win (1.0); reordered-with-
+    typos still scores via a token-sorted Jaro-Winkler; phonetic agreement floors it
+    (transcription noise)."""
     s, a = (surface or "").lower().strip(), (name or "").lower().strip()
     if not s or not a:
         return 0.0
-    if s == a or _norm_ex(s) == _norm_ex(a):
+    st, at = _tokens_ex(s), _tokens_ex(a)
+    if s == a or _norm_ex(s) == _norm_ex(a) or (st and st == at):
         return 1.0
-    jw = jellyfish.jaro_winkler_similarity(s, a)
+    # order-insensitive fuzzy: compare the names word-sorted, so 'crunch cabel' (typo +
+    # reordered) still lands near 'Cable Crunch' instead of being tanked by word order.
+    jw = max(jellyfish.jaro_winkler_similarity(s, a),
+             jellyfish.jaro_winkler_similarity(" ".join(st), " ".join(at)))
     if phonetic(surface) and phonetic(surface) == phonetic(name):
         jw = max(jw, 0.88)  # sounds-the-same floor
     return round(jw, 3)
@@ -1296,8 +1326,11 @@ def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> lis
     caller that can't confidently resolve a name can hand the user the closest real
     entries instead of guessing. Each exercise is scored against its canonical name AND
     its AKAs (best surface form wins), so searching 'rdl' or 'bench' surfaces the right
-    lift. In-rotation movements are listed first among equals."""
-    rows = conn.execute("SELECT id, name, in_rotation FROM exercises ORDER BY name").fetchall()
+    lift. In-rotation movements are listed first among equals. Archived (soft-deleted)
+    movements are never surfaced — they're invisible to discovery."""
+    rows = conn.execute(
+        "SELECT id, name, in_rotation FROM exercises WHERE archived=0 ORDER BY name"
+    ).fetchall()
     amap = _alias_map(conn)
 
     def best(r) -> float:
@@ -1314,7 +1347,7 @@ def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> lis
             for sc, _rot, r in scored[:limit] if sc >= EX_MATCH_FLOOR]
 
 
-def _resolve_exercise(conn: sqlite3.Connection, name: str):
+def _resolve_exercise(conn: sqlite3.Connection, name: str, include_archived: bool = False):
     """Resolve a spoken name to ONE catalog row, or None. Tries exact on the canonical
     name (case-insensitive), then an exact AKA match (so 'RDL' lands on Romanian
     Deadlift), then a punctuation/spacing- or phonetics-tolerant high-confidence fuzzy
@@ -1322,19 +1355,27 @@ def _resolve_exercise(conn: sqlite3.Connection, name: str):
     of spawning a duplicate). A merely plausible name — below the confident bar, or with a
     near-tie runner-up — returns None, leaving the caller to surface `_match_exercises`
     candidates rather than silently pick the wrong lift. An AKA shared by more than one
-    exercise is ambiguous, so it falls through to fuzzy/candidates rather than guessing."""
+    exercise is ambiguous, so it falls through to fuzzy/candidates rather than guessing.
+
+    Archived (soft-deleted) movements stay invisible to the model: the default skips them,
+    so logging/enriching/swapping by name can't reach an archived lift. The website's add
+    form passes include_archived=True so re-adding a name that's archived re-uses (and
+    restores) that row instead of colliding on the UNIQUE name."""
     name = (name or "").strip()
     if not name:
         return None
     row = conn.execute(
-        "SELECT * FROM exercises WHERE lower(name)=lower(?)", (name,)
+        "SELECT * FROM exercises WHERE lower(name)=lower(?)"
+        + ("" if include_archived else " AND archived=0"),
+        (name,),
     ).fetchone()
     if row:
         return row
     hits = conn.execute(
         """SELECT e.* FROM exercises e
            JOIN exercise_aliases a ON a.exercise_id = e.id
-           WHERE a.alias = lower(?)""",
+           WHERE a.alias = lower(?)"""
+        + ("" if include_archived else " AND e.archived=0"),
         (name,),
     ).fetchall()
     if len(hits) == 1:
@@ -1605,7 +1646,9 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
             if not row:
                 return {"error": f"no exercise with id {exercise_id}"}
         elif name:
-            row = _resolve_exercise(conn, name)
+            # The create path (allow_create) considers archived rows so re-adding a
+            # movement reuses & restores it rather than colliding on the UNIQUE name.
+            row = _resolve_exercise(conn, name, include_archived=allow_create)
         else:
             return {"error": "pass name or exercise_id"}
         # Writable scalar columns (everything but name/created_at and the muscle tiers).
@@ -1618,6 +1661,10 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
         if row:
             eid = row["id"]
             created = False
+            # Re-adding (via the website's add form) a movement that was archived brings
+            # it back into the library along with whatever fields the add supplies.
+            if allow_create and "archived" in row.keys() and row["archived"]:
+                sets_["archived"] = 0
             if sets_:
                 cols = ", ".join(f"{k}=?" for k in sets_)
                 conn.execute(f"UPDATE exercises SET {cols} WHERE id=?", (*sets_.values(), eid))
@@ -1735,6 +1782,37 @@ def create_exercise(name: str, category: Optional[str] = None, equipment: Option
         mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=True)
 
 
+def set_archived(exercise_id: int, archived: bool = True) -> dict:
+    """Archive (soft-delete) or restore a library exercise — the website's "remove from
+    library" control. The NON-tool path, like create_exercise: deliberately NOT a FastMCP
+    tool, so the journal/trainer connectors can't archive, and the assistant has no idea an
+    archived movement ever existed.
+
+    Archiving HIDES the movement everywhere the catalog is DISCOVERED — the library page,
+    name search, name-resolution (logging/enriching/swapping by name), swap suggestions,
+    and the trainer's rotation — and drops it from the rotation, all WITHOUT deleting the
+    row, so past workouts that reference it keep their links and history stays intact. It's
+    a clean "acts deleted" without breaking the data. Pass archived=False to restore it to
+    the library; re-adding a movement by the same name on the add form restores it too.
+    Returns the exercise_id, name, and new archived state."""
+    archived = int(bool(archived))
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id, name FROM exercises WHERE id=?", (exercise_id,)
+        ).fetchone()
+        if not row:
+            return {"error": f"no exercise with id {exercise_id}"}
+        if archived:
+            # Archiving also drops it from the rotation, so a hidden movement never lingers
+            # in the pool the trainer programs from.
+            conn.execute(
+                "UPDATE exercises SET archived=1, in_rotation=0 WHERE id=?", (exercise_id,)
+            )
+        else:
+            conn.execute("UPDATE exercises SET archived=0 WHERE id=?", (exercise_id,))
+    return {"exercise_id": row["id"], "name": row["name"], "archived": bool(archived)}
+
+
 @trainer_mcp.tool()
 def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
                  in_rotation: bool = True) -> dict:
@@ -1820,7 +1898,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                         "candidates": _match_exercises(conn, similar_to)}
             tp = set(_muscles_for(conn, target["id"])["primary"])
             peers = []
-            for r in conn.execute("SELECT * FROM exercises ORDER BY name").fetchall():
+            for r in conn.execute("SELECT * FROM exercises WHERE archived=0 ORDER BY name").fetchall():
                 if r["id"] == target["id"]:
                     continue
                 shared = tp & set(_muscles_for(conn, r["id"])["primary"])
@@ -1832,7 +1910,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
             return {"similar_to": target["name"],
                     "exercises": [p[3] for p in peers], "count": len(peers)}
 
-        rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
+        rows = conn.execute("SELECT * FROM exercises WHERE archived=0 ORDER BY name").fetchall()
         out = []
         for r in rows:
             if rotation_only and not r["in_rotation"]:
@@ -2620,13 +2698,14 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
         # The rotation: the curated pool the model programs from. Compact (id, name,
         # category, equipment, primary muscles) — one query for the muscles, grouped in.
         rot_rows = conn.execute(
-            "SELECT id, name, category, equipment FROM exercises WHERE in_rotation=1 ORDER BY name"
+            "SELECT id, name, category, equipment FROM exercises "
+            "WHERE in_rotation=1 AND archived=0 ORDER BY name"
         ).fetchall()
         rot_primary: dict[int, list[str]] = {}
         for pr in conn.execute(
             "SELECT em.exercise_id, em.muscle FROM exercise_muscles em "
             "JOIN exercises e ON e.id = em.exercise_id "
-            "WHERE e.in_rotation=1 AND em.role='primary' ORDER BY em.muscle"
+            "WHERE e.in_rotation=1 AND e.archived=0 AND em.role='primary' ORDER BY em.muscle"
         ):
             rot_primary.setdefault(pr["exercise_id"], []).append(pr["muscle"])
         rotation = [{"exercise_id": r["id"], "name": r["name"], "category": r["category"],
