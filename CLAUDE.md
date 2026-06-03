@@ -187,9 +187,13 @@ working.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
-- `drinks` — one row per drinking occasion; `standard_drinks` (REAL), `kind`, `notes`.
-  Sober days aren't stored — a day is sober if it has no row. `get_drink_summary`
-  aggregates (daily totals, sober streak) in SQL.
+- `drinks` — exactly one row per day (`drink_date` is unique); `standard_drinks`
+  (REAL), `kind`, `notes`. `log_drinks` upserts: the first log of a day creates the
+  row, later logs accumulate onto it (`standard_drinks` add up, `kind` merges into a
+  deduped list via `_merge_kinds`) — so it takes the increment, not the running total;
+  `update_drink` sets absolutes (corrections/overwrites). Sober days aren't stored — a
+  day is sober if it has no row. `get_drink_summary` aggregates (daily totals, sober
+  streak) in SQL; the webapp `/drinking` page edits/deletes past days inline.
 - `exercises` — the exercise catalog (stable entities, like people): `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`. Starts empty; `log_workout` auto-stubs a
   bare record for any unknown name, which `save_exercise` later enriches.
