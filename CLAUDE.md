@@ -195,12 +195,23 @@ working.
   `update_drink` sets absolutes (corrections/overwrites). Sober days aren't stored — a
   day is sober if it has no row. `get_drink_summary` aggregates (daily totals, sober
   streak) in SQL; the webapp `/drinking` page edits/deletes past days inline.
-- `exercises` — the exercise catalog (stable entities, like people): `technique_notes`,
-  `common_mistakes`, `cautions`, `video_link`, `image_link` (a form gif/still). Starts
-  empty; the logging/planning tools auto-stub a bare record for any unknown name (and
-  return it under `new_exercises`), which `save_exercise` then enriches — the contract
-  tells the model to do that immediately so the catalog isn't left bare. The catalog
-  doubles as the browsable **exercise library** at `/trainer/library`.
+- `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
+  `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
+  `common_mistakes`, `cautions`, `video_link`, `image_link`, and `in_rotation`. PRE-LOADED
+  with ~870 movements from free-exercise-db (`scripts/import_exercises.py`); the schema
+  mirrors that dataset. Two layers: the whole catalog is the **LIBRARY** (browsable at
+  `/trainer/library`); `in_rotation=1` marks the curated **ROTATION**, the only pool the
+  trainer programs from (`set_rotation` curates it; logging a movement flags it in). The
+  catalog is **CLOSED to the model**: the logging/planning tools resolve a name against it
+  (fuzzily — exact, then spacing/punct-insensitive, then a high-confidence typo match;
+  `EX_CONFIDENT` is high so Hack/Back Squat surfaces as a candidate, not a silent
+  mis-resolve) and a name with no match is SKIPPED and returned under `unmatched` with its
+  closest `candidates`, never auto-created. New exercises enter ONLY through the website's
+  manual **Add an exercise** form (`/trainer/library` → `create_exercise`, plus the bulk
+  importer — both NON-tool paths the assistant can't reach); the model-facing
+  `save_exercise` only *enriches* existing rows or toggles `in_rotation`.
+  `exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
+  mechanic).
 - `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a
   plain GROUP BY. `role` is one of three EMPHASIS tiers — primary|secondary|tertiary
   ("how hard" each muscle is worked, e.g. a thruster = shoulders primary, quads/glutes

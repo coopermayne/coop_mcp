@@ -253,9 +253,11 @@ EXERCISES = [
     ("Running",           "cardio", [],                                            "outdoor run"),
     ("Walking",           "cardio", [],                                            "outdoor walk"),
 ]
+# create_exercise is the library's write path (the catalog is closed to the AI's
+# save_exercise, which can only enrich/archive existing rows).
 for name, category, muscles, technique in EXERCISES:
-    server.save_exercise(name=name, category=category, muscles=muscles,
-                         technique_notes=technique)
+    server.create_exercise(name=name, category=category, muscles=muscles,
+                           technique_notes=technique)
 
 WORKOUTS = [
     # (date, focus, feeling, notes, [(exercise, [{weight, reps, rpe} or {duration_seconds, distance_miles}])])
