@@ -28,6 +28,14 @@ is done by Claude in the conversation, using the candidates the server returns. 
 adding features, keep that split: the server generates candidates / stores / retrieves;
 the model decides. Don't add model calls, embeddings services, or NER inside the server.
 
+The rule is about `server.py`, not the whole repo. The **webapp does contain an LLM** —
+`webapp/chat.py` is the web app acting as an *MCP client*, driving the same
+`@mcp.tool()` functions over the Anthropic API (in-process, no transport) so the
+phone/browser gets the same conversational capture Claude Desktop does. That preserves
+the split rather than breaking it: the model still does the judgment, `server.py` stays
+the deterministic data layer with no LLM inside it. So `anthropic` in
+`webapp/requirements.txt` is expected — it lives on the client side of the line.
+
 The same split governs the **trainer** and **drinking** features: the server stores
 workouts/drinks and computes deterministic aggregates (muscle recency, drink streaks),
 but deciding the next weight, what to rest, which exercises to program, and how to coach
@@ -82,9 +90,24 @@ There is no exercise-selection or progression logic in the server either.
   shared `_delete_record` helper (each server exposes a kind-scoped `delete_record`),
   and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
 - `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): serves the
-  journal MCP + read-only UI (`/app`) on the main origin, and the trainer MCP either on
+  journal MCP + browser UI (`/app`) on the main origin, and the trainer MCP either on
   its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host` routing) or grafted at
   `/trainer/mcp` on the main origin (authless fallback).
+- `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
+  read-only browse pages, plus the direct drinks-entry form and the `/chat` panel mount).
+- `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
+  `app.py` thin). Read-only — writes go through `server.py`'s tools.
+- `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
+  architectural-rule note). System prompt + tool schemas are lifted live from each
+  FastMCP instance's `instructions` + tool docstrings, so changing a docstring updates
+  the chat. Off unless `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
+- `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
+  `chat.js`, manifest); the app is an installable PWA.
+- `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
+  httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
+  which it imports `server.py` from.
+- `scripts/` — `seed_dev.py` (load throwaway dev data) and `gen_icons.py` (regenerate
+  the PWA icon set).
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
@@ -117,7 +140,11 @@ slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just your
 `TRAINER_PUBLIC_URL` (bare origin of the trainer's own host — enables the trainer on its
 own subdomain; unset = trainer falls back to `/trainer/mcp` on the main origin, authless
 only). Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, if the trainer host is
-set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section.
+set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
+`ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
+normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
+(show the logout control in the UI). The web app auto-loads `.env` (see `.env.example`);
+shell-exported vars win.
 
 ## Test
 
