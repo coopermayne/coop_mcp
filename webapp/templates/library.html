@@ -46,10 +46,14 @@
       know, and add it to your library and rotation. I'll ask if anything's unclear.
     </p>
     <div data-chat-root>
-      <div data-chat-log class="h-80 overflow-y-auto border border-gray-100 rounded-[4px] px-3 py-3 space-y-4 mb-3">
+      {# Transcript: NOT an input — it's content-height (just the hint until messages
+         arrive, then grows to a capped, scrollable height). Keeping it borderless and
+         auto-height stops it reading as a giant empty text field; the real input is the
+         composer below. #}
+      <div data-chat-log class="space-y-4 mb-3 max-h-96 overflow-y-auto empty:hidden">
         <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
-          e.g. “Add the Jefferson deadlift” · “Pallof press, cable, for my core” ·
-          “Spanish squat with a band”.
+          Type below to start — e.g. “Add the Jefferson deadlift” · “Pallof press, cable,
+          for my core” · “Spanish squat with a band”.
         </p>
       </div>
       <form data-chat-form class="flex items-end gap-2">
