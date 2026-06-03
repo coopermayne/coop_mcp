@@ -336,6 +336,18 @@ CREATE TABLE IF NOT EXISTS exercise_muscles (
 );
 CREATE INDEX IF NOT EXISTS idx_exmuscle_muscle ON exercise_muscles(muscle);
 
+-- AKAs: common alternative names a movement is searched/spoken by ("bench" -> Barbell
+-- Bench Press, "RDL" -> Romanian Deadlift). Mirrors the people `aliases` table: one
+-- canonical entity, many surface forms. Resolution and search score against these as
+-- well as the canonical name, so a user finds a lift by whatever they call it. Stored
+-- lowercased; the catalog stays the closed source of truth (an alias never creates a row).
+CREATE TABLE IF NOT EXISTS exercise_aliases (
+    exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
+    alias       TEXT NOT NULL,        -- lowercased alternative name
+    PRIMARY KEY (exercise_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_exercise_aliases_alias ON exercise_aliases(alias);
+
 CREATE TABLE IF NOT EXISTS workouts (
     id           INTEGER PRIMARY KEY,
     workout_date TEXT NOT NULL,       -- YYYY-MM-DD
@@ -1299,17 +1311,34 @@ def _score_exercise_name(surface: str, name: str) -> float:
     return round(jw, 3)
 
 
+def _alias_map(conn: sqlite3.Connection) -> dict[int, list[str]]:
+    """{exercise_id: [alias, ...]} for the whole catalog, one query — so matching can
+    score a name against every surface form without a per-row lookup."""
+    out: dict[int, list[str]] = {}
+    for r in conn.execute("SELECT exercise_id, alias FROM exercise_aliases"):
+        out.setdefault(r["exercise_id"], []).append(r["alias"])
+    return out
+
+
 def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> list[dict]:
     """Rank the catalog against a spoken name, best first. Returns
     [{exercise_id, name, score, in_rotation, primary}] with score >= EX_MATCH_FLOOR, so a
     caller that can't confidently resolve a name can hand the user the closest real
-    entries instead of guessing. In-rotation movements are listed first among equals.
-    Archived (soft-deleted) movements are never surfaced — they're invisible to discovery."""
+    entries instead of guessing. Each exercise is scored against its canonical name AND
+    its AKAs (best surface form wins), so searching 'rdl' or 'bench' surfaces the right
+    lift. In-rotation movements are listed first among equals. Archived (soft-deleted)
+    movements are never surfaced — they're invisible to discovery."""
     rows = conn.execute(
         "SELECT id, name, in_rotation FROM exercises WHERE archived=0 ORDER BY name"
     ).fetchall()
+    amap = _alias_map(conn)
+
+    def best(r) -> float:
+        forms = [r["name"], *amap.get(r["id"], [])]
+        return max(_score_exercise_name(name, f) for f in forms)
+
     scored = sorted(
-        ((_score_exercise_name(name, r["name"]), int(r["in_rotation"]), r) for r in rows),
+        ((best(r), int(r["in_rotation"]), r) for r in rows),
         key=lambda t: (t[0], t[1]), reverse=True,
     )
     return [{"exercise_id": r["id"], "name": r["name"], "score": sc,
@@ -1319,12 +1348,14 @@ def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> lis
 
 
 def _resolve_exercise(conn: sqlite3.Connection, name: str, include_archived: bool = False):
-    """Resolve a spoken name to ONE catalog row, or None. Tries exact (case-insensitive),
-    then a punctuation/spacing- or phonetics-tolerant high-confidence fuzzy match (so
-    'pullup' finds 'Pull Up' and a near-spelling lands on the right row instead of
-    spawning a duplicate). A merely plausible name — below the confident bar, or with a
+    """Resolve a spoken name to ONE catalog row, or None. Tries exact on the canonical
+    name (case-insensitive), then an exact AKA match (so 'RDL' lands on Romanian
+    Deadlift), then a punctuation/spacing- or phonetics-tolerant high-confidence fuzzy
+    match (so 'pullup' finds 'Pull Up' and a near-spelling lands on the right row instead
+    of spawning a duplicate). A merely plausible name — below the confident bar, or with a
     near-tie runner-up — returns None, leaving the caller to surface `_match_exercises`
-    candidates rather than silently pick the wrong lift.
+    candidates rather than silently pick the wrong lift. An AKA shared by more than one
+    exercise is ambiguous, so it falls through to fuzzy/candidates rather than guessing.
 
     Archived (soft-deleted) movements stay invisible to the model: the default skips them,
     so logging/enriching/swapping by name can't reach an archived lift. The website's add
@@ -1340,6 +1371,15 @@ def _resolve_exercise(conn: sqlite3.Connection, name: str, include_archived: boo
     ).fetchone()
     if row:
         return row
+    hits = conn.execute(
+        """SELECT e.* FROM exercises e
+           JOIN exercise_aliases a ON a.exercise_id = e.id
+           WHERE a.alias = lower(?)"""
+        + ("" if include_archived else " AND e.archived=0"),
+        (name,),
+    ).fetchall()
+    if len(hits) == 1:
+        return hits[0]
     m = _match_exercises(conn, name, limit=2)
     if m and m[0]["score"] >= EX_CONFIDENT and (len(m) == 1 or m[0]["score"] - m[1]["score"] >= 0.06):
         return conn.execute("SELECT * FROM exercises WHERE id=?", (m[0]["exercise_id"],)).fetchone()
@@ -1384,6 +1424,40 @@ def _set_muscles(conn: sqlite3.Connection, exercise_id: int,
                        VALUES (?,?,?)""",
                     (exercise_id, m, role),
                 )
+
+
+def _aliases_for(conn: sqlite3.Connection, exercise_id: int) -> list[str]:
+    """The exercise's AKAs (common alternative names), sorted, lowercased as stored."""
+    return [r["alias"] for r in conn.execute(
+        "SELECT alias FROM exercise_aliases WHERE exercise_id=? ORDER BY alias",
+        (exercise_id,),
+    )]
+
+
+def _set_aliases(conn: sqlite3.Connection, exercise_id: int,
+                 aliases: Optional[list[str]], *, replace: bool = True) -> None:
+    """Write an exercise's AKAs. No-op when `aliases` is None (leave them untouched).
+    With replace=True (the default) the whole set is rewritten; replace=False merges the
+    new ones onto whatever's there (the seed/import path, so a re-run never clobbers an
+    AKA the user added by hand). Blanks and any form equal to the canonical name are
+    dropped, everything is lowercased+deduped, so search treats them uniformly."""
+    if aliases is None:
+        return
+    canon = conn.execute(
+        "SELECT lower(name) AS n FROM exercises WHERE id=?", (exercise_id,)
+    ).fetchone()
+    canon_name = canon["n"] if canon else ""
+    if replace:
+        conn.execute("DELETE FROM exercise_aliases WHERE exercise_id=?", (exercise_id,))
+    seen: set[str] = set()
+    for a in aliases:
+        a = (a or "").strip().lower()
+        if a and a != canon_name and a not in seen:
+            seen.add(a)
+            conn.execute(
+                "INSERT OR IGNORE INTO exercise_aliases(exercise_id, alias) VALUES (?,?)",
+                (exercise_id, a),
+            )
 
 
 def _exercise_brief(conn: sqlite3.Connection, r) -> dict:
@@ -1559,7 +1633,7 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                      secondary_muscles, tertiary_muscles, technique_notes,
                      common_mistakes, cautions, video_link, image_link, slug, force,
-                     level, mechanic, in_rotation, allow_create: bool) -> dict:
+                     level, mechanic, in_rotation, aliases=None, allow_create: bool) -> dict:
     """Shared worker behind save_exercise (enrich-only, allow_create=False) and
     create_exercise (the website's add form, allow_create=True). New rows are born ONLY
     when allow_create is set, which the model-facing tool never passes — that's what keeps
@@ -1609,13 +1683,15 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                              "page first (the catalog is closed to the assistant)",
                     "candidates": _match_exercises(conn, name or "")}
         _set_muscles(conn, eid, muscles, secondary_muscles, tertiary_muscles)
+        _set_aliases(conn, eid, aliases)
         out_name = conn.execute("SELECT name FROM exercises WHERE id=?", (eid,)).fetchone()["name"]
     if created:
         return {"exercise_id": eid, "name": out_name, "created": True}
     muscles_changed = (muscles is not None or secondary_muscles is not None
                        or tertiary_muscles is not None)
     return {"exercise_id": eid, "name": out_name, "created": False,
-            "updated": list(sets_) + (["muscles"] if muscles_changed else [])}
+            "updated": list(sets_) + (["muscles"] if muscles_changed else [])
+                       + (["aka"] if aliases is not None else [])}
 
 
 @trainer_mcp.tool()
@@ -1633,6 +1709,7 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   force: Optional[str] = None,
                   level: Optional[str] = None,
                   mechanic: Optional[str] = None,
+                  aliases: Optional[list[str]] = None,
                   in_rotation: Optional[bool] = None) -> dict:
     """ENRICH an exercise already in the LIBRARY (browsable at /trainer/library), or set
     its rotation flag. The catalog is CLOSED to you: you CANNOT create exercises — the
@@ -1659,13 +1736,19 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     the canonical muscle labels so recency lines up (they mirror the imported library's
     vocabulary): abdominals, abductors, adductors, biceps, calves, chest, forearms,
     glutes, hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
-    triceps. Returns the exercise_id and the fields updated."""
+    triceps. Returns the exercise_id and the fields updated.
+
+    AKAs — pass `aliases` (a list of common alternative names this movement is searched or
+    spoken by, e.g. ["rdl","stiff leg deadlift"] for a Romanian Deadlift) to make those
+    surface the exercise in search and resolution. Lowercased on store; passing a list
+    REPLACES the existing AKAs (send every one you want kept), and the canonical name is
+    never stored as its own AKA. AKAs never create a new row — the catalog stays closed."""
     return _upsert_exercise(
         name=name, exercise_id=exercise_id, category=category, equipment=equipment,
         muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
         technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
         video_link=video_link, image_link=image_link, slug=slug, force=force, level=level,
-        mechanic=mechanic, in_rotation=in_rotation, allow_create=False)
+        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=False)
 
 
 def create_exercise(name: str, category: Optional[str] = None, equipment: Optional[str] = None,
@@ -1681,20 +1764,22 @@ def create_exercise(name: str, category: Optional[str] = None, equipment: Option
                     force: Optional[str] = None,
                     level: Optional[str] = None,
                     mechanic: Optional[str] = None,
+                    aliases: Optional[list[str]] = None,
                     in_rotation: Optional[bool] = None) -> dict:
     """Add a new exercise to the library — the trusted, NON-tool write path: the website's
     manual add form and the bulk importer (scripts/import_exercises.py) are the only
     callers, so the assistant (whose save_exercise can't create) never grows the catalog.
-    A name already on file is updated rather than duplicated. `in_rotation` is left
-    untouched by default (None) — the import keeps new library entries out of the rotation,
-    while the add form passes in_rotation=True so a movement the user deliberately adds is
-    ready to program. Returns like save_exercise."""
+    A name already on file is updated rather than duplicated. `aliases` sets its AKAs
+    (common alternative names — see save_exercise). `in_rotation` is left untouched by
+    default (None) — the import keeps new library entries out of the rotation, while the
+    add form passes in_rotation=True so a movement the user deliberately adds is ready to
+    program. Returns like save_exercise."""
     return _upsert_exercise(
         name=name, exercise_id=None, category=category, equipment=equipment,
         muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
         technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
         video_link=video_link, image_link=image_link, slug=slug, force=force, level=level,
-        mechanic=mechanic, in_rotation=in_rotation, allow_create=True)
+        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=True)
 
 
 def set_archived(exercise_id: int, archived: bool = True) -> dict:
@@ -1762,10 +1847,12 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
     """Read the exercise catalog — one full record, a filtered list, or swap peers.
 
     ONE record — pass `name` or `exercise_id` to get a movement in full: muscle emphasis
-    tiers (primary/secondary/tertiary), `level` (difficulty), `mechanic` (compound vs
-    isolation), `force`, in_rotation, technique notes, common mistakes, cautions, and any
-    video/image links, so you can coach proper form. An unresolved `name` returns
-    `candidates` (the closest real entries) — pick from those, don't guess.
+    tiers (primary/secondary/tertiary), `aka` (common alternative names it's known by),
+    `level` (difficulty), `mechanic` (compound vs isolation), `force`, in_rotation,
+    technique notes, common mistakes, cautions, and any video/image links, so you can
+    coach proper form. `name` is resolved against the canonical name AND its AKAs (so
+    "RDL" finds Romanian Deadlift); an unresolved `name` returns `candidates` (the closest
+    real entries) — pick from those, don't guess.
 
     A LIST — narrow the registry with `muscle` (matches any emphasis tier), an `equipment`
     fragment, `category`, or `rotation_only=True`. Rows are compact (name, category,
@@ -1790,6 +1877,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
             m = _muscles_for(conn, r["id"])
             return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
                     "equipment": r["equipment"], "muscles": m,
+                    "aka": _aliases_for(conn, r["id"]),
                     "force": r["force"], "level": r["level"], "mechanic": r["mechanic"],
                     "in_rotation": bool(r["in_rotation"]),
                     "technique_notes": r["technique_notes"],
