@@ -4,7 +4,11 @@
  * `${endpoint}/send` whose SSE frames append assistant text and tool chips, plus
  * a `${endpoint}/reset` for "new chat". No framework — matches the app.
  *
- *   ChatWidget.init({ root, endpoint });
+ *   ChatWidget.init({ root, endpoint, extra });
+ *
+ * `extra` (optional) is an object merged into every /send and /reset request body —
+ * the profile-page panel passes { person_id } so the server pins the thread to that
+ * person. `onWrite` (optional) fires after a turn that wrote to the DB.
  *
  * The root must contain elements tagged with these data attributes:
  *   [data-chat-log]    scrollable transcript container
@@ -24,6 +28,7 @@
     var sendBtn = root.querySelector('[data-chat-send]');
     var resetBtn = root.querySelector('[data-chat-reset]');
     var seed = root.querySelector('[data-chat-seed]');
+    var extra = opts.extra || {}; // merged into /send and /reset bodies (e.g. person_id)
     var busy = false;
 
     if (root.dataset.chatReady) return; // idempotent
@@ -117,7 +122,7 @@
         res = await fetch(endpoint + '/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text }),
+          body: JSON.stringify(Object.assign({ text: text }, extra)),
         });
       } catch (e) {
         assistantText(container).textContent = 'Network error: ' + e.message;
@@ -187,7 +192,13 @@
     if (resetBtn) {
       resetBtn.addEventListener('click', async function () {
         if (busy) return;
-        try { await fetch(endpoint + '/reset', { method: 'POST' }); } catch (e) {}
+        try {
+          await fetch(endpoint + '/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(extra),
+          });
+        } catch (e) {}
         log.innerHTML = '';
       });
     }

@@ -740,9 +740,10 @@ async def chat_send(request: Request, agent: str):
         return JSONResponse({"error": "Empty message."}, status_code=400)
     cid = _chat_id(request)
     base = base_path(request)
+    context = _chat_context(body)
 
     async def event_stream():
-        async for ev in chat.run_turn(agent, cid, text):
+        async for ev in chat.run_turn(agent, cid, text, context=context):
             if ev.get("href"):  # prefix tool-chip links with the mount path
                 ev["href"] = base + ev["href"]
             yield f"data: {json.dumps(ev)}\n\n"
@@ -755,8 +756,26 @@ async def chat_send(request: Request, agent: str):
 @app.post("/chat/{agent}/reset")
 async def chat_reset(request: Request, agent: str):
     from fastapi.responses import JSONResponse
-    chat.reset(agent, _chat_id(request))
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    chat.reset(agent, _chat_id(request), context=_chat_context(body))
     return JSONResponse({"status": "ok"})
+
+
+def _chat_context(body: dict):
+    """Optional per-page chat context from the request body. The profile-page panel
+    sends `person_id`; we resolve it server-side to a person-pinned context (None if
+    absent or unknown) so the thread is scoped to that person and the model edits the
+    right record."""
+    pid = (body or {}).get("person_id")
+    if pid is None:
+        return None
+    try:
+        return chat.person_context(int(pid))
+    except (TypeError, ValueError):
+        return None
 
 
 @app.get("/people")
