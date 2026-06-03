@@ -441,12 +441,9 @@ async def service_worker(request: Request):
 
 @app.get("/")
 async def index(request: Request):
-    base = base_path(request)
-    d = data.home()
-    for day in d["days"]:
-        for e in day["entries"]:
-            e["body_html"] = linkify_people(e["body"], e["people"], base)
-    return page(request, "index.html", active="home", d=d)
+    # The journal is the landing page — there's no separate dashboard. "/app"
+    # (and the bare origin) lands here.
+    return RedirectResponse(base_path(request) + "/journal")
 
 
 def _pending_count() -> int:
