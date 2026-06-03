@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% import "macros.html" as m with context %}
+{% block title %}Trainer · Journal{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold tracking-tight mb-8">Trainer</h1>
+
+{# ── Context header ──────────────────────────────────────────────────────────
+   A quiet line of context from get_fitness_briefing: latest bodyweight, last
+   completed session, and the muscles most/least recently trained. The coaching
+   itself happens in the chat; this just orients. #}
+{% set bw = brief.bodyweight %}
+{% set last = brief.recent_workouts[0] if brief.recent_workouts else None %}
+{% set fresh = brief.muscle_recency | selectattr('days_since', 'ne', None) | list %}
+<div class="mb-8 flex flex-wrap gap-x-8 gap-y-3">
+  {{ m.stat(bw.latest_lbs | num ~ (' lb' if bw else ''), 'Bodyweight') if bw else m.stat('—', 'Bodyweight') }}
+  {% if last %}
+    {{ m.stat((last.focus or 'Session'), 'Last · ' ~ (last.date | short_date)) }}
+  {% else %}
+    {{ m.stat('—', 'Last session') }}
+  {% endif %}
+  {% if fresh %}
+    {% set due = fresh[-1] %}
+    {{ m.stat(due.muscle | capitalize, 'Most rested · ' ~ (due.days_since|string) ~ 'd') }}
+  {% endif %}
+</div>
+
+{# Plan card — rendered entirely by static/trainer.js from the bootstrapped JSON,
+   so tap-driven and chat-driven changes share one render path. #}
+<div id="plan-root" data-base="{{ base }}" class="min-h-[8rem]"></div>
+<script type="application/json" id="plan-data">{{ plan | tojson }}</script>
+
+{% if chat_enabled %}
+  {% include "_trainer_chat_panel.html" %}
+{% else %}
+  <p class="mt-8 text-sm text-gray-400">
+    The trainer chat is offline (no API key configured). You can still see your active
+    plan here once one is started.
+  </p>
+{% endif %}
+
+<script src="{{ base }}/static/trainer.js"></script>
+{% endblock %}
