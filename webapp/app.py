@@ -612,9 +612,13 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
 @app.get("/drinking")
 async def drinking(request: Request, error: str = ""):
     s = data.drinking(days=30)
+    log = data.recent_drinks(limit=30)
+    # Today's running tally for the header — drinks are one row per day, so today's
+    # row (if any) IS today's total/tags. None on a sober day.
+    today = server.today()
+    today_drink = next((r for r in log if r["drink_date"] == today), None)
     return page(request, "drinking.html", active="drinking",
-                s=s, log=data.recent_drinks(limit=30),
-                today=server.today(), error=error)
+                s=s, log=log, today=today, today_drink=today_drink, error=error)
 
 
 @app.post("/drinking/add")
