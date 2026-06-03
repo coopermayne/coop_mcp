@@ -1235,11 +1235,72 @@ def _days_since(d: Optional[str]) -> Optional[int]:
         return None
 
 
+# Forgiving name resolution for the catalog. The library is large (~870) and a movement
+# is often referred to slightly off ("incline db press" vs "Incline Dumbbell Press"), so
+# resolution tries exact, then a spacing/punctuation-insensitive match, then a
+# high-confidence fuzzy/phonetic match — the same shape as person-alias matching.
+EX_MATCH_FLOOR = 0.6   # below this it isn't even offered as a candidate
+EX_CONFIDENT = 0.97    # at/above this (with a clear lead) we resolve silently — set high
+                       # on purpose: a one-letter swap on a short name ('Hack Squat' vs
+                       # 'Back Squat') scores ~0.93, and those are DIFFERENT lifts, so
+                       # anything that uncertain comes back as a candidate to confirm
+                       # rather than being silently mis-resolved.
+
+
+def _norm_ex(s: str) -> str:
+    """Collapse a name to letters+digits, so 'Pull-up' / 'Pull Up' / 'pullup' match."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _score_exercise_name(surface: str, name: str) -> float:
+    """0..1 similarity of a spoken name to a catalog name. Exact, or a punctuation/
+    spacing-only difference, wins; phonetic agreement floors it (transcription noise)."""
+    s, a = (surface or "").lower().strip(), (name or "").lower().strip()
+    if not s or not a:
+        return 0.0
+    if s == a or _norm_ex(s) == _norm_ex(a):
+        return 1.0
+    jw = jellyfish.jaro_winkler_similarity(s, a)
+    if phonetic(surface) and phonetic(surface) == phonetic(name):
+        jw = max(jw, 0.88)  # sounds-the-same floor
+    return round(jw, 3)
+
+
+def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> list[dict]:
+    """Rank the catalog against a spoken name, best first. Returns
+    [{exercise_id, name, score, in_rotation, primary}] with score >= EX_MATCH_FLOOR, so a
+    caller that can't confidently resolve a name can hand the user the closest real
+    entries instead of guessing. In-rotation movements are listed first among equals."""
+    rows = conn.execute("SELECT id, name, in_rotation FROM exercises ORDER BY name").fetchall()
+    scored = sorted(
+        ((_score_exercise_name(name, r["name"]), int(r["in_rotation"]), r) for r in rows),
+        key=lambda t: (t[0], t[1]), reverse=True,
+    )
+    return [{"exercise_id": r["id"], "name": r["name"], "score": sc,
+             "in_rotation": bool(r["in_rotation"]),
+             "primary": _muscles_for(conn, r["id"])["primary"]}
+            for sc, _rot, r in scored[:limit] if sc >= EX_MATCH_FLOOR]
+
+
 def _resolve_exercise(conn: sqlite3.Connection, name: str):
-    """Case-insensitive lookup of a catalog exercise by name. Returns row or None."""
-    return conn.execute(
-        "SELECT * FROM exercises WHERE lower(name)=lower(?)", (name.strip(),)
+    """Resolve a spoken name to ONE catalog row, or None. Tries exact (case-insensitive),
+    then a punctuation/spacing- or phonetics-tolerant high-confidence fuzzy match (so
+    'pullup' finds 'Pull Up' and a near-spelling lands on the right row instead of
+    spawning a duplicate). A merely plausible name — below the confident bar, or with a
+    near-tie runner-up — returns None, leaving the caller to surface `_match_exercises`
+    candidates rather than silently pick the wrong lift."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    row = conn.execute(
+        "SELECT * FROM exercises WHERE lower(name)=lower(?)", (name,)
     ).fetchone()
+    if row:
+        return row
+    m = _match_exercises(conn, name, limit=2)
+    if m and m[0]["score"] >= EX_CONFIDENT and (len(m) == 1 or m[0]["score"] - m[1]["score"] >= 0.06):
+        return conn.execute("SELECT * FROM exercises WHERE id=?", (m[0]["exercise_id"],)).fetchone()
+    return None
 
 
 def _muscles_for(conn: sqlite3.Connection, exercise_id: int) -> dict:
@@ -1559,7 +1620,8 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
         else:
             return {"error": "pass name or exercise_id"}
         if not row:
-            return {"error": "no matching exercise (create it with save_exercise first)"}
+            return {"error": "no matching exercise (create it with save_exercise first)",
+                    "candidates": _match_exercises(conn, name or "")}
         conn.execute("UPDATE exercises SET in_rotation=? WHERE id=?", (in_rotation, row["id"]))
     return {"exercise_id": row["id"], "name": row["name"], "in_rotation": bool(in_rotation)}
 
@@ -1567,17 +1629,27 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
 @trainer_mcp.tool()
 def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
               muscle: Optional[str] = None, equipment: Optional[str] = None,
-              category: Optional[str] = None, rotation_only: bool = False) -> dict:
-    """Read the exercise catalog — one full record, or a filtered list.
+              category: Optional[str] = None, rotation_only: bool = False,
+              similar_to: Optional[str] = None) -> dict:
+    """Read the exercise catalog — one full record, a filtered list, or swap peers.
 
-    Pass `name` or `exercise_id` to get ONE exercise in full, including its muscle
-    emphasis tiers (primary/secondary/tertiary), technique notes, common mistakes,
-    cautions, in_rotation, and any video_link/image_link, so you can coach proper form.
-    Otherwise it returns the compact registry (id, name, category, equipment, muscles,
-    in_rotation); narrow it with `muscle` (matches any emphasis tier), an `equipment`
-    fragment, `category`, or `rotation_only=True` to see just the programming pool. The
-    full catalog is large (~870), so when picking exercises for a session, prefer
-    rotation_only=True — that's the set the user actually trains from."""
+    ONE record — pass `name` or `exercise_id` to get a movement in full: muscle emphasis
+    tiers (primary/secondary/tertiary), `level` (difficulty), `mechanic` (compound vs
+    isolation), `force`, in_rotation, technique notes, common mistakes, cautions, and any
+    video/image links, so you can coach proper form. An unresolved `name` returns
+    `candidates` (the closest real entries) — pick from those, don't guess.
+
+    A LIST — narrow the registry with `muscle` (matches any emphasis tier), an `equipment`
+    fragment, `category`, or `rotation_only=True`. Rows are compact (name, category,
+    equipment, muscles, `level`, `mechanic`, in_rotation) — `level`/`mechanic` let you
+    weigh difficulty and pick compounds before isolation. The full catalog is large
+    (~870), so when picking exercises for a session prefer rotation_only=True — that's the
+    set the user actually trains from.
+
+    A SWAP — `similar_to=<exercise>` returns the closest like-for-like peers: shares a
+    primary muscle, ranked by same `mechanic` (compound↔compound, isolation↔isolation),
+    then shared-muscle overlap, then whether it's already in rotation (itself excluded).
+    Use it when a machine's taken or a movement bugs a joint."""
     with db() as conn:
         if name is not None or exercise_id is not None:
             if exercise_id is not None:
@@ -1585,7 +1657,8 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
             else:
                 r = _resolve_exercise(conn, name)
             if not r:
-                return {"error": "no matching exercise"}
+                return {"error": "no matching exercise",
+                        "candidates": _match_exercises(conn, name or "")}
             m = _muscles_for(conn, r["id"])
             return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
                     "equipment": r["equipment"], "muscles": m,
@@ -1594,6 +1667,33 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                     "technique_notes": r["technique_notes"],
                     "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
                     "video_link": r["video_link"], "image_link": r["image_link"]}
+
+        def _row(r):
+            return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
+                    "equipment": r["equipment"], "muscles": _muscles_for(conn, r["id"]),
+                    "level": r["level"], "mechanic": r["mechanic"],
+                    "in_rotation": bool(r["in_rotation"])}
+
+        # Swap peers: shares a primary muscle, ranked by same mechanic / overlap / rotation.
+        if similar_to is not None:
+            target = _resolve_exercise(conn, similar_to)
+            if not target:
+                return {"error": f"no exercise matching {similar_to!r}",
+                        "candidates": _match_exercises(conn, similar_to)}
+            tp = set(_muscles_for(conn, target["id"])["primary"])
+            peers = []
+            for r in conn.execute("SELECT * FROM exercises ORDER BY name").fetchall():
+                if r["id"] == target["id"]:
+                    continue
+                shared = tp & set(_muscles_for(conn, r["id"])["primary"])
+                if not shared:
+                    continue
+                same_mech = bool(target["mechanic"]) and r["mechanic"] == target["mechanic"]
+                peers.append((same_mech, len(shared), int(r["in_rotation"]), _row(r)))
+            peers.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+            return {"similar_to": target["name"],
+                    "exercises": [p[3] for p in peers], "count": len(peers)}
+
         rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
         out = []
         for r in rows:
@@ -1606,9 +1706,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                 continue
             if category and r["category"] != category:
                 continue
-            out.append({"exercise_id": r["id"], "name": r["name"],
-                        "category": r["category"], "equipment": r["equipment"],
-                        "muscles": m, "in_rotation": bool(r["in_rotation"])})
+            out.append(_row(r))
     return {"exercises": out, "count": len(out)}
 
 
@@ -1746,7 +1844,8 @@ def get_exercise_history(exercise_id: Optional[int] = None,
         if exercise_id is None and name is not None:
             r = _resolve_exercise(conn, name)
             if not r:
-                return {"error": f"no exercise named {name!r}"}
+                return {"error": f"no exercise named {name!r}",
+                        "candidates": _match_exercises(conn, name)}
             exercise_id = r["id"]
         ex = conn.execute("SELECT name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
         if not ex:
@@ -1798,7 +1897,8 @@ def get_personal_records(exercise_id: Optional[int] = None,
         ex = (conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
               if exercise_id is not None else _resolve_exercise(conn, name or ""))
         if not ex:
-            return {"error": "no matching exercise"}
+            return {"error": "no matching exercise",
+                    "candidates": _match_exercises(conn, name or "")}
         rows = conn.execute(
             """SELECT s.id, s.weight_lbs, s.reps, s.rpe, s.duration_seconds,
                       s.distance_miles, w.workout_date
@@ -2194,8 +2294,10 @@ def swap_exercise(from_exercise: str, to_exercise: str,
     horizontal press→horizontal press), the role (compound→compound, isolation→
     isolation), and roughly the loading character. A Lat Pulldown's peer is a Close-/
     Neutral-Grip Pulldown or a Pull-up — NOT a Straight-Arm Pulldown, which isolates
-    the same lats but is a single-joint accessory and a different stimulus. Only drop
-    to a narrower or different-pattern move when no true peer is available, and say so.
+    the same lats but is a single-joint accessory and a different stimulus. Use
+    `exercises(similar_to=from_exercise)` to see the catalog's closest peers (shared
+    primary muscle, same mechanic) and pick `to_exercise` from there. Only drop to a
+    narrower or different-pattern move when no true peer is available, and say so.
     The PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
     log) and `to_exercise` is added with fresh pending sets.
 
