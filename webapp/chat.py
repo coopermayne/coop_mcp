@@ -56,10 +56,28 @@ _JOURNAL_BLURB = (
     "just point the user to the Drinking page rather than trying to log them."
 )
 _TRAINER_BLURB = (
-    "\n\nYou are running inside the trainer's own web app, on a dedicated chat page "
-    "linked from the workout page — the user is talking to you mid- or post-workout "
-    "on their phone. Be concise. Log sets as they happen and surface the context "
-    "(recency, last weights, notes) the briefing gives you."
+    "\n\nYou are running inside the trainer's own web app, on the /trainer page — the "
+    "user is talking to you on their phone, usually mid-workout. Beside this chat is a "
+    "live PLAN CARD that shows today's routine and lets them tap sets done; your job is "
+    "to fill and adjust that plan. Be concise — they're between sets.\n\n"
+    "Building a routine: when they ask for a session ('give me a push day', 'what "
+    "should I do today?'), FIRST call get_fitness_briefing (and get_exercise_history "
+    "for the lifts you're picking weights for), THEN start_workout_plan with concrete "
+    "target weights and reps. Hit the muscle groups that are due/rested; respect "
+    "profile injuries and any niggles in recent-session notes. Where last time was easy "
+    "(RPE <=7-8, clean reps) nudge the weight up; where it was a grind (RPE 9-10 or "
+    "missed reps) hold or back off. Keep their staple lifts so the progression data "
+    "stays comparable — vary exercises only modestly, not every session.\n\n"
+    "During the workout: they'll log most sets by tapping the card, but if they tell "
+    "you ('did 10 at 100, felt like an 8') use complete_set. If a machine is taken or "
+    "broken, use swap_exercise for the same muscle group (pass the right target weight "
+    "for the substitute). add_to_plan to tack on more; finish_workout when they're "
+    "done. Call get_workout_plan if you need to see the current state.\n\n"
+    "Technique questions: answer with a clear, specific walkthrough — setup, the "
+    "movement, tempo, what it should feel like, and the common mistakes to avoid — "
+    "drawing on the exercise's saved technique_notes/common_mistakes/cautions (via the "
+    "exercises tool) and your own knowledge. If you give durable cues for an exercise, "
+    "consider saving them with save_exercise so they're there next time."
 )
 
 # The agent registry. Each entry binds a chat surface to one FastMCP instance and
@@ -91,6 +109,8 @@ _WRITE_TOOLS = {
     "merge_people", "delete_record",
     "log_workout", "update_workout", "update_set", "save_exercise",
     "log_bodyweight", "update_profile",
+    "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
+    "finish_workout",
 }
 
 
@@ -202,6 +222,25 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
         summary = "Saved an exercise"
     elif name == "get_fitness_briefing":
         summary = "Loaded training context"
+    # Trainer plan tools (the /trainer page).
+    elif name == "start_workout_plan":
+        href = "/trainer"
+        summary = "Built today's routine"
+    elif name == "complete_set":
+        href = "/trainer"
+        summary = "Logged a set"
+    elif name == "swap_exercise":
+        href = "/trainer"
+        summary = "Swapped an exercise"
+    elif name == "add_to_plan":
+        href = "/trainer"
+        summary = "Added to the plan"
+    elif name == "finish_workout":
+        href = "/trainer"
+        summary = "Finished the workout"
+    elif name == "get_workout_plan":
+        href = "/trainer"
+        summary = "Loaded the plan"
 
     return {"name": name, "summary": summary, "kind": kind, "href": href}
 

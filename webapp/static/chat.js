@@ -74,12 +74,28 @@
     function assistantText(container) {
       var p = container.querySelector('[data-text]');
       if (!p) {
-        p = document.createElement('p');
+        p = document.createElement('div');
         p.setAttribute('data-text', '');
-        p.className = 'text-[15px] text-gray-800 leading-relaxed whitespace-pre-wrap break-words';
+        p._raw = '';
+        p.className = 'chat-md text-[15px] text-gray-800 leading-relaxed break-words';
         container.appendChild(p);
       }
       return p;
+    }
+
+    // Render the accumulated raw markdown into the element. Falls back to plain
+    // text (preserving newlines) if the markdown lib hasn't loaded.
+    function renderMd(el) {
+      var raw = el._raw || '';
+      if (window.marked && window.marked.parse) {
+        el.innerHTML = window.marked.parse(raw, { breaks: true });
+        el.querySelectorAll('a').forEach(function (a) {
+          a.target = '_blank'; a.rel = 'noopener noreferrer';
+        });
+      } else {
+        el.style.whiteSpace = 'pre-wrap';
+        el.textContent = raw;
+      }
     }
 
     function setBusy(b) {
@@ -129,7 +145,9 @@
           var ev;
           try { ev = JSON.parse(payload); } catch (e) { continue; }
           if (ev.type === 'text') {
-            assistantText(container).textContent += ev.text;
+            var t = assistantText(container);
+            t._raw += ev.text;
+            renderMd(t);
           } else if (ev.type === 'tool') {
             if (ev.kind === 'write') wrote = true;
             var p = container.querySelector('[data-text]');
@@ -137,7 +155,8 @@
             else container.appendChild(chip(ev));
           } else if (ev.type === 'error') {
             var e1 = assistantText(container);
-            e1.textContent += (e1.textContent ? '\n\n' : '') + '⚠ ' + ev.message;
+            e1._raw += (e1._raw ? '\n\n' : '') + '⚠ ' + ev.message;
+            renderMd(e1);
             // Drop the gray class first: the dark-mode override for text-gray-800
             // outranks the bare text-red-500 utility, so red only wins once gray
             // is gone.
