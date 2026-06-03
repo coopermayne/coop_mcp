@@ -561,16 +561,21 @@ async def trainer_finish(request: Request):
 @app.post("/trainer/set/{set_id}/update")
 async def trainer_update_set(request: Request, set_id: int):
     """Correct an already-logged ('done') set from the plan card — fix a data-entry
-    error without un-logging it. Body: {weight_lbs?, reps?, rpe?}. server.update_set
-    returns just the touched set, so we hand back the fresh plan for the card to
-    re-render off one render path."""
+    error without un-logging it. Body: {weight_lbs?, reps?, rpe?}. Saving with reps BLANK
+    clears the set instead (revert a planned set to pending, or drop an ad-hoc one), since
+    update_set can't blank a field to NULL. server.update_set returns just the touched
+    set, so we hand back the fresh plan for the card to re-render off one render path."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     reps = _num(body.get("reps"))
+    if reps is None:  # blank reps == clear the set
+        res = server.clear_plan_set(set_id)
+        code = 400 if isinstance(res, dict) and res.get("error") else 200
+        return JSONResponse(res, status_code=code)
     res = server.update_set(
         set_id,
         weight_lbs=_num(body.get("weight_lbs")),
-        reps=int(reps) if reps is not None else None,
+        reps=int(reps),
         rpe=_num(body.get("rpe")),
     )
     if isinstance(res, dict) and res.get("error"):
