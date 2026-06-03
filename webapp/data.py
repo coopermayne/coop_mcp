@@ -403,7 +403,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             continue
         if muscle and muscle not in all_m:
             continue
-        if q and q.lower() not in r["name"].lower():
+        if q and not server._name_query_match(r["name"], q):
             continue
         v = vol.get(r["id"], {"sessions": 0, "last_done": None})
         out.append({
