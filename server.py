@@ -1260,15 +1260,40 @@ def _norm_ex(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def _tokens_ex(s: str) -> list[str]:
+    """A name's words, lowercased and SORTED, so word order drops out: 'crunch cable'
+    and 'Cable Crunch' both become ['cable', 'crunch']. Catalog names routinely get
+    spoken back-to-front ('curl hammer', 'press incline db'), and order shouldn't cost a
+    match."""
+    return sorted(re.findall(r"[a-z0-9]+", (s or "").lower()))
+
+
+def _name_query_match(name: str, q: str) -> bool:
+    """True if EVERY word of `q` appears (as a substring) in `name`, order-independent —
+    so 'crunch cable' finds 'Cable Crunch' and a partial 'cable cru' still narrows. The
+    library page's name filter; a stricter, browse-style match than the fuzzy resolver
+    (no typo tolerance — it's filtering a list the user is reading, not resolving one
+    spoken name)."""
+    nl = (name or "").lower()
+    toks = re.findall(r"[a-z0-9]+", (q or "").lower())
+    return all(t in nl for t in toks) if toks else True
+
+
 def _score_exercise_name(surface: str, name: str) -> float:
-    """0..1 similarity of a spoken name to a catalog name. Exact, or a punctuation/
-    spacing-only difference, wins; phonetic agreement floors it (transcription noise)."""
+    """0..1 similarity of a spoken name to a catalog name. Exact, a punctuation/spacing-
+    only difference, OR the same words in a different order all win (1.0); reordered-with-
+    typos still scores via a token-sorted Jaro-Winkler; phonetic agreement floors it
+    (transcription noise)."""
     s, a = (surface or "").lower().strip(), (name or "").lower().strip()
     if not s or not a:
         return 0.0
-    if s == a or _norm_ex(s) == _norm_ex(a):
+    st, at = _tokens_ex(s), _tokens_ex(a)
+    if s == a or _norm_ex(s) == _norm_ex(a) or (st and st == at):
         return 1.0
-    jw = jellyfish.jaro_winkler_similarity(s, a)
+    # order-insensitive fuzzy: compare the names word-sorted, so 'crunch cabel' (typo +
+    # reordered) still lands near 'Cable Crunch' instead of being tanked by word order.
+    jw = max(jellyfish.jaro_winkler_similarity(s, a),
+             jellyfish.jaro_winkler_similarity(" ".join(st), " ".join(at)))
     if phonetic(surface) and phonetic(surface) == phonetic(name):
         jw = max(jw, 0.88)  # sounds-the-same floor
     return round(jw, 3)
