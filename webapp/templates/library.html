@@ -14,28 +14,38 @@
 
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Exercise Library</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }}</span>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} shown · {{ rotation_count }} in rotation</span>
 </div>
 
 <p class="text-sm text-gray-500 mb-6 leading-relaxed">
-  Every movement you train or want to introduce later — the muscles it works (by
-  emphasis), the gear it needs, how to do it, and a form clip. The trainer fills this in:
-  ask it to add an exercise or flesh one out.
+  The full movement library (~870, from the open free-exercise-db) — muscles by emphasis,
+  gear, how to do it, and a form clip. Star a movement to add it to your <strong>rotation</strong>:
+  the curated pool the trainer actually programs your sessions from. Logging a workout adds
+  its movements automatically.
 </p>
+
+{# Rotation / All toggle, preserving the current name + muscle filters. #}
+<div class="mb-4 flex gap-2">
+  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}rotation=1"
+     class="badge hover:border-black hover:text-black transition-colors {% if rotation %}badge-dark{% endif %}">★ In rotation</a>
+  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}{% endif %}{% if q and muscle %}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}{% endif %}"
+     class="badge hover:border-black hover:text-black transition-colors {% if not rotation %}badge-dark{% endif %}">All</a>
+</div>
 
 {# Name search + a Clear that also drops the muscle filter. #}
 <form method="get" action="{{ base }}/trainer/library" class="mb-4 flex gap-2">
   <input type="search" name="q" value="{{ q }}" placeholder="Search exercise name…"
          class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
   {% if muscle %}<input type="hidden" name="muscle" value="{{ muscle }}" />{% endif %}
+  {% if rotation %}<input type="hidden" name="rotation" value="1" />{% endif %}
   <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
-  {% if q or muscle %}<a href="{{ base }}/trainer/library" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+  {% if q or muscle %}<a href="{{ base }}/trainer/library{% if rotation %}?rotation=1{% endif %}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
-{# Muscle filter chips: each toggles ?muscle=, keeping any name query. #}
+{# Muscle filter chips: each toggles ?muscle=, keeping any name query and rotation filter. #}
 <div class="mb-8 flex flex-wrap gap-2">
   {% for mu in muscles %}
-  <a href="{{ base }}/trainer/library?muscle={{ mu | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}"
+  <a href="{{ base }}/trainer/library?muscle={{ mu | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if rotation %}&rotation=1{% endif %}"
      class="badge hover:border-black hover:text-black transition-colors {% if muscle == mu %}badge-dark{% endif %}">{{ mu }}</a>
   {% endfor %}
 </div>
@@ -49,6 +59,11 @@
     <summary class="cursor-pointer list-none flex items-baseline justify-between gap-3">
       <div class="min-w-0">
         <div class="flex items-baseline gap-2 flex-wrap">
+          {# Star toggles rotation membership; click is intercepted so the row doesn't expand. #}
+          <button type="button" class="rotation-toggle shrink-0 text-base leading-none {% if ex.in_rotation %}text-amber-500{% else %}text-gray-300 hover:text-amber-400{% endif %}"
+                  data-id="{{ ex.exercise_id }}" data-in="{{ '1' if ex.in_rotation else '0' }}"
+                  aria-pressed="{{ 'true' if ex.in_rotation else 'false' }}"
+                  title="{{ 'In your rotation — click to remove' if ex.in_rotation else 'Add to your rotation' }}">{{ '★' if ex.in_rotation else '☆' }}</button>
           <span class="text-sm font-medium">{{ ex.name }}</span>
           {% if ex.category %}<span class="badge">{{ ex.category }}</span>{% endif %}
           {% if not ex.has_notes %}<span class="text-[10px] uppercase tracking-widest text-amber-500" title="No technique notes saved yet">needs notes</span>{% endif %}
@@ -101,8 +116,36 @@
 </div>
 {% else %}
 <p class="text-sm text-gray-400">
-  {% if q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — log a workout or ask the trainer to add some.{% endif %}
+  {% if rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer or ask the trainer to add some.{% endif %}
 </p>
 {% endif %}
+
+<script>
+// Star button: POST the new rotation state, then reflect it in place (no reload).
+document.querySelectorAll(".rotation-toggle").forEach(function (btn) {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();           // don't toggle the <details>
+    e.stopPropagation();
+    var on = btn.dataset.in === "1";
+    var want = !on;
+    btn.disabled = true;
+    fetch("{{ base }}/trainer/exercise/" + btn.dataset.id + "/rotation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ in_rotation: want }),
+    }).then(function (r) {
+      if (!r.ok) throw new Error("failed");
+      btn.dataset.in = want ? "1" : "0";
+      btn.textContent = want ? "★" : "☆";
+      btn.setAttribute("aria-pressed", want ? "true" : "false");
+      btn.title = want ? "In your rotation — click to remove" : "Add to your rotation";
+      btn.classList.toggle("text-amber-500", want);
+      btn.classList.toggle("text-gray-300", !want);
+    }).catch(function () {
+      btn.textContent = "!";
+    }).finally(function () { btn.disabled = false; });
+  });
+});
+</script>
 
 {% endblock %}
