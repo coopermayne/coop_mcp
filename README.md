@@ -128,14 +128,17 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   the gaps. To fix a mistake, `get_drink_summary(include_rows=True)` to find the row
   id, then `update_drink` (corrections go either direction, unlike re-logging) or
   `delete_record(kind="drink")`.
-- **Catalog that fills itself.** Exercises start empty. `log_workout` records a
-  session — the whole thing in one call, or set-by-set as it happens by passing the
-  first call's `workout_id` back on each later call so the sets append to one session
-  instead of fragmenting it. It auto-creates a bare catalog entry for any lift it
-  hasn't seen — so logging never stalls. Flesh out technique/cautions with
-  `save_exercise` (unknown name creates, known name/id updates). Fix a logged session
-  with `get_exercise_history` (to get `set_id`s) + `update_set` or
-  `delete_record(kind="set")`, `update_workout` to move/relabel it, or
+- **A closed exercise library.** The catalog is a fixed set the trainer draws on but
+  never grows: ~870 movements pre-loaded from free-exercise-db, plus any you add yourself
+  on the **Add an exercise** form at `/trainer/library`. The AI programs only from what's
+  there. `log_workout` records a session — the whole thing in one call, or set-by-set as
+  it happens by passing the first call's `workout_id` back on each later call so the sets
+  append to one session instead of fragmenting it. Exercise names resolve against the
+  library (fuzzily, so a near-spelling lands); a name with no match is skipped and returned
+  under `unmatched` with its closest `candidates`, never auto-created. The AI's
+  `save_exercise` only *enriches* existing entries (technique/cautions/muscles/form clip)
+  or toggles rotation. Fix a logged session with `get_exercise_history` (to get `set_id`s)
+  + `update_set` or `delete_record(kind="set")`, `update_workout` to move/relabel it, or
   `delete_record(kind="workout")` for the whole session.
 - **Progressive overload.** Each set stores `weight_lbs`/`reps`/`rpe` (1–10).
   `get_exercise_history` replays a lift session-by-session so the trainer can judge
@@ -169,10 +172,12 @@ journal connector):
 > against RPE. Log with `log_workout` — either the finished session in one call, or
 > set-by-set during the workout (reuse the returned `workout_id` so it stays one
 > session). If I correct something afterward, use `get_exercise_history` to find the
-> `set_id`, then `update_set` or `delete_record`. Whenever a new exercise gets created
-> (it comes back under `new_exercises`), enrich it right away with `save_exercise` —
-> muscles in their three emphasis tiers, equipment, technique, and a form gif/video — so
-> the exercise library (`/trainer/library`) stays filled in. Capture anything I mention about how it went in the session
+> `set_id`, then `update_set` or `delete_record`. The exercise library is closed — program
+> only movements it already holds (`exercises(muscle=…, rotation_only=True)` to pick,
+> `exercises(similar_to=…)` for swaps); if a name doesn't resolve it comes back under
+> `unmatched`/`candidates`, so use one of those or tell me to add the movement on the
+> library page. Keep existing entries coached with `save_exercise` (muscles in their three
+> emphasis tiers, equipment, technique, a form gif/video). Capture anything I mention about how it went in the session
 > notes (`append_note`) — it's context for next time. After we log a session, remind me
 > to weigh in and record it with `log_bodyweight`. Keep
 > durable facts (injuries, split, goals) in `update_profile`.
@@ -435,9 +440,10 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
 | `get_drink_summary` | Daily totals + rolling stats and sober streak; `include_rows=True` adds individual rows with ids for editing |
 | `update_drink` | Correct a logged drink in either direction (incl. downward) or move its day |
-| `save_exercise` | Create or enrich a catalog exercise (technique, mistakes, cautions, equipment, form gif/video, muscles in primary/secondary/tertiary emphasis tiers); unknown name creates, known name/id updates. The catalog is browsable at `/trainer/library` |
-| `exercises` | Read the catalog — full record when you name/id one, else a filtered list (by muscle/equipment/category) |
-| `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; auto-stubs unknown lifts |
+| `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
+| `set_rotation` | Add/remove an exercise from the rotation (the curated pool the trainer programs from) |
+| `exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
+| `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; names resolve against the closed catalog, unmatched ones come back under `unmatched`/`candidates` (never auto-created) |
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `append_note` adds a line without clobbering earlier notes |
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
 | `log_bodyweight` | Record a weigh-in (lbs); returns the change vs the prior reading |
