@@ -371,6 +371,66 @@ async def workouts(request: Request):
                 months=months)
 
 
+@app.get("/trainer")
+async def trainer(request: Request):
+    """The trainer surface: the active workout plan (today's routine, tap-to-complete)
+    plus the AI chat panel that builds and adjusts it. The plan card is rendered
+    client-side from the bootstrapped JSON so chat-driven and tap-driven changes share
+    one render path (static/trainer.js)."""
+    return page(request, "trainer.html", active="trainer",
+                plan=data.active_plan(),
+                brief=server.get_fitness_briefing(recent_workouts=1))
+
+
+def _num(v):
+    """Coerce a JSON value to float|None ('' / null -> None)."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.get("/trainer/plan.json")
+async def trainer_plan(request: Request):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(data.active_plan())
+
+
+@app.post("/trainer/set/{set_id}/complete")
+async def trainer_complete_set(request: Request, set_id: int):
+    """Tap-to-complete one planned set. Body: {weight_lbs?, reps?, rpe?, note?} —
+    omitted numbers fall back to the set's targets server-side. Returns the updated
+    plan so the card re-renders without a reload."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    reps = _num(body.get("reps"))
+    res = server.complete_set(
+        set_id,
+        weight_lbs=_num(body.get("weight_lbs")),
+        reps=int(reps) if reps is not None else None,
+        rpe=_num(body.get("rpe")),
+        note=(body.get("note") or "").strip() or None,
+    )
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
+
+
+@app.post("/trainer/finish")
+async def trainer_finish(request: Request):
+    """Close out the active session. Body (optional): {feeling?, notes?}."""
+    from fastapi.responses import JSONResponse
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    res = server.finish_workout(
+        feeling=(body.get("feeling") or "").strip() or None,
+        notes=(body.get("notes") or "").strip() or None,
+    )
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
+
+
 @app.get("/drinking")
 async def drinking(request: Request, error: str = ""):
     s = data.drinking(days=30)
