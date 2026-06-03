@@ -22,6 +22,17 @@
     })();
   </script>
   <link rel="icon" href="{{ base }}/static/favicon.svg" type="image/svg+xml" />
+  {# PWA — installable on phones (Add to Home Screen). The manifest carries the
+     icons + display mode; the Apple meta tags give iOS the same standalone
+     treatment (it ignores the manifest's display/icons). base prefixes them so
+     they resolve whether the app is mounted at /app or served standalone. #}
+  <link rel="manifest" href="{{ base }}/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="{{ base }}/static/apple-touch-icon.png" />
+  <meta name="application-name" content="Journal" />
+  <meta name="apple-mobile-web-app-title" content="Journal" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>{% block title %}Journal{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -188,6 +199,18 @@
   <main class="max-w-3xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
     {% block content %}{% endblock %}
   </main>
+  {# Register the service worker so the app is installable (Add to Home Screen)
+     and shows an offline page when the network drops. Scoped to the app root so
+     it works both standalone and mounted at /app. Failures are non-fatal. #}
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker
+          .register('{{ base }}/sw.js', { scope: '{{ base }}/' })
+          .catch(function () {});
+      });
+    }
+  </script>
   {# Nav theme toggle: flip data-theme and persist the explicit choice so it
      survives reloads and overrides the OS default the head script falls back to. #}
   <script>
