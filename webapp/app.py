@@ -517,14 +517,17 @@ async def trainer(request: Request):
 
 @app.get("/trainer/library")
 async def trainer_library(request: Request, muscle: str = "", q: str = "",
-                          rotation: str = "", error: str = ""):
+                          rotation: str = "", archived: str = "", error: str = ""):
     """The exercise library: browse the whole catalog — muscles (by emphasis tier),
     equipment, level/mechanic, technique, and a form gif/video per exercise. Filterable
-    by muscle, name, or `rotation` (the curated programming pool). Each row toggles in/out
-    of the rotation. The user curates the closed catalog here: the page's AI add panel
-    (the `exercise` chat agent → server.create_exercise) is the only way a new exercise
-    enters it — the trainer chat can enrich technique but never creates one."""
-    lib = data.exercise_library(muscle=muscle, q=q, rotation=bool(rotation))
+    by muscle, name, or `rotation` (the curated programming pool); `archived` shows the
+    soft-deleted movements (the Archived view, where each row offers Restore). Each row
+    toggles in/out of the rotation and can be archived (removed from the library without
+    breaking past workouts). The user curates the closed catalog here: the page's AI add
+    panel (the `exercise` chat agent → server.create_exercise) is the only way a new
+    exercise enters it — the trainer chat can enrich technique but never creates one."""
+    lib = data.exercise_library(muscle=muscle, q=q, rotation=bool(rotation),
+                                archived=bool(archived))
     return page(request, "library.html", active="library", error=error, **lib)
 
 
@@ -535,6 +538,20 @@ async def trainer_set_rotation(request: Request, exercise_id: int):
     from fastapi.responses import JSONResponse
     body = await request.json()
     res = server.set_rotation(exercise_id=exercise_id, in_rotation=bool(body.get("in_rotation")))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
+
+
+@app.post("/trainer/exercise/{exercise_id}/archive")
+async def trainer_set_archived(request: Request, exercise_id: int):
+    """Archive (soft-delete) or restore one exercise — the library row's Archive / Restore
+    control. Body: {"archived": true|false} (defaults true). Archiving hides it from the
+    library, search and the trainer, and drops it from the rotation, without deleting the
+    row, so past workouts keep their links. Writes through server.set_archived."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    res = server.set_archived(exercise_id=exercise_id,
+                              archived=bool(body.get("archived", True)))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 
