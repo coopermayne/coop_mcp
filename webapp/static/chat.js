@@ -105,6 +105,7 @@
     }
 
     async function send(text) {
+      if (busy) return; // ignore re-entrant sends (e.g. a programmatic send mid-turn)
       if (seed) { seed.remove(); seed = null; }
       bubble('user').textContent = text;
       scrollDown();
@@ -190,6 +191,10 @@
         log.innerHTML = '';
       });
     }
+
+    // Expose a small handle so the host page can drive the chat (e.g. the trainer
+    // plan card's "Replace" action sends a prefilled request to the AI).
+    return { send: send };
   }
 
   window.ChatWidget = { init: init };

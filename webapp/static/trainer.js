@@ -1,17 +1,20 @@
 /*
  * Trainer plan card. Renders the active workout plan into #plan-root and handles the
- * two write paths the page owns directly: tap-to-complete a planned set, and finish
- * the session. Everything else (building/swapping the routine) happens in the chat,
- * which calls window.TrainerPlan.refresh() after each write (see _trainer_chat_panel).
+ * write paths the page owns directly: tap-to-complete a planned set, edit a logged
+ * ('done') set to fix a data-entry error, drop or replace an exercise (the per-exercise
+ * "..." menu), and finish the session. A per-exercise "i" opens saved technique notes +
+ * a YouTube search link. Building/swapping the routine happens in the chat, which calls
+ * window.TrainerPlan.refresh() after each write (see _trainer_chat_panel).
  *
  * One render path: the server bootstraps the initial plan as JSON; every update
- * (tap, finish, or chat-driven refresh) re-renders from a fresh plan object.
+ * (tap, edit, finish, or chat-driven refresh) re-renders from a fresh plan object.
  */
 (function () {
   var root = document.getElementById('plan-root');
   if (!root) return;
   var base = root.dataset.base || '';
   var editingSetId = null; // only one inline set editor open at a time
+  var openPanel = null;    // {eid, kind:'info'|'menu'} — at most one info/menu panel open
 
   function num(x) {
     if (x === null || x === undefined || x === '') return '';
@@ -53,6 +56,8 @@
 
   function render(plan) {
     root.innerHTML = '';
+    editingSetId = null;
+    openPanel = null;
     if (!plan || !plan.active) { renderEmpty(plan); return; }
 
     // Header: focus + progress + finish.
@@ -78,25 +83,59 @@
     });
   }
 
+  // A small round icon button for the per-exercise controls.
+  function iconBtn(kind, label) {
+    var b = el('button', 'w-7 h-7 flex items-center justify-center rounded-full ' +
+      'text-gray-300 hover:text-black hover:bg-gray-100 transition-colors');
+    b.type = 'button';
+    b.setAttribute('aria-label', label);
+    b.title = label;
+    if (kind === 'info') {
+      b.appendChild(el('span',
+        'w-4 h-4 flex items-center justify-center rounded-full border border-current ' +
+        'text-[10px] font-semibold leading-none', 'i'));
+    } else {
+      b.appendChild(el('span', 'text-lg leading-none', '⋯'));
+    }
+    return b;
+  }
+
   function renderExercise(ex) {
     var box = el('div', 'border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-3');
-    box.appendChild(el('p', 'text-sm font-medium mb-3', ex.name));
+
+    var head = el('div', 'flex items-center justify-between mb-3 gap-2');
+    head.appendChild(el('p', 'text-sm font-medium', ex.name));
+    var ctrls = el('div', 'flex items-center gap-1 shrink-0');
+    var info = iconBtn('info', 'How to do ' + ex.name);
+    info.addEventListener('click', function () { toggleInfo(ex); });
+    var menu = iconBtn('menu', 'More options for ' + ex.name);
+    menu.addEventListener('click', function () { toggleMenu(ex); });
+    ctrls.appendChild(info);
+    ctrls.appendChild(menu);
+    head.appendChild(ctrls);
+    box.appendChild(head);
 
     var rowWrap = el('div', 'flex flex-wrap items-center gap-2');
     ex.sets.forEach(function (s) { rowWrap.appendChild(setChip(ex, s)); });
     box.appendChild(rowWrap);
 
-    // Inline editor slot (filled when a pending chip is tapped).
+    // Inline editor slot (filled when a set chip is tapped).
     var slot = el('div', 'mt-3');
     slot.dataset.editorSlot = String(ex.exercise_id);
     box.appendChild(slot);
+
+    // Panel slot for the "i" info card / "..." menu (one at a time).
+    var panel = el('div', 'mt-3');
+    panel.dataset.panelSlot = String(ex.exercise_id);
+    box.appendChild(panel);
     return box;
   }
 
   function setChip(ex, s) {
     if (s.status === 'done') {
-      var done = el('span',
-        'set-pill !border-black bg-black text-white gap-1', null);
+      // Tappable so a data-entry error can be corrected after the fact.
+      var done = el('button',
+        'set-pill !border-black bg-black text-white gap-1 hover:bg-gray-800 transition-colors', null);
       var check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       check.setAttribute('viewBox', '0 0 24 24'); check.setAttribute('fill', 'none');
       check.setAttribute('stroke', 'currentColor'); check.setAttribute('stroke-width', '3');
@@ -105,6 +144,7 @@
       path.setAttribute('d', 'M20 6 9 17l-5-5'); check.appendChild(path);
       done.appendChild(check);
       done.appendChild(document.createTextNode(setText(s, true)));
+      done.addEventListener('click', function () { openEditor(ex, s); });
       return done;
     }
     if (s.status === 'skipped') {
@@ -117,7 +157,10 @@
     return chip;
   }
 
+  // ── Set editor (log a pending set, or correct a done one) ───────────────────
+
   function openEditor(ex, s) {
+    closePanels();
     var slot = root.querySelector('[data-editor-slot="' + ex.exercise_id + '"]');
     if (!slot) return;
     if (editingSetId === s.set_id) { slot.innerHTML = ''; editingSetId = null; return; }
@@ -127,6 +170,7 @@
       if (n !== slot) n.innerHTML = '';
     });
     slot.innerHTML = '';
+    var done = s.status === 'done';
 
     var form = el('div', 'flex flex-wrap items-end gap-3 border-t border-gray-100 pt-3');
     function field(label, value, step, min, max) {
@@ -141,23 +185,28 @@
       w.appendChild(inp);
       return { wrap: w, input: inp };
     }
-    var weight = field('Weight', s.target_weight_lbs, 'any', 0, null);
-    var reps = field('Reps', s.target_reps, '1', 0, null);
-    var rpe = field('RPE', null, '0.5', 1, 10);
+    // Done sets prefill their actuals (you're correcting them); pending prefill targets.
+    var weight = field('Weight', done ? s.weight_lbs : s.target_weight_lbs, 'any', 0, null);
+    var reps = field('Reps', done ? s.reps : s.target_reps, '1', 0, null);
+    var rpe = field('RPE', done ? s.rpe : null, '0.5', 1, 10);
     rpe.input.placeholder = '1–10';
 
-    var log = el('button', 'h-[34px] px-3 bg-black text-white rounded-[4px] text-sm hover:bg-gray-800 transition-colors', 'Log set');
+    var save = el('button', 'h-[34px] px-3 bg-black text-white rounded-[4px] text-sm hover:bg-gray-800 transition-colors',
+      done ? 'Save' : 'Log set');
     var cancel = el('button', 'h-[34px] px-3 text-sm text-gray-400 hover:text-black transition-colors', 'Cancel');
     cancel.addEventListener('click', function () { slot.innerHTML = ''; editingSetId = null; });
-    log.addEventListener('click', function () { completeSet(s.set_id, weight.input, reps.input, rpe.input, log); });
+    save.addEventListener('click', function () {
+      if (done) saveSet(s.set_id, weight.input, reps.input, rpe.input, save);
+      else completeSet(s.set_id, weight.input, reps.input, rpe.input, save);
+    });
 
     [weight, reps, rpe].forEach(function (f) { form.appendChild(f.wrap); });
-    form.appendChild(log);
+    form.appendChild(save);
     form.appendChild(cancel);
     slot.appendChild(form);
-    // Enter in any field logs the set.
+    // Enter in any field submits.
     form.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); log.click(); }
+      if (e.key === 'Enter') { e.preventDefault(); save.click(); }
     });
     weight.input.focus();
   }
@@ -168,13 +217,126 @@
       weight_lbs: weightInp.value, reps: repsInp.value, rpe: rpeInp.value,
     });
     if (!r.ok || (r.data && r.data.error)) {
-      btn.disabled = false;
-      btn.textContent = (r.data && r.data.error) ? 'Error' : 'Error';
+      btn.disabled = false; btn.textContent = 'Error';
       return;
     }
     editingSetId = null;
     render(r.data); // response is the updated plan
   }
+
+  async function saveSet(setId, weightInp, repsInp, rpeInp, btn) {
+    btn.disabled = true;
+    var r = await postJSON(base + '/trainer/set/' + setId + '/update', {
+      weight_lbs: weightInp.value, reps: repsInp.value, rpe: rpeInp.value,
+    });
+    if (!r.ok || (r.data && r.data.error)) {
+      btn.disabled = false; btn.textContent = 'Error';
+      return;
+    }
+    editingSetId = null;
+    render(r.data); // response is the updated plan
+  }
+
+  // ── Per-exercise info ("i") and menu ("...") panels ─────────────────────────
+
+  function panelSlotFor(eid) { return root.querySelector('[data-panel-slot="' + eid + '"]'); }
+
+  function closePanels() {
+    root.querySelectorAll('[data-panel-slot]').forEach(function (n) { n.innerHTML = ''; });
+    openPanel = null;
+  }
+
+  function closeEditors() {
+    root.querySelectorAll('[data-editor-slot]').forEach(function (n) { n.innerHTML = ''; });
+    editingSetId = null;
+  }
+
+  async function toggleInfo(ex) {
+    var slot = panelSlotFor(ex.exercise_id);
+    if (!slot) return;
+    if (openPanel && openPanel.eid === ex.exercise_id && openPanel.kind === 'info') {
+      closePanels(); return;
+    }
+    closePanels(); closeEditors();
+    openPanel = { eid: ex.exercise_id, kind: 'info' };
+    var card = el('div', 'border-t border-gray-100 pt-3 space-y-2');
+    card.appendChild(el('p', 'text-sm text-gray-400', 'Loading…'));
+    slot.appendChild(card);
+    var info = {};
+    try {
+      var res = await fetch(base + '/trainer/exercise/' + ex.exercise_id + '/info.json',
+        { headers: { 'Accept': 'application/json' } });
+      info = await res.json();
+    } catch (e) { info = { error: 'Could not load technique notes.' }; }
+    // Bail if the user closed/switched the panel while we were fetching.
+    if (!(openPanel && openPanel.eid === ex.exercise_id && openPanel.kind === 'info')) return;
+    renderInfo(card, ex, info || {});
+  }
+
+  function renderInfo(card, ex, info) {
+    card.innerHTML = '';
+    function block(label, text) {
+      if (!text) return;
+      card.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400', label));
+      card.appendChild(el('p', 'text-sm text-gray-700 leading-relaxed', text));
+    }
+    block('Technique', info.technique_notes);
+    block('Common mistakes', info.common_mistakes);
+    block('Cautions', info.cautions);
+    if (!info.technique_notes && !info.common_mistakes && !info.cautions) {
+      card.appendChild(el('p', 'text-sm text-gray-400',
+        'No saved technique notes yet — watch a quick video below, or ask the trainer for cues.'));
+    }
+    var links = el('div', 'flex flex-wrap gap-4 pt-1 text-sm');
+    var yt = el('a', 'text-gray-700 hover:text-black underline transition-colors', 'Watch on YouTube ↗');
+    yt.href = info.youtube_search ||
+      ('https://www.youtube.com/results?search_query=' + encodeURIComponent((ex.name || '') + ' proper form technique'));
+    yt.target = '_blank'; yt.rel = 'noopener noreferrer';
+    links.appendChild(yt);
+    if (info.video_link) {
+      var vl = el('a', 'text-gray-700 hover:text-black underline transition-colors', 'Saved video ↗');
+      vl.href = info.video_link; vl.target = '_blank'; vl.rel = 'noopener noreferrer';
+      links.appendChild(vl);
+    }
+    card.appendChild(links);
+  }
+
+  function toggleMenu(ex) {
+    var slot = panelSlotFor(ex.exercise_id);
+    if (!slot) return;
+    if (openPanel && openPanel.eid === ex.exercise_id && openPanel.kind === 'menu') {
+      closePanels(); return;
+    }
+    closePanels(); closeEditors();
+    openPanel = { eid: ex.exercise_id, kind: 'menu' };
+    var card = el('div', 'border-t border-gray-100 pt-3 flex flex-wrap gap-2');
+    var replace = el('button', 'set-pill hover:border-black hover:text-black transition-colors',
+      'Replace · similar muscles');
+    replace.addEventListener('click', function () { doReplace(ex); });
+    var del = el('button', 'set-pill text-red-500 !border-red-200 hover:!border-red-500 transition-colors',
+      'Delete exercise');
+    del.addEventListener('click', function () { doDelete(ex); });
+    card.appendChild(replace);
+    card.appendChild(del);
+    slot.appendChild(card);
+  }
+
+  function doReplace(ex) {
+    closePanels();
+    var msg = 'Replace ' + ex.name + ' in my plan with a different exercise that hits the ' +
+      'same muscles — pick the substitute and set the weight and reps from my training history.';
+    if (window.TrainerChat && window.TrainerChat.send) window.TrainerChat.send(msg);
+    else document.dispatchEvent(new CustomEvent('trainer:open-chat'));
+  }
+
+  async function doDelete(ex) {
+    if (!window.confirm('Remove ' + ex.name + ' from today’s plan? Any sets you logged for it will be deleted.')) return;
+    closePanels();
+    var r = await postJSON(base + '/trainer/exercise/' + ex.exercise_id + '/remove', {});
+    if (r.ok && r.data && !r.data.error) render(r.data);
+  }
+
+  // ── Finish / empty state ────────────────────────────────────────────────────
 
   async function onFinish() {
     if (!window.confirm('Finish this workout? Unfinished sets will be dropped.')) return;

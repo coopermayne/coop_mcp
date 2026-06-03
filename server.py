@@ -141,7 +141,9 @@ Two ways to record training:
     skipped). get_workout_plan returns the current state. Only ONE plan is active at a
     time. Design the routine yourself from the briefing — progress what was easy (low
     RPE), hold/deload what was hard, and keep staple lifts so the tracked data stays
-    comparable; vary exercises only modestly.
+    comparable; vary exercises only modestly. Program a substantial session: aim for
+    roughly 21-26 working sets total, built from about 6-8 different exercises at 3-4
+    sets each, spread across the muscle groups that are due.
   - POST-HOC (log what already happened): log_workout records a finished session (or
     appends to one) in a single call — use it when the user just tells you what they
     did rather than working a plan live.
@@ -1812,6 +1814,21 @@ def _plan_payload(conn: sqlite3.Connection, wid: int) -> dict:
             "progress": {"done": done, "total": total}, "exercises": exercises}
 
 
+def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> dict:
+    """Drop one exercise from the active plan entirely — every set of it, planned or
+    already done. Backs the /trainer page's per-exercise "..." menu (Delete option); the
+    model substitutes via swap_exercise instead, so this stays a plain helper, not an MCP
+    tool. Returns the updated plan."""
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan"}
+        conn.execute("DELETE FROM sets WHERE workout_id=? AND exercise_id=?",
+                     (w["id"], exercise_id))
+        return _plan_payload(conn, w["id"])
+
+
 @trainer_mcp.tool()
 def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
                        notes: Optional[str] = None, replace: bool = False) -> dict:
@@ -1819,6 +1836,9 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
     decided the session from get_fitness_briefing (+ get_exercise_history for the lifts
     you're choosing weights for). Each exercise becomes a row of PENDING sets with
     targets; the user completes them with complete_set as they go.
+
+    Build a full session: aim for ~21-26 working sets total, roughly 6-8 exercises at
+    3-4 sets each, across the muscle groups that are due.
 
     Each item in `exercises` is either explicit:
         {"name": "Bench Press", "muscles": ["chest"],

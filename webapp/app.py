@@ -558,6 +558,52 @@ async def trainer_finish(request: Request):
     return JSONResponse(res, status_code=code)
 
 
+@app.post("/trainer/set/{set_id}/update")
+async def trainer_update_set(request: Request, set_id: int):
+    """Correct an already-logged ('done') set from the plan card — fix a data-entry
+    error without un-logging it. Body: {weight_lbs?, reps?, rpe?}. server.update_set
+    returns just the touched set, so we hand back the fresh plan for the card to
+    re-render off one render path."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    reps = _num(body.get("reps"))
+    res = server.update_set(
+        set_id,
+        weight_lbs=_num(body.get("weight_lbs")),
+        reps=int(reps) if reps is not None else None,
+        rpe=_num(body.get("rpe")),
+    )
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(server.get_workout_plan())
+
+
+@app.post("/trainer/exercise/{exercise_id}/remove")
+async def trainer_remove_exercise(request: Request, exercise_id: int):
+    """Delete one exercise from the active plan (the "..." menu's Delete option). All
+    its sets go. Returns the updated plan."""
+    from fastapi.responses import JSONResponse
+    res = server.remove_plan_exercise(exercise_id)
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
+
+
+@app.get("/trainer/exercise/{exercise_id}/info.json")
+async def trainer_exercise_info(request: Request, exercise_id: int):
+    """Technique for the plan card's "i" button: the catalog's saved technique notes,
+    common mistakes and cautions, plus a YouTube search link to quickly watch the
+    movement (and any saved video_link)."""
+    from fastapi.responses import JSONResponse
+    from urllib.parse import quote_plus
+    info = server.exercises(exercise_id=exercise_id)
+    if isinstance(info, dict) and not info.get("error"):
+        terms = ((info.get("name") or "") + " proper form technique").strip()
+        info["youtube_search"] = ("https://www.youtube.com/results?search_query="
+                                  + quote_plus(terms))
+    code = 404 if isinstance(info, dict) and info.get("error") else 200
+    return JSONResponse(info, status_code=code)
+
+
 @app.get("/drinking")
 async def drinking(request: Request, error: str = ""):
     s = data.drinking(days=30)

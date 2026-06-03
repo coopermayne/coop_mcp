@@ -94,11 +94,18 @@
   // Let the plan card open the chat (its empty-state CTA).
   document.addEventListener('trainer:open-chat', open);
 
-  ChatWidget.init({
+  var widget = ChatWidget.init({
     root: panel,
     endpoint: {{ base | tojson }} + '/chat/trainer',
     // A trainer write (built/logged/swapped/finished) landed — refresh the plan card.
     onWrite: function () { if (window.TrainerPlan) window.TrainerPlan.refresh(); },
   });
+
+  // Handle for the plan card: open the panel and (optionally) fire a prefilled
+  // message — used by the per-exercise "..." → Replace action.
+  window.TrainerChat = {
+    open: open,
+    send: function (text) { open(); if (widget && widget.send) widget.send(text); },
+  };
 })();
 </script>
