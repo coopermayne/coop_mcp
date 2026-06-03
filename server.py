@@ -94,8 +94,9 @@ entities, not name strings) plus a drinking tracker. The server only stores and
 matches — the judgment (which person a mention means) is yours.
 
 Three rules: capture never blocks — always save, leave ambiguous mentions pending
-for later; resolve mentions to person entities, don't normalize names in text; and
-one note per topic — split unrelated threads from the same conversation into
+for later; resolve mentions to person entities, don't normalize names in text (and
+expand a plural like "my parents" into one mention per person — never a single one);
+and one note per topic — split unrelated threads from the same conversation into
 separate entries so their people don't cross-contaminate later lookups.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
@@ -490,7 +491,18 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     and pass each as a short surface form — what was actually SAID ("Tom", "Dad",
     a garbled transcription), taken from the raw words, not the cleaned-up name.
 
-    Resolution guidance for the model after this returns:
+    COLLECTIVES / PLURALS. A plural reference names MORE THAN ONE person — "my
+    parents", "the kids", "the in-laws", "Robin's folks" — so EXPAND it into one
+    surface form per person it covers, using who you know from get_briefing /
+    context (e.g. "my parents" -> ["Mom", "Dad"], which then link to both people).
+    Never collapse a group down to a single person. If you only know some of the
+    members, pass the ones you know and ask about the rest rather than dropping
+    them — capture still never blocks. The reference is relative to the speaker, so
+    use the snippet to tell whose: "my parents" and "Robin's parents" are
+    different pairs; expand each to the right people.
+
+    Resolution guidance for the model after this returns (each expanded surface
+    form resolves independently):
       - One candidate with score >= 0.85 and no other within 0.15: link it
         silently via link_mentions (set learn_alias=True if the surface form
         wasn't already an exact alias).
@@ -504,6 +516,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
         body: The cleaned, structured journal entry.
         raw_body: The user's verbatim input. Optional but recommended.
         mentions: Surface forms of people referenced, e.g. ["Tom", "Robin"].
+            Expand a plural/collective ("my parents") into one form per person
+            (see COLLECTIVES) — never a single form for the whole group.
         entry_date: Day the entry is ABOUT as YYYY-MM-DD. Defaults to today.
     """
     if err := _bad_date(entry_date, "entry_date"):

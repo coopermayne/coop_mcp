@@ -38,7 +38,12 @@ There is no exercise-selection or progression logic in the server either.
 
 - **People, not names.** A reference resolves to a person *entity* (`people`), not a
   string. One person has many surface forms (`aliases`); one string can mean several
-  people. Never normalize names in text — resolve mentions to entities.
+  people. Never normalize names in text — resolve mentions to entities. A *collective*
+  ("my parents", "the kids") is several entities, not one: the model expands it into one
+  mention per person at capture, so each links independently and `get_person_history`
+  stays exact for each member. This is a pure contract decision (docstring + server
+  `instructions`) — no multi-person mention row, no relationship graph; the `mentions`
+  table stays one-row-one-person.
 - **Capture never blocks.** `add_journal_entry` always saves, even if every mention is
   ambiguous. Unresolved mentions sit in the queue (`status='pending'`) for later.
 - **One note per topic.** A single conversation often spans several unrelated threads
