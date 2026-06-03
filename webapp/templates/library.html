@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Exercise Library · Trainer{% endblock %}
+
+{% macro coach_block(label, text) %}
+  {% if text %}
+  <div>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400">{{ label }}</p>
+    <p class="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{{ text }}</p>
+  </div>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">Exercise Library</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }}</span>
+</div>
+
+<p class="text-sm text-gray-500 mb-6 leading-relaxed">
+  Every movement you train or want to introduce later — the muscles it works (by
+  emphasis), the gear it needs, how to do it, and a form clip. The trainer fills this in:
+  ask it to add an exercise or flesh one out.
+</p>
+
+{# Name search + a Clear that also drops the muscle filter. #}
+<form method="get" action="{{ base }}/trainer/library" class="mb-4 flex gap-2">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search exercise name…"
+         class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+  {% if muscle %}<input type="hidden" name="muscle" value="{{ muscle }}" />{% endif %}
+  <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
+  {% if q or muscle %}<a href="{{ base }}/trainer/library" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+</form>
+
+{# Muscle filter chips: each toggles ?muscle=, keeping any name query. #}
+<div class="mb-8 flex flex-wrap gap-2">
+  {% for mu in muscles %}
+  <a href="{{ base }}/trainer/library?muscle={{ mu | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}"
+     class="badge hover:border-black hover:text-black transition-colors {% if muscle == mu %}badge-dark{% endif %}">{{ mu }}</a>
+  {% endfor %}
+</div>
+
+{% if exercises %}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for ex in exercises %}
+  {# Each exercise is a collapsible row: the summary carries name + muscle emphasis +
+     how much it's been trained; expanding reveals equipment, coaching text and the clip. #}
+  <details class="group px-5 sm:px-6 py-3.5">
+    <summary class="cursor-pointer list-none flex items-baseline justify-between gap-3">
+      <div class="min-w-0">
+        <div class="flex items-baseline gap-2 flex-wrap">
+          <span class="text-sm font-medium">{{ ex.name }}</span>
+          {% if ex.category %}<span class="badge">{{ ex.category }}</span>{% endif %}
+          {% if not ex.has_notes %}<span class="text-[10px] uppercase tracking-widest text-amber-500" title="No technique notes saved yet">needs notes</span>{% endif %}
+        </div>
+        {% if ex.muscles.primary or ex.muscles.secondary or ex.muscles.tertiary %}
+        <div class="mt-1.5 text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5">
+          {% if ex.muscles.primary %}<span><span class="text-gray-400">primary</span> {{ ex.muscles.primary | join(", ") }}</span>{% endif %}
+          {% if ex.muscles.secondary %}<span><span class="text-gray-400">secondary</span> {{ ex.muscles.secondary | join(", ") }}</span>{% endif %}
+          {% if ex.muscles.tertiary %}<span><span class="text-gray-400">tertiary</span> {{ ex.muscles.tertiary | join(", ") }}</span>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      <span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">
+        {% if ex.sessions %}{{ ex.sessions }}×{% else %}new{% endif %}
+      </span>
+    </summary>
+
+    <div class="mt-3 space-y-3 border-t border-gray-100 pt-3">
+      {% if ex.equipment %}
+      <p class="text-sm text-gray-700"><span class="text-[10px] uppercase tracking-widest text-gray-400">Equipment</span> {{ ex.equipment }}</p>
+      {% endif %}
+      {% if ex.last_done %}
+      <p class="text-xs text-gray-400">Last done {{ ex.last_done | short_date }} · {{ ex.sessions }} session{{ 's' if ex.sessions != 1 else '' }}</p>
+      {% endif %}
+
+      {% if ex.image_link %}
+      {# A gif loops on its own; any still just renders. Lazy so a long list stays light. #}
+      <img src="{{ ex.image_link }}" alt="{{ ex.name }} technique" loading="lazy"
+           class="rounded-[4px] border border-gray-100 max-h-56 w-auto" />
+      {% endif %}
+
+      {{ coach_block("Technique", ex.technique_notes) }}
+      {{ coach_block("Common mistakes", ex.common_mistakes) }}
+      {{ coach_block("Cautions", ex.cautions) }}
+      {% if not ex.has_notes %}
+      <p class="text-sm text-gray-400">No saved technique notes yet — watch a video below, or ask the trainer for cues.</p>
+      {% endif %}
+
+      <div class="flex flex-wrap gap-4 pt-0.5 text-sm">
+        <a href="{{ ex.youtube_search }}" target="_blank" rel="noopener noreferrer"
+           class="text-gray-700 hover:text-black underline transition-colors">Watch on YouTube ↗</a>
+        {% if ex.video_link %}
+        <a href="{{ ex.video_link }}" target="_blank" rel="noopener noreferrer"
+           class="text-gray-700 hover:text-black underline transition-colors">Saved video ↗</a>
+        {% endif %}
+      </div>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400">
+  {% if q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — log a workout or ask the trainer to add some.{% endif %}
+</p>
+{% endif %}
+
+{% endblock %}

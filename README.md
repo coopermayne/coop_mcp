@@ -169,8 +169,10 @@ journal connector):
 > against RPE. Log with `log_workout` — either the finished session in one call, or
 > set-by-set during the workout (reuse the returned `workout_id` so it stays one
 > session). If I correct something afterward, use `get_exercise_history` to find the
-> `set_id`, then `update_set` or `delete_record`. If it created a new exercise, offer
-> to add technique notes. Capture anything I mention about how it went in the session
+> `set_id`, then `update_set` or `delete_record`. Whenever a new exercise gets created
+> (it comes back under `new_exercises`), enrich it right away with `save_exercise` —
+> muscles in their three emphasis tiers, equipment, technique, and a form gif/video — so
+> the exercise library (`/trainer/library`) stays filled in. Capture anything I mention about how it went in the session
 > notes (`append_note`) — it's context for next time. After we log a session, remind me
 > to weigh in and record it with `log_bodyweight`. Keep
 > durable facts (injuries, split, goals) in `update_profile`.
@@ -433,7 +435,7 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
 | `get_drink_summary` | Daily totals + rolling stats and sober streak; `include_rows=True` adds individual rows with ids for editing |
 | `update_drink` | Correct a logged drink in either direction (incl. downward) or move its day |
-| `save_exercise` | Create or enrich a catalog exercise (technique, mistakes, cautions, muscles); unknown name creates, known name/id updates |
+| `save_exercise` | Create or enrich a catalog exercise (technique, mistakes, cautions, equipment, form gif/video, muscles in primary/secondary/tertiary emphasis tiers); unknown name creates, known name/id updates. The catalog is browsable at `/trainer/library` |
 | `exercises` | Read the catalog — full record when you name/id one, else a filtered list (by muscle/equipment/category) |
 | `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; auto-stubs unknown lifts |
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `append_note` adds a line without clobbering earlier notes |

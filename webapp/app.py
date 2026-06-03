@@ -515,6 +515,15 @@ async def trainer(request: Request):
                 brief=server.get_fitness_briefing(recent_workouts=1))
 
 
+@app.get("/trainer/library")
+async def trainer_library(request: Request, muscle: str = "", q: str = ""):
+    """The exercise library: a read-only browse of the whole catalog — muscles (by
+    emphasis tier), equipment, technique, and a form gif/video per exercise. Filterable
+    by muscle or name. The trainer chat (server.save_exercise) is what fills it in."""
+    lib = data.exercise_library(muscle=muscle, q=q)
+    return page(request, "library.html", active="library", **lib)
+
+
 def _num(v):
     """Coerce a JSON value to float|None ('' / null -> None)."""
     if v is None or v == "":
