@@ -132,6 +132,22 @@ split, goals), per-muscle recency, recent sessions (with their notes), and the l
 bodyweight before recommending work. Recent-session notes are durable context — read
 them so a "left shoulder twinge" last time shapes what you program next.
 
+Two ways to record training:
+  - PLAN-AS-YOU-LIFT (the live routine): start_workout_plan lays out today's session as
+    PENDING sets with target weights/reps; the user completes them with complete_set as
+    they go (omitted numbers default to the targets). swap_exercise substitutes a
+    busy/broken movement (keep the muscle group), add_to_plan tacks on more, update_set
+    retargets a pending set, and finish_workout closes it out (leftover pending sets are
+    skipped). get_workout_plan returns the current state. Only ONE plan is active at a
+    time. Design the routine yourself from the briefing — progress what was easy (low
+    RPE), hold/deload what was hard, and keep staple lifts so the tracked data stays
+    comparable; vary exercises only modestly.
+  - POST-HOC (log what already happened): log_workout records a finished session (or
+    appends to one) in a single call — use it when the user just tells you what they
+    did rather than working a plan live.
+Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
+yet-done set doesn't, so the briefing stays honest mid-session.
+
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
 only useful if the readings are regular.""")
@@ -271,20 +287,29 @@ CREATE TABLE IF NOT EXISTS workouts (
     focus        TEXT,                -- "Legs", "Arms", "Cardio"
     feeling      TEXT,                -- overall how the session felt
     notes        TEXT,
+    status       TEXT NOT NULL DEFAULT 'done',  -- 'active' (plan in progress) | 'done'
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date);
 
+-- A `sets` row is BOTH the plan and the log: a planned set carries its targets
+-- (target_weight_lbs/target_reps) with the actuals (weight_lbs/reps/rpe) NULL until
+-- it's done. status: 'pending' (planned, not yet done) -> 'done' (actuals logged) ->
+-- 'skipped' (left undone at finish, or swapped out). A plain log_workout call writes
+-- 'done' sets directly. Only 'done' sets count toward recency/history/PR aggregates.
 CREATE TABLE IF NOT EXISTS sets (
     id          INTEGER PRIMARY KEY,
     workout_id  INTEGER NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
     exercise_id INTEGER NOT NULL REFERENCES exercises(id),
     set_index   INTEGER NOT NULL,     -- 1-based order within the exercise
-    weight_lbs  REAL,                 -- NULL for bodyweight / cardio
+    weight_lbs  REAL,                 -- NULL for bodyweight / cardio / not-yet-done plan
     reps        INTEGER,
     rpe         REAL,                 -- 1-10 perceived exertion (10 = true failure)
     duration_seconds INTEGER,         -- cardio: time of the effort (run/walk/row); NULL for lifts
     distance_miles   REAL,            -- cardio: distance covered; NULL for lifts
+    target_weight_lbs REAL,           -- plan target (lift); NULL for ad-hoc logged sets
+    target_reps       INTEGER,        -- plan target (lift)
+    status      TEXT NOT NULL DEFAULT 'done',  -- 'pending' | 'done' | 'skipped'
     note        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);
@@ -329,9 +354,18 @@ def init_db() -> None:
             if col not in pcols:
                 conn.execute(f"ALTER TABLE people ADD COLUMN {col} TEXT")
         scols = [r["name"] for r in conn.execute("PRAGMA table_info(sets)")]
-        for col, decl in (("duration_seconds", "INTEGER"), ("distance_miles", "REAL")):
+        for col, decl in (("duration_seconds", "INTEGER"), ("distance_miles", "REAL"),
+                          ("target_weight_lbs", "REAL"), ("target_reps", "INTEGER"),
+                          ("status", "TEXT NOT NULL DEFAULT 'done'")):
             if col not in scols:
                 conn.execute(f"ALTER TABLE sets ADD COLUMN {col} {decl}")
+        wcols = [r["name"] for r in conn.execute("PRAGMA table_info(workouts)")]
+        if "status" not in wcols:
+            conn.execute("ALTER TABLE workouts ADD COLUMN status TEXT NOT NULL DEFAULT 'done'")
+        # Backfill any legacy rows that predate the status column: existing workouts
+        # and sets are completed history, so they read back as 'done'.
+        conn.execute("UPDATE workouts SET status='done' WHERE status IS NULL OR status=''")
+        conn.execute("UPDATE sets SET status='done' WHERE status IS NULL OR status=''")
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -1492,7 +1526,7 @@ def get_exercise_history(exercise_id: Optional[int] = None,
                       s.weight_lbs, s.reps, s.rpe, s.duration_seconds,
                       s.distance_miles, s.note
                FROM sets s JOIN workouts w ON w.id = s.workout_id
-               WHERE s.exercise_id=?
+               WHERE s.exercise_id=? AND s.status='done'
                ORDER BY w.workout_date DESC, w.id DESC, s.set_index ASC""",
             (exercise_id,),
         ).fetchall()
@@ -1539,7 +1573,7 @@ def get_personal_records(exercise_id: Optional[int] = None,
             """SELECT s.id, s.weight_lbs, s.reps, s.rpe, s.duration_seconds,
                       s.distance_miles, w.workout_date
                FROM sets s JOIN workouts w ON w.id = s.workout_id
-               WHERE s.exercise_id=?""",
+               WHERE s.exercise_id=? AND s.status='done'""",
             (ex["id"],),
         ).fetchall()
 
@@ -1623,19 +1657,28 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
                reps: Optional[int] = None, rpe: Optional[float] = None,
                duration_seconds: Optional[int] = None,
                distance_miles: Optional[float] = None,
+               target_weight_lbs: Optional[float] = None,
+               target_reps: Optional[int] = None,
                note: Optional[str] = None) -> dict:
-    """Correct a single logged set. Only non-null args are written, so this can't
-    blank a field back to NULL (e.g. clear a weight to mark bodyweight) — delete the
-    set with delete_record(kind="set") and re-log it for that. Find the `set_id` with
-    get_exercise_history. `rpe` is 1-10. `duration_seconds`/`distance_miles` are the
-    cardio fields (run/walk/row)."""
+    """Correct a single set. Only non-null args are written, so this can't blank a
+    field back to NULL (e.g. clear a weight to mark bodyweight) — delete the set with
+    delete_record(kind="set") and re-log it for that. Find the `set_id` with
+    get_exercise_history (logged sets) or get_workout_plan (the active plan). `rpe` is
+    1-10. `duration_seconds`/`distance_miles` are the cardio fields (run/walk/row).
+    `target_weight_lbs`/`target_reps` retarget a still-pending planned set (e.g. bump
+    the planned weight) without completing it — to actually log a planned set as done,
+    use complete_set."""
     if reason := _bad_set({"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
                            "duration_seconds": duration_seconds,
                            "distance_miles": distance_miles}):
         return {"error": reason}
+    if reason := _bad_set({"weight_lbs": target_weight_lbs, "reps": target_reps}):
+        return {"error": reason}
     fields = {"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
               "duration_seconds": duration_seconds,
-              "distance_miles": distance_miles, "note": note}
+              "distance_miles": distance_miles,
+              "target_weight_lbs": target_weight_lbs, "target_reps": target_reps,
+              "note": note}
     sets = {k: v for k, v in fields.items() if v is not None}
     if not sets:
         return {"set_id": set_id, "updated": []}
@@ -1646,6 +1689,306 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(f"UPDATE sets SET {cols} WHERE id=?", (*sets.values(), set_id))
     return {"set_id": set_id, "updated": list(sets)}
+
+
+# --------------------------------------------------------------------------- #
+# Trainer: the active workout PLAN (today's routine, in progress)
+#
+# A plan is just a `workouts` row with status='active' whose `sets` are 'pending'
+# (targets filled, actuals NULL). Completing a set fills its actuals and flips it to
+# 'done', so the plan becomes the historical log as you work through it — one table,
+# no plan<->log reconciliation. The model designs the routine in conversation (from
+# get_fitness_briefing + get_exercise_history) and writes it here; the server just
+# stores/serves it. At most one active plan exists at a time.
+# --------------------------------------------------------------------------- #
+
+def _active_workout(conn: sqlite3.Connection):
+    """The single in-progress plan (status='active'), or None."""
+    return conn.execute(
+        "SELECT * FROM workouts WHERE status='active' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def _expand_planned_sets(ex: dict) -> list[dict]:
+    """Normalize an exercise's planned sets. Accepts an explicit `sets` list of
+    {target_weight_lbs?, target_reps?, note?}, or the shorthand
+    {set_count, target_reps?, target_weight_lbs?} which expands to that many identical
+    planned sets."""
+    sets = ex.get("sets")
+    if sets:
+        return sets
+    n = ex.get("set_count")
+    if n:
+        return [{"target_weight_lbs": ex.get("target_weight_lbs"),
+                 "target_reps": ex.get("target_reps")} for _ in range(int(n))]
+    return []
+
+
+def _bad_planned(exercises: list[dict]) -> Optional[dict]:
+    """Validate the target numbers on every planned set, else None."""
+    for ex in exercises:
+        for s in _expand_planned_sets(ex):
+            if reason := _bad_set({"weight_lbs": s.get("target_weight_lbs"),
+                                   "reps": s.get("target_reps")}):
+                return {"error": f"{ex.get('name','?')}: {reason}"}
+    return None
+
+
+def _insert_planned(conn: sqlite3.Connection, wid: int, exercises: list[dict]) -> list[dict]:
+    """Append pending (planned) sets to a workout. Resolves/auto-stubs each exercise
+    (seeding muscles for new ones) and continues set numbering per exercise — the same
+    catalog path log_workout uses, but writing targets + status='pending'."""
+    results = []
+    for ex in exercises:
+        name = (ex.get("name") or "").strip()
+        if not name:
+            continue
+        row = _resolve_exercise(conn, name)
+        created = False
+        if row:
+            eid = row["id"]
+        else:
+            eid = conn.execute(
+                "INSERT INTO exercises(name, created_at) VALUES (?,?)", (name, now()),
+            ).lastrowid
+            _set_muscles(conn, eid, ex.get("muscles"), None)
+            created = True
+        planned = _expand_planned_sets(ex)
+        start = (conn.execute(
+            "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
+            (wid, eid),
+        ).fetchone()["m"]) + 1
+        for i, s in enumerate(planned, start=start):
+            conn.execute(
+                """INSERT INTO sets(workout_id, exercise_id, set_index,
+                   target_weight_lbs, target_reps, status, note)
+                   VALUES (?,?,?,?,?, 'pending', ?)""",
+                (wid, eid, i, s.get("target_weight_lbs"), s.get("target_reps"), s.get("note")),
+            )
+        results.append({"exercise_id": eid, "name": name,
+                        "planned_sets": len(planned), "created": created})
+    return results
+
+
+def _plan_payload(conn: sqlite3.Connection, wid: int) -> dict:
+    """The plan for one workout: exercises in insertion order, each with its sets
+    (target + actual + status), plus a done/total progress count (skipped sets are
+    excluded from the total). Used by every plan tool's return and by the web UI."""
+    w = conn.execute(
+        "SELECT id, workout_date, focus, feeling, notes, status FROM workouts WHERE id=?",
+        (wid,),
+    ).fetchone()
+    if not w:
+        return {"active": False}
+    rows = conn.execute(
+        """SELECT s.id, s.exercise_id, e.name, s.set_index, s.status,
+                  s.target_weight_lbs, s.target_reps,
+                  s.weight_lbs, s.reps, s.rpe, s.note
+           FROM sets s JOIN exercises e ON e.id = s.exercise_id
+           WHERE s.workout_id=? ORDER BY s.id""",
+        (wid,),
+    ).fetchall()
+    exercises, by_eid, done, total = [], {}, 0, 0
+    for r in rows:
+        ex = by_eid.get(r["exercise_id"])
+        if ex is None:
+            ex = {"exercise_id": r["exercise_id"], "name": r["name"], "sets": []}
+            by_eid[r["exercise_id"]] = ex
+            exercises.append(ex)
+        ex["sets"].append({
+            "set_id": r["id"], "set_index": r["set_index"], "status": r["status"],
+            "target_weight_lbs": r["target_weight_lbs"], "target_reps": r["target_reps"],
+            "weight_lbs": r["weight_lbs"], "reps": r["reps"], "rpe": r["rpe"],
+            "note": r["note"],
+        })
+        if r["status"] == "done":
+            done += 1
+            total += 1
+        elif r["status"] == "pending":
+            total += 1
+    return {"active": w["status"] == "active", "workout_id": w["id"],
+            "workout_date": w["workout_date"], "focus": w["focus"],
+            "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
+            "progress": {"done": done, "total": total}, "exercises": exercises}
+
+
+@trainer_mcp.tool()
+def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
+                       notes: Optional[str] = None, replace: bool = False) -> dict:
+    """Lay out today's routine as a plan the user works through — call this once you've
+    decided the session from get_fitness_briefing (+ get_exercise_history for the lifts
+    you're choosing weights for). Each exercise becomes a row of PENDING sets with
+    targets; the user completes them with complete_set as they go.
+
+    Each item in `exercises` is either explicit:
+        {"name": "Bench Press", "muscles": ["chest"],
+         "sets": [{"target_weight_lbs": 100, "target_reps": 10},
+                  {"target_weight_lbs": 100, "target_reps": 10},
+                  {"target_weight_lbs": 100, "target_reps": 8}]}
+    or the shorthand for N identical sets:
+        {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
+         "target_reps": 12, "target_weight_lbs": 25}
+    Unknown names are auto-stubbed (seeded with `muscles`). Use the canonical muscle
+    labels (chest, lats, quads, …) so recency lines up.
+
+    Only ONE plan is active at a time. If a plan is already active, this APPENDS the new
+    exercises to it (focus/notes ignored) — unless `replace=True`, which discards the
+    current plan and starts fresh. Returns the full plan (see get_workout_plan)."""
+    if err := _bad_planned(exercises):
+        return err
+    with db() as conn:
+        active = _active_workout(conn)
+        if active and replace:
+            conn.execute("DELETE FROM workouts WHERE id=?", (active["id"],))
+            active = None
+        if active:
+            wid = active["id"]
+        else:
+            wid = conn.execute(
+                """INSERT INTO workouts(workout_date, focus, notes, status, created_at)
+                   VALUES (?,?,?, 'active', ?)""",
+                (today(), focus, notes, now()),
+            ).lastrowid
+        _insert_planned(conn, wid, exercises)
+        return _plan_payload(conn, wid)
+
+
+@trainer_mcp.tool()
+def get_workout_plan() -> dict:
+    """The active workout plan (today's routine in progress): each exercise in order
+    with its sets — `target_weight_lbs`/`target_reps` (the plan), `weight_lbs`/`reps`/
+    `rpe` (the actuals, NULL until done), `status` ('pending'|'done'|'skipped'), and
+    `set_id` (pass to complete_set/update_set) — plus a `progress` {done, total} count.
+    Returns {"active": false} when no plan is in progress. Read this to see what's left
+    and what's been done before logging the next set or adjusting the routine."""
+    with db() as conn:
+        w = _active_workout(conn)
+        return _plan_payload(conn, w["id"]) if w else {"active": False}
+
+
+@trainer_mcp.tool()
+def complete_set(set_id: int, weight_lbs: Optional[float] = None,
+                 reps: Optional[int] = None, rpe: Optional[float] = None,
+                 note: Optional[str] = None) -> dict:
+    """Mark one planned set done, recording what was actually lifted. Omitted
+    `weight_lbs`/`reps` default to the set's targets, so "did it as planned" needs only
+    the set_id (add `rpe` 1-10 for how hard it felt — that's how you judge the next
+    weight). Find `set_id` in get_workout_plan. Flips the set to 'done' and returns the
+    updated plan. (To CORRECT an already-logged set, use update_set instead.)"""
+    with db() as conn:
+        r = conn.execute("SELECT * FROM sets WHERE id=?", (set_id,)).fetchone()
+        if not r:
+            return {"error": f"no set with id {set_id}"}
+        w = weight_lbs if weight_lbs is not None else r["target_weight_lbs"]
+        rp = reps if reps is not None else r["target_reps"]
+        if reason := _bad_set({"weight_lbs": w, "reps": rp, "rpe": rpe}):
+            return {"error": reason}
+        conn.execute(
+            """UPDATE sets SET weight_lbs=?, reps=?, rpe=?, note=COALESCE(?, note),
+               status='done' WHERE id=?""",
+            (w, rp, rpe, note, set_id),
+        )
+        return _plan_payload(conn, r["workout_id"])
+
+
+@trainer_mcp.tool()
+def swap_exercise(from_exercise: str, to_exercise: str,
+                  muscles: Optional[list[str]] = None,
+                  sets: Optional[list[dict]] = None,
+                  workout_id: Optional[int] = None) -> dict:
+    """Substitute an exercise in the active plan — for a busy/broken machine, a tweak,
+    or preference. Keep the same muscle group so the session still does its job. The
+    PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
+    log) and `to_exercise` is added with fresh pending sets.
+
+    By default the substitute mirrors the count and targets of the swapped-out pending
+    sets — but those targets came from a DIFFERENT exercise, so pass `sets`
+    (e.g. [{"target_weight_lbs": 60, "target_reps": 10}, …]) whenever the right weight
+    differs (it usually does). Unknown `to_exercise` is auto-stubbed with `muscles`.
+    Returns the updated plan."""
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan to swap in"}
+        frm = _resolve_exercise(conn, from_exercise)
+        if not frm:
+            return {"error": f"{from_exercise!r} isn't in this plan"}
+        pend = conn.execute(
+            """SELECT target_weight_lbs, target_reps FROM sets
+               WHERE workout_id=? AND exercise_id=? AND status='pending'
+               ORDER BY set_index""",
+            (w["id"], frm["id"]),
+        ).fetchall()
+        if not pend:
+            return {"error": f"no pending {from_exercise} sets to swap in this plan"}
+        sub_sets = sets if sets else [
+            {"target_weight_lbs": p["target_weight_lbs"], "target_reps": p["target_reps"]}
+            for p in pend
+        ]
+        spec = [{"name": to_exercise, "muscles": muscles, "sets": sub_sets}]
+        if err := _bad_planned(spec):
+            return err
+        conn.execute(
+            "UPDATE sets SET status='skipped' WHERE workout_id=? AND exercise_id=? AND status='pending'",
+            (w["id"], frm["id"]),
+        )
+        _insert_planned(conn, w["id"], spec)
+        return _plan_payload(conn, w["id"])
+
+
+@trainer_mcp.tool()
+def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict:
+    """Append exercises (or extra sets of an exercise already present) to the active
+    plan mid-session — e.g. "add some calf raises" or "give me one more drop set". Same
+    `exercises` shape as start_workout_plan. Errors if no plan is active. Returns the
+    updated plan. (To retarget an existing pending set, use update_set with
+    target_weight_lbs/target_reps; to drop one, delete_record(kind="set").)"""
+    if err := _bad_planned(exercises):
+        return err
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan; start one with start_workout_plan"}
+        _insert_planned(conn, w["id"], exercises)
+        return _plan_payload(conn, w["id"])
+
+
+@trainer_mcp.tool()
+def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = None,
+                   notes: Optional[str] = None) -> dict:
+    """Close out the active plan when the session is over. Remaining pending sets are
+    marked 'skipped'; the session flips to 'done' and its completed sets become ordinary
+    history (counting toward recency/PRs and showing on the workouts page). Optionally
+    record overall `feeling`/`notes`. If nothing was completed, the empty session is
+    deleted instead. Returns a short summary."""
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan to finish"}
+        done = conn.execute(
+            "SELECT COUNT(*) AS c FROM sets WHERE workout_id=? AND status='done'",
+            (w["id"],),
+        ).fetchone()["c"]
+        if done == 0:
+            conn.execute("DELETE FROM workouts WHERE id=?", (w["id"],))
+            return {"finished": True, "workout_id": w["id"], "deleted_empty": True,
+                    "done_sets": 0, "active": False}
+        skipped = conn.execute(
+            "UPDATE sets SET status='skipped' WHERE workout_id=? AND status='pending'",
+            (w["id"],),
+        ).rowcount
+        fields = {"status": "done"}
+        if feeling is not None:
+            fields["feeling"] = feeling
+        if notes is not None:
+            fields["notes"] = notes
+        cols = ", ".join(f"{k}=?" for k in fields)
+        conn.execute(f"UPDATE workouts SET {cols} WHERE id=?", (*fields.values(), w["id"]))
+        return {"finished": True, "workout_id": w["id"], "workout_date": w["workout_date"],
+                "done_sets": done, "skipped_sets": skipped, "active": False}
 
 
 # --------------------------------------------------------------------------- #
@@ -1710,6 +2053,7 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                FROM sets s
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+               WHERE s.status='done'
                GROUP BY em.muscle""",
             (week_ago,),
         ).fetchall()
@@ -1721,18 +2065,23 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                FROM sets s
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercises e ON e.id = s.exercise_id
-               WHERE s.duration_seconds IS NOT NULL OR s.distance_miles IS NOT NULL
+               WHERE (s.duration_seconds IS NOT NULL OR s.distance_miles IS NOT NULL)
+                     AND s.status='done'
                GROUP BY e.id""",
             (week_ago, week_ago),
         ).fetchall()
+        # Recent history is COMPLETED sessions only; an in-progress plan (status
+        # 'active') is surfaced separately via get_workout_plan.
         recent = conn.execute(
-            "SELECT id, workout_date, focus, feeling, notes FROM workouts ORDER BY workout_date DESC, id DESC LIMIT ?",
+            "SELECT id, workout_date, focus, feeling, notes FROM workouts "
+            "WHERE status='done' ORDER BY workout_date DESC, id DESC LIMIT ?",
             (recent_workouts,),
         ).fetchall()
         recent_out = []
         for w in recent:
             n = conn.execute(
-                "SELECT COUNT(DISTINCT exercise_id) AS e, COUNT(*) AS s FROM sets WHERE workout_id=?",
+                "SELECT COUNT(DISTINCT exercise_id) AS e, COUNT(*) AS s "
+                "FROM sets WHERE workout_id=? AND status='done'",
                 (w["id"],),
             ).fetchone()
             row = {"workout_id": w["id"], "date": w["workout_date"],

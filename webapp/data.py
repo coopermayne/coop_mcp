@@ -296,12 +296,14 @@ def person_detail(person_id: int, history_limit: int = 60):
 # --------------------------------------------------------------------------- #
 
 def workouts_full(limit: int = 20) -> list:
-    """Recent sessions with their sets grouped by exercise (first-seen order)."""
+    """Recent COMPLETED sessions with their done sets grouped by exercise (first-seen
+    order). An in-progress plan (status='active') and its pending/skipped sets are
+    excluded — those live on the /trainer page, not the history browse."""
     out = []
     with server.db() as conn:
         ws = conn.execute(
             "SELECT id, workout_date, focus, feeling, notes FROM workouts "
-            "ORDER BY workout_date DESC, id DESC LIMIT ?",
+            "WHERE status='done' ORDER BY workout_date DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         for w in ws:
@@ -310,7 +312,7 @@ def workouts_full(limit: int = 20) -> list:
                           s.duration_seconds, s.distance_miles, s.note,
                           e.id AS eid, e.name AS ename, e.category
                    FROM sets s JOIN exercises e ON e.id = s.exercise_id
-                   WHERE s.workout_id = ? ORDER BY s.id""",
+                   WHERE s.workout_id = ? AND s.status='done' ORDER BY s.id""",
                 (w["id"],),
             ).fetchall()
             order, by_ex = [], {}
@@ -348,6 +350,13 @@ def workouts_full(limit: int = 20) -> list:
     return out
 
 
+def active_plan() -> dict:
+    """The active workout plan for the /trainer page, straight from the server (see
+    server.get_workout_plan): {"active": False} or the full plan with exercises, sets
+    (target + actual + status), and a done/total progress count."""
+    return server.get_workout_plan()
+
+
 def muscle_breakdown() -> dict:
     """Per-muscle training breakdown for the /workouts body heatmap.
 
@@ -378,6 +387,7 @@ def muscle_breakdown() -> dict:
                FROM sets s
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+               WHERE s.status='done'
                GROUP BY em.muscle""",
             (seven_ago, fourteen_ago),
         ).fetchall():
@@ -397,7 +407,7 @@ def muscle_breakdown() -> dict:
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
                JOIN exercises e ON e.id = s.exercise_id
-               WHERE w.workout_date >= ?
+               WHERE w.workout_date >= ? AND s.status='done'
                GROUP BY em.muscle, e.id
                ORDER BY em.muscle, sets_14d DESC, sets_7d DESC, e.name""",
             (seven_ago, fourteen_ago),
