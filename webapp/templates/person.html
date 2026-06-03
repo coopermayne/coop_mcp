@@ -5,6 +5,11 @@
 
 <a href="{{ base }}/people" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← People</a>
 
+{# Everything below the back-link is the swap target: after the chat edits this
+   person, the panel re-fetches and replaces this region in place (summary, details,
+   history) without closing the open chat. #}
+<div data-chat-refresh>
+
 <div class="mt-4 mb-8">
   <h1 class="text-2xl font-bold tracking-tight">{{ p.name }}</h1>
   {% if p.role %}<p class="text-sm text-gray-500 mt-1">{{ p.role }}</p>{% endif %}
@@ -68,5 +73,16 @@
     <p class="text-sm text-gray-400">No entries mention {{ p.name }} yet.</p>
   {% endif %}
 </div>
+
+</div>{# /data-chat-refresh #}
+
+{% if chat_enabled %}
+  {% set panel_title = "Chat · " ~ p.name %}
+  {% set chat_open_label = "Chat about " ~ p.name %}
+  {% set chat_placeholder = "Add or edit info about " ~ p.name ~ "…" %}
+  {% set chat_seed = "Tell me anything about " ~ p.name ~ " — a new phone number, where they live, a role change, an alias they go by — and I’ll update their record. You can also dictate a journal entry about them or ask what you’ve logged." %}
+  {% set chat_person_id = p.person_id %}
+  {% include "_chat_panel.html" %}
+{% endif %}
 
 {% endblock %}
