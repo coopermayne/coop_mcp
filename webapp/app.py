@@ -372,16 +372,44 @@ async def workouts(request: Request):
 
 
 @app.get("/drinking")
-async def drinking(request: Request):
+async def drinking(request: Request, error: str = ""):
     s = data.drinking(days=30)
     return page(request, "drinking.html", active="drinking",
-                s=s, log=data.recent_drinks(limit=30))
+                s=s, log=data.recent_drinks(limit=30),
+                today=server.today(), error=error)
+
+
+@app.post("/drinking/add")
+async def drinking_add(request: Request):
+    """Direct drink entry — the one write on the drinking page. Drinks are simple
+    enough that they don't need the AI: this calls server.log_drinks straight and
+    redirects back (Post/Redirect/Get). server.log_drinks does the validation."""
+    form = await request.form()
+    base = base_path(request)
+    raw = (form.get("standard_drinks") or "").strip()
+    try:
+        amount = float(raw)
+    except ValueError:
+        return RedirectResponse(base + "/drinking?error=Enter+a+number+of+drinks.",
+                                status_code=303)
+    res = server.log_drinks(
+        standard_drinks=amount,
+        drink_date=(form.get("drink_date") or "").strip() or None,
+        kind=(form.get("kind") or "").strip() or None,
+        notes=(form.get("notes") or "").strip() or None,
+    )
+    if isinstance(res, dict) and res.get("error"):
+        from urllib.parse import quote_plus
+        return RedirectResponse(base + "/drinking?error=" + quote_plus(res["error"]),
+                                status_code=303)
+    return RedirectResponse(base + "/drinking", status_code=303)
 
 
 # --------------------------------------------------------------------------- #
-# AI chat — the web app's only write path. Browse pages above stay read-only;
-# all mutation flows through chat.run_turn driving server.py's tools. Gated by
-# RequireAuth like everything else (these paths aren't in PUBLIC_PATHS).
+# AI chat — a write path for prose (the journal). Browse pages above stay
+# read-only; drinks have their own direct-entry form. Each surface is scoped to
+# one toolset: the `journal` panel (journal page) and the `trainer` page get
+# different tools. Gated by RequireAuth (these paths aren't in PUBLIC_PATHS).
 # --------------------------------------------------------------------------- #
 
 def _chat_id(request: Request) -> str:
@@ -395,16 +423,13 @@ def _chat_id(request: Request) -> str:
     return cid
 
 
-@app.get("/chat")
-async def chat_page(request: Request):
-    return page(request, "chat.html", active="chat", model=chat.MODEL)
-
-
-@app.post("/chat/send")
-async def chat_send(request: Request):
+@app.post("/chat/{agent}/send")
+async def chat_send(request: Request, agent: str):
     from fastapi.responses import JSONResponse, StreamingResponse
     if not chat.ENABLED:
         return JSONResponse({"error": "Chat is not configured."}, status_code=503)
+    if not chat.is_agent(agent):
+        return JSONResponse({"error": f"Unknown chat agent '{agent}'."}, status_code=404)
     body = await request.json()
     text = (body.get("text") or "").strip()
     if not text:
@@ -413,7 +438,7 @@ async def chat_send(request: Request):
     base = base_path(request)
 
     async def event_stream():
-        async for ev in chat.run_turn(cid, text):
+        async for ev in chat.run_turn(agent, cid, text):
             if ev.get("href"):  # prefix tool-chip links with the mount path
                 ev["href"] = base + ev["href"]
             yield f"data: {json.dumps(ev)}\n\n"
@@ -423,10 +448,10 @@ async def chat_send(request: Request):
                                       "X-Accel-Buffering": "no"})
 
 
-@app.post("/chat/reset")
-async def chat_reset(request: Request):
+@app.post("/chat/{agent}/reset")
+async def chat_reset(request: Request, agent: str):
     from fastapi.responses import JSONResponse
-    chat.reset(_chat_id(request))
+    chat.reset(agent, _chat_id(request))
     return JSONResponse({"status": "ok"})
 
 

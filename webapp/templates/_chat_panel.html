@@ -1,0 +1,114 @@
+{# Journal AI chat as a slide-in panel. Included on the journal page, gated on
+   chat_enabled. The opener lives in the journal header (data-chat-open); on mobile
+   the panel covers almost the whole screen (slides up), on desktop it's a
+   right-edge side panel (slides in). The chat client itself is the shared
+   static/chat.js, pointed at the `journal` agent (journal + people tools). #}
+
+{# Backdrop — taps outside the panel to close. Hidden until open. #}
+<div data-chat-backdrop class="fixed inset-0 z-40 bg-black/30 opacity-0 pointer-events-none transition-opacity duration-300 hidden"></div>
+
+{# The panel. Closed transform differs by breakpoint: slide up on mobile, slide in
+   from the right on desktop. JS toggles the three translate classes. #}
+<div data-chat-panel
+     class="fixed z-50 flex flex-col bg-white
+            inset-x-0 bottom-0 top-10 rounded-t-2xl border-t border-gray-200
+            sm:inset-y-0 sm:left-auto sm:right-0 sm:top-0 sm:w-[440px] sm:rounded-none sm:border-t-0 sm:border-l
+            translate-y-full sm:translate-y-0 sm:translate-x-full
+            transition-transform duration-300 motion-reduce:transition-none"
+     role="dialog" aria-label="Journal chat" aria-modal="true">
+
+  <div class="flex items-center justify-between px-4 sm:px-5 h-14 border-b border-gray-100 shrink-0">
+    <span class="text-sm font-semibold tracking-tight">Journal chat</span>
+    <div class="flex items-center gap-4 text-gray-400">
+      <button type="button" data-chat-reset
+              class="text-xs uppercase tracking-widest hover:text-black transition-colors">New</button>
+      <button type="button" data-chat-close aria-label="Close" title="Close"
+              class="hover:text-black transition-colors">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  {# Transcript — scrolls inside the panel. #}
+  <div data-chat-log class="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-5">
+    <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
+      Tell me about your day or ask what you’ve been up to. I’ll capture entries and
+      resolve people the same way Claude does over the connector. (Drinks have their
+      own quick form on the Drinking page.)
+    </p>
+  </div>
+
+  {# Composer. #}
+  <div class="px-4 sm:px-5 pt-3 pb-4 border-t border-gray-100 shrink-0"
+       style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+    <form data-chat-form class="flex items-end gap-2">
+      <textarea data-chat-input rows="1" autocomplete="off"
+                placeholder="Message the journal…"
+                class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
+      <button type="submit" data-chat-send aria-label="Send"
+              class="shrink-0 h-[42px] w-[42px] flex items-center justify-center bg-black text-white rounded-[4px] hover:bg-gray-800 transition-colors disabled:opacity-30">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      </button>
+    </form>
+  </div>
+</div>
+
+<script src="{{ base }}/static/chat.js"></script>
+<script>
+(function () {
+  var panel = document.querySelector('[data-chat-panel]');
+  var backdrop = document.querySelector('[data-chat-backdrop]');
+  var openBtn = document.querySelector('[data-chat-open]');
+  var closeBtn = panel.querySelector('[data-chat-close]');
+  var input = panel.querySelector('[data-chat-input]');
+  var closed = ['translate-y-full', 'sm:translate-y-0', 'sm:translate-x-full'];
+
+  function open() {
+    panel.classList.remove.apply(panel.classList, closed);
+    backdrop.classList.remove('hidden');
+    // next frame so the opacity transition runs
+    requestAnimationFrame(function () {
+      backdrop.classList.remove('opacity-0');
+      backdrop.classList.add('pointer-events-auto');
+    });
+    setTimeout(function () { input.focus(); }, 200);
+  }
+  function close() {
+    panel.classList.add.apply(panel.classList, closed);
+    backdrop.classList.add('opacity-0');
+    backdrop.classList.remove('pointer-events-auto');
+    setTimeout(function () { backdrop.classList.add('hidden'); }, 300);
+  }
+
+  openBtn.addEventListener('click', open);
+  closeBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !backdrop.classList.contains('hidden')) close();
+  });
+
+  // After the chat makes a change, re-fetch the current journal view and swap
+  // the live regions in place — the feed updates without a reload, and the open
+  // panel + its transcript are untouched. Fetches window.location so search
+  // context (?q=) is preserved.
+  async function refreshFeed() {
+    try {
+      var res = await fetch(window.location.href, { headers: { 'X-Requested-With': 'fetch' } });
+      if (!res.ok) return;
+      var doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      ['[data-journal-feed]', '[data-pending]'].forEach(function (sel) {
+        var nu = doc.querySelector(sel), cur = document.querySelector(sel);
+        if (nu && cur) cur.innerHTML = nu.innerHTML;
+      });
+      var nc = doc.querySelector('[data-entry-count]'), cc = document.querySelector('[data-entry-count]');
+      if (nc && cc) cc.textContent = nc.textContent;
+    } catch (e) {}
+  }
+
+  ChatWidget.init({
+    root: panel,
+    endpoint: {{ base | tojson }} + '/chat/journal',
+    onWrite: refreshFeed,
+  });
+})();
+</script>

@@ -7,19 +7,32 @@
    the top of content but `fixed` so it overlays — doesn't affect the main column. #}
 {% if not searching %}{{ m.floating_calendar(months) }}{% endif %}
 
-<div class="flex items-baseline justify-between mb-6">
+<div class="flex items-center justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Journal</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400">
-    {% if searching %}{{ count }} match{{ '' if count == 1 else 'es' }}{% else %}{{ count }} entries{% endif %}
-  </span>
+  <div class="flex items-center gap-4">
+    <span class="text-xs uppercase tracking-widest text-gray-400" data-entry-count>
+      {% if searching %}{{ count }} match{{ '' if count == 1 else 'es' }}{% else %}{{ count }} entries{% endif %}
+    </span>
+    {% if chat_enabled %}
+    <button type="button" data-chat-open aria-label="Open journal chat" title="Journal chat"
+            class="text-gray-400 hover:text-black transition-colors">
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    </button>
+    {% endif %}
+  </div>
 </div>
 
+{# Live region: refreshed by the chat panel after a write, so a captured entry
+   shows without a manual reload. Always present (even when empty) so it's a
+   stable swap target. #}
+<div data-pending>
 {% if pending_count and pending_count > 0 %}
 <a href="{{ base }}/pending" class="block mb-6 border border-gray-200 rounded-[4px] px-4 py-2.5 hover:border-black transition-colors flex items-center justify-between">
   <span class="text-sm text-gray-700">{{ pending_count }} pending mention{{ '' if pending_count == 1 else 's' }} to resolve</span>
   <span class="text-xs uppercase tracking-widest text-gray-400">Review ›</span>
 </a>
 {% endif %}
+</div>
 
 <form method="get" action="{{ base }}/journal" class="mb-8 flex gap-2">
   <input type="search" name="q" value="{{ q }}" placeholder="Search entries…"
@@ -28,6 +41,7 @@
   {% if searching %}<a href="{{ base }}/journal" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
+<div data-journal-feed>
 {% if searching %}
   <p class="text-xs uppercase tracking-widest text-gray-400 mb-4">Results for "{{ q }}"</p>
   {% if entries %}
@@ -53,5 +67,8 @@
     <p class="text-sm text-gray-400">No entries yet.</p>
   {% endif %}
 {% endif %}
+</div>
+
+{% if chat_enabled %}{% include "_chat_panel.html" %}{% endif %}
 
 {% endblock %}
