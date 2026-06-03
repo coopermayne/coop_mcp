@@ -186,7 +186,7 @@ def main():
             print(f"  [{tag}] {name} — {equipment or '?'} | "
                   f"P:{primary or '-'} S:{secondary or '-'}")
         else:
-            res = server.save_exercise(**kwargs)
+            res = server.create_exercise(**kwargs)
             if res.get("created"):
                 created += 1
             else:

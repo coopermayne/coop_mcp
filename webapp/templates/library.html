@@ -19,10 +19,106 @@
 
 <p class="text-sm text-gray-500 mb-6 leading-relaxed">
   The full movement library (~870, from the open free-exercise-db) — muscles by emphasis,
-  gear, how to do it, and a form clip. Star a movement to add it to your <strong>rotation</strong>:
-  the curated pool the trainer actually programs your sessions from. Logging a workout adds
-  its movements automatically.
+  gear, difficulty, how to do it, and a form clip. Star a movement to add it to your
+  <strong>rotation</strong>: the curated pool the trainer actually programs your sessions
+  from. Logging a workout adds its movements automatically. The catalog is closed to the
+  trainer — it programs only from what's here and never invents a movement; add your own
+  with the form below.
 </p>
+
+{% if error %}
+<div class="mb-5 px-4 py-3 border border-amber-200 bg-amber-50 text-sm text-amber-800 rounded-[4px]">{{ error }}</div>
+{% endif %}
+
+{# Manual add — the ONLY way a new exercise enters the closed catalog (the AI can't). #}
+<details class="mb-6 border border-gray-200 rounded-[4px]">
+  <summary class="cursor-pointer list-none px-5 py-3 text-sm font-medium flex items-center justify-between">
+    <span>+ Add an exercise</span>
+    <span class="text-[10px] uppercase tracking-widest text-gray-400">manual</span>
+  </summary>
+  <form method="post" action="{{ base }}/trainer/library/add" class="px-5 pb-5 pt-1 space-y-3">
+    <div>
+      <label class="text-[10px] uppercase tracking-widest text-gray-400">Name *</label>
+      <input type="text" name="name" required placeholder="e.g. Bulgarian Split Squat"
+             class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Category</label>
+        <input type="text" name="category" placeholder="push / pull / legs / core / cardio"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Equipment</label>
+        <input type="text" name="equipment" placeholder="barbell, dumbbell, machine…"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Level (difficulty)</label>
+        <select name="level" class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm bg-white focus:outline-none focus:border-black">
+          <option value="">—</option><option value="beginner">beginner</option>
+          <option value="intermediate" selected>intermediate</option><option value="expert">expert</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Mechanic</label>
+        <select name="mechanic" class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm bg-white focus:outline-none focus:border-black">
+          <option value="">—</option><option value="compound">compound</option><option value="isolation">isolation</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid grid-cols-3 gap-3">
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Primary muscles</label>
+        <input type="text" name="muscles" placeholder="quadriceps, glutes"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Secondary</label>
+        <input type="text" name="secondary_muscles" placeholder="hamstrings"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Tertiary</label>
+        <input type="text" name="tertiary_muscles" placeholder="calves"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+    </div>
+    <p class="text-[11px] text-gray-400 -mt-1">Comma-separated. Canonical labels: {{ muscles | join(", ") }}.</p>
+    <div>
+      <label class="text-[10px] uppercase tracking-widest text-gray-400">Technique notes</label>
+      <textarea name="technique_notes" rows="2" placeholder="setup + key cues"
+                class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black"></textarea>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Common mistakes</label>
+        <textarea name="common_mistakes" rows="2"
+                  class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black"></textarea>
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Cautions</label>
+        <textarea name="cautions" rows="2"
+                  class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black"></textarea>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Video link</label>
+        <input type="url" name="video_link" placeholder="https://…"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-widest text-gray-400">Image / gif link</label>
+        <input type="url" name="image_link" placeholder="https://…"
+               class="w-full mt-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+      </div>
+    </div>
+    <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Add to library (into rotation)</button>
+  </form>
+</details>
 
 {# Rotation / All toggle, preserving the current name + muscle filters. #}
 <div class="mb-4 flex gap-2">
@@ -66,6 +162,8 @@
                   title="{{ 'In your rotation — click to remove' if ex.in_rotation else 'Add to your rotation' }}">{{ '★' if ex.in_rotation else '☆' }}</button>
           <span class="text-sm font-medium">{{ ex.name }}</span>
           {% if ex.category %}<span class="badge">{{ ex.category }}</span>{% endif %}
+          {% if ex.mechanic %}<span class="badge">{{ ex.mechanic }}</span>{% endif %}
+          {% if ex.level %}<span class="text-[10px] uppercase tracking-widest text-gray-400" title="Difficulty">{{ ex.level }}</span>{% endif %}
           {% if not ex.has_notes %}<span class="text-[10px] uppercase tracking-widest text-amber-500" title="No technique notes saved yet">needs notes</span>{% endif %}
         </div>
         {% if ex.muscles.primary or ex.muscles.secondary or ex.muscles.tertiary %}
@@ -116,7 +214,7 @@
 </div>
 {% else %}
 <p class="text-sm text-gray-400">
-  {% if rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer or ask the trainer to add some.{% endif %}
+  {% if rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the form above.{% endif %}
 </p>
 {% endif %}
 
