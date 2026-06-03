@@ -203,7 +203,8 @@ working.
   streak) in SQL; the webapp `/drinking` page edits/deletes past days inline.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
-  `common_mistakes`, `cautions`, `video_link`, `image_link`, and `in_rotation`. PRE-LOADED
+  `common_mistakes`, `cautions`, `video_link`, `image_link`, `in_rotation`, and
+  `archived`. PRE-LOADED
   with ~870 movements from free-exercise-db (`scripts/import_exercises.py`); the schema
   mirrors that dataset. Two layers: the whole catalog is the **LIBRARY** (browsable at
   `/trainer/library`); `in_rotation=1` marks the curated **ROTATION**, the only pool the
@@ -221,7 +222,15 @@ working.
   the authenticated user, through the website, can. The model-facing `save_exercise` only
   *enriches* existing rows or toggles `in_rotation`.
   `exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
-  mechanic).
+  mechanic). **Archiving** (`archived=1`) is a SOFT delete — the library page's "remove"
+  control (`server.set_archived`, another NON-tool, website-only path; it also clears
+  `in_rotation`). An archived movement is invisible everywhere the catalog is *discovered*
+  — the library, name search, name-resolution, swap peers, the rotation — so the model has
+  no idea it exists, exactly as if deleted; but the row and any past-workout links it's
+  referenced by survive, and by-id history (`get_exercise_history`, etc.) still resolves.
+  Restore from the library's **Archived** view, or by re-adding the same name on the add
+  form (`create_exercise` reuses & un-archives the row rather than colliding on the UNIQUE
+  name).
 - `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a
   plain GROUP BY. `role` is one of three EMPHASIS tiers — primary|secondary|tertiary
   ("how hard" each muscle is worked, e.g. a thruster = shoulders primary, quads/glutes
