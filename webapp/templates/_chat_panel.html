@@ -1,8 +1,19 @@
 {# Journal AI chat as a slide-in panel. Included on the journal page, gated on
-   chat_enabled. The opener lives in the journal header (data-chat-open); on mobile
-   the panel covers almost the whole screen (slides up), on desktop it's a
-   right-edge side panel (slides in). The chat client itself is the shared
-   static/chat.js, pointed at the `journal` agent (journal + people tools). #}
+   chat_enabled. Carries its own floating bottom-right opener (data-chat-open),
+   matching the trainer panel; on mobile the panel covers almost the whole screen
+   (slides up), on desktop it's a right-edge side panel (slides in). The chat client
+   itself is the shared static/chat.js, pointed at the `journal` agent (journal +
+   people tools). #}
+
+{# Floating opener — bottom-right, above the safe area. Solid yellow circle with a
+   white chat icon (the shared opener treatment across journal/workouts/trainer). The
+   yellow is theme-independent (not .bg-black, so the dark-mode swap leaves it alone),
+   reading on both the light and dark page backgrounds. #}
+<button type="button" data-chat-open aria-label="Open journal chat" title="Journal chat"
+        class="fixed z-30 bottom-5 right-5 h-12 w-12 flex items-center justify-center bg-yellow-400 text-white rounded-full shadow-lg hover:bg-yellow-300 transition-colors"
+        style="margin-bottom: env(safe-area-inset-bottom);">
+  <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
+</button>
 
 {# Backdrop — taps outside the panel to close. Hidden until open. #}
 <div data-chat-backdrop class="fixed inset-0 z-40 bg-black/30 opacity-0 pointer-events-none transition-opacity duration-300 hidden"></div>
