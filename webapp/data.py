@@ -401,6 +401,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
         out.append({
             "exercise_id": r["id"], "name": r["name"], "category": r["category"],
             "equipment": r["equipment"], "muscles": m, "in_rotation": in_rotation,
+            "level": r["level"], "mechanic": r["mechanic"], "force": r["force"],
             "technique_notes": r["technique_notes"],
             "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
             "video_link": r["video_link"], "image_link": r["image_link"],

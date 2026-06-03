@@ -167,20 +167,23 @@ The catalog has two layers — a LIBRARY and a ROTATION:
     library with exercises(muscle=…)). Logging a movement the user actually did adds it to
     the rotation automatically, so the rotation grows from real training.
 
-Keep entries coached, not bare. When a movement is genuinely NEW to the catalog (a tool
-returns it under `new_exercises`), immediately enrich it with save_exercise from your own
-knowledge, matching the imported entries' shape: the muscles in three EMPHASIS tiers
-(muscles = primary, secondary_muscles, tertiary_muscles — e.g. a Kettlebell Thruster is
-shoulders primary, quadriceps/glutes secondary, triceps tertiary), the `equipment` it
-needs, technique_notes (the key cues), common_mistakes, cautions (especially the user's
-left-shoulder limits), and a video_link and/or image_link (a looping form gif) if you have
-a good one. Use the canonical muscle labels (they mirror the library's vocabulary):
-abdominals, abductors, adductors, biceps, calves, chest, forearms, glutes, hamstrings,
-lats, lower back, middle back, neck, quadriceps, shoulders, traps, triceps. Don't make the
-user ask; an empty stub is why "No saved technique notes yet" appears. Do this once per
-exercise — a name already in the catalog keeps what it has. The user can also just ask you
-to add movements to their rotation ("add Bulgarian split squats"); that's set_rotation,
-plus save_exercise enrichment if the entry is somehow bare.
+The catalog is CLOSED to you: you NEVER invent an exercise — the ~870-movement library
+plus anything the user adds is the whole world, so program only names it already holds.
+Names you pass to the logging/planning tools resolve fuzzily, so a near-spelling still
+lands; but a name with no real match is SKIPPED and returned under `unmatched` with its
+closest `candidates` — re-issue it under one of those, never as a new exercise. New
+movements enter the catalog ONLY through the website's manual add form, so if the user
+wants one that genuinely isn't there, point them to /trainer/library rather than creating
+it. What you CAN do with save_exercise is keep an EXISTING entry coached — fill in
+technique_notes (key cues), common_mistakes, cautions (especially the user's left-shoulder
+limits), equipment, and the muscle EMPHASIS tiers (muscles = primary, secondary_muscles,
+tertiary_muscles — e.g. a Kettlebell Thruster is shoulders primary, quadriceps/glutes
+secondary, triceps tertiary) so the /trainer page doesn't show "No saved technique notes
+yet". Use the canonical muscle labels (they mirror the library's vocabulary): abdominals,
+abductors, adductors, biceps, calves, chest, forearms, glutes, hamstrings, lats, lower
+back, middle back, neck, quadriceps, shoulders, traps, triceps. The user can also just ask
+you to add a movement to their rotation ("add Bulgarian split squats"); that's set_rotation
+(plus save_exercise enrichment if the entry is bare).
 
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
@@ -1513,51 +1516,14 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 # Trainer: exercise catalog
 # --------------------------------------------------------------------------- #
 
-@trainer_mcp.tool()
-def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
-                  category: Optional[str] = None, equipment: Optional[str] = None,
-                  muscles: Optional[list[str]] = None,
-                  secondary_muscles: Optional[list[str]] = None,
-                  tertiary_muscles: Optional[list[str]] = None,
-                  technique_notes: Optional[str] = None,
-                  common_mistakes: Optional[str] = None,
-                  cautions: Optional[str] = None,
-                  video_link: Optional[str] = None,
-                  image_link: Optional[str] = None,
-                  slug: Optional[str] = None,
-                  force: Optional[str] = None,
-                  level: Optional[str] = None,
-                  mechanic: Optional[str] = None,
-                  in_rotation: Optional[bool] = None) -> dict:
-    """Create or enrich a catalog exercise (a stable entity, like a person) — the one
-    write tool for the catalog, which doubles as the exercise LIBRARY (browsable at
-    /trainer/library). The library comes PRE-LOADED from free-exercise-db, so a movement
-    is usually already here; this tool is mostly for enriching one or adding a new one.
-
-    Target it by `exercise_id`, or by `name` (resolved case-insensitively): a KNOWN
-    name updates that exercise, an UNKNOWN name creates it. The logging/planning tools
-    (log_workout, start_workout_plan, add_to_plan, swap_exercise) already auto-stub
-    unknown lifts and return them under `new_exercises`, so the usual job here is
-    enriching one with coaching content right after — how to do it (`technique_notes`),
-    what to watch for (`common_mistakes`), injury caveats (`cautions`, e.g. the user's
-    left-shoulder limits), the `equipment` it needs, and a `video_link` and/or
-    `image_link` (a looping gif/still of proper form). The dataset-aligned descriptors
-    `force` (push/pull/static), `level`, `mechanic` (compound/isolation), and `slug` round
-    out a record. Filling these in is what keeps the /trainer page from showing "No saved
-    technique notes yet"; do it for every newly created exercise. Only non-null fields are
-    written. Pass `in_rotation=True` to add it to the programming pool, but prefer the
-    dedicated `set_rotation` tool for that (and note logging a movement adds it for you).
-
-    MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
-    `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
-    so "how hard each muscle is worked" is captured, e.g. a Kettlebell Thruster is
-    muscles=["shoulders"], secondary_muscles=["quadriceps","glutes"],
-    tertiary_muscles=["triceps"]. Passing ANY tier REPLACES the whole mapping (a muscle
-    listed in two tiers lands in the higher one), so send every tier you want kept. Use
-    the canonical muscle labels so recency lines up (they mirror the imported library's
-    vocabulary): abdominals, abductors, adductors, biceps, calves, chest, forearms,
-    glutes, hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
-    triceps. Returns the exercise_id and whether it was newly created."""
+def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
+                     secondary_muscles, tertiary_muscles, technique_notes,
+                     common_mistakes, cautions, video_link, image_link, slug, force,
+                     level, mechanic, in_rotation, allow_create: bool) -> dict:
+    """Shared worker behind save_exercise (enrich-only, allow_create=False) and
+    create_exercise (the website's add form, allow_create=True). New rows are born ONLY
+    when allow_create is set, which the model-facing tool never passes — that's what keeps
+    the catalog growable by the user's hand alone."""
     if in_rotation is not None:
         in_rotation = int(bool(in_rotation))
     with db() as conn:
@@ -1582,7 +1548,7 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
             if sets_:
                 cols = ", ".join(f"{k}=?" for k in sets_)
                 conn.execute(f"UPDATE exercises SET {cols} WHERE id=?", (*sets_.values(), eid))
-        else:
+        elif allow_create:
             cols = ["name", *sets_, "created_at"]
             vals = [name.strip(), *sets_.values(), now()]
             ph = ", ".join("?" for _ in cols)
@@ -1590,6 +1556,12 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                 f"INSERT INTO exercises({', '.join(cols)}) VALUES ({ph})", vals,
             ).lastrowid
             created = True
+        else:
+            # Closed to the assistant: it can't conjure a new exercise. Hand back the
+            # closest real entries so it programs from those (or asks the user to add it).
+            return {"error": f"{name!r} isn't in the library — add it from the library "
+                             "page first (the catalog is closed to the assistant)",
+                    "candidates": _match_exercises(conn, name or "")}
         _set_muscles(conn, eid, muscles, secondary_muscles, tertiary_muscles)
         out_name = conn.execute("SELECT name FROM exercises WHERE id=?", (eid,)).fetchone()["name"]
     if created:
@@ -1598,6 +1570,85 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                        or tertiary_muscles is not None)
     return {"exercise_id": eid, "name": out_name, "created": False,
             "updated": list(sets_) + (["muscles"] if muscles_changed else [])}
+
+
+@trainer_mcp.tool()
+def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                  category: Optional[str] = None, equipment: Optional[str] = None,
+                  muscles: Optional[list[str]] = None,
+                  secondary_muscles: Optional[list[str]] = None,
+                  tertiary_muscles: Optional[list[str]] = None,
+                  technique_notes: Optional[str] = None,
+                  common_mistakes: Optional[str] = None,
+                  cautions: Optional[str] = None,
+                  video_link: Optional[str] = None,
+                  image_link: Optional[str] = None,
+                  slug: Optional[str] = None,
+                  force: Optional[str] = None,
+                  level: Optional[str] = None,
+                  mechanic: Optional[str] = None,
+                  in_rotation: Optional[bool] = None) -> dict:
+    """ENRICH an exercise already in the LIBRARY (browsable at /trainer/library), or set
+    its rotation flag. The catalog is CLOSED to you: you CANNOT create exercises — the
+    library is pre-loaded from free-exercise-db, and any new movement is added by the user
+    on the website's add form, never the chat. A `name` that isn't on file comes back as
+    an error with `candidates` (the closest real entries); program from those or ask the
+    user to add the movement on the library page.
+
+    Target an existing entry by `exercise_id` or `name` (resolved fuzzily, so a near-
+    spelling lands on the right row) and pass the fields to update — `technique_notes`
+    (how to do it), `common_mistakes`, `cautions` (injury caveats, e.g. the user's left-
+    shoulder limits), `equipment`, `category`, the dataset descriptors `force`
+    (push/pull/static), `level`, `mechanic` (compound/isolation), and the muscle tiers.
+    Only non-null fields are written — this is how you keep /trainer from showing "No
+    saved technique notes yet". Pass `in_rotation=True` to add it to the programming pool
+    (or prefer the dedicated `set_rotation` tool; logging a movement adds it for you).
+
+    MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
+    `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
+    so "how hard each muscle is worked" is captured, e.g. a Kettlebell Thruster is
+    muscles=["shoulders"], secondary_muscles=["quadriceps","glutes"],
+    tertiary_muscles=["triceps"]. Passing ANY tier REPLACES the whole mapping (a muscle
+    listed in two tiers lands in the higher one), so send every tier you want kept. Use
+    the canonical muscle labels so recency lines up (they mirror the imported library's
+    vocabulary): abdominals, abductors, adductors, biceps, calves, chest, forearms,
+    glutes, hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
+    triceps. Returns the exercise_id and the fields updated."""
+    return _upsert_exercise(
+        name=name, exercise_id=exercise_id, category=category, equipment=equipment,
+        muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
+        technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
+        video_link=video_link, image_link=image_link, slug=slug, force=force, level=level,
+        mechanic=mechanic, in_rotation=in_rotation, allow_create=False)
+
+
+def create_exercise(name: str, category: Optional[str] = None, equipment: Optional[str] = None,
+                    muscles: Optional[list[str]] = None,
+                    secondary_muscles: Optional[list[str]] = None,
+                    tertiary_muscles: Optional[list[str]] = None,
+                    technique_notes: Optional[str] = None,
+                    common_mistakes: Optional[str] = None,
+                    cautions: Optional[str] = None,
+                    video_link: Optional[str] = None,
+                    image_link: Optional[str] = None,
+                    slug: Optional[str] = None,
+                    force: Optional[str] = None,
+                    level: Optional[str] = None,
+                    mechanic: Optional[str] = None,
+                    in_rotation: Optional[bool] = None) -> dict:
+    """Add a new exercise to the library — the trusted, NON-tool write path: the website's
+    manual add form and the bulk importer (scripts/import_exercises.py) are the only
+    callers, so the assistant (whose save_exercise can't create) never grows the catalog.
+    A name already on file is updated rather than duplicated. `in_rotation` is left
+    untouched by default (None) — the import keeps new library entries out of the rotation,
+    while the add form passes in_rotation=True so a movement the user deliberately adds is
+    ready to program. Returns like save_exercise."""
+    return _upsert_exercise(
+        name=name, exercise_id=None, category=category, equipment=equipment,
+        muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
+        technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
+        video_link=video_link, image_link=image_link, slug=slug, force=force, level=level,
+        mechanic=mechanic, in_rotation=in_rotation, allow_create=True)
 
 
 @trainer_mcp.tool()
@@ -1732,23 +1783,21 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     Each item in `exercises` is:
         {
           "name": "Leg Press",
-          "muscles": ["quadriceps", "glutes"],   # optional; seeds the catalog if NEW
           "sets": [
             {"weight_lbs": 180, "reps": 10, "rpe": 7, "note": ""},
             {"weight_lbs": 180, "reps": 10, "rpe": 8},
             {"weight_lbs": 180, "reps": 8,  "rpe": 9.5, "note": "last one was a grind"}
           ]
         }
-    Names are resolved against the catalog case-insensitively; an unknown name is
-    auto-stubbed as a new exercise (using `muscles` if given) so logging never
-    blocks. Any auto-stubbed names come back under `new_exercises` (and `created` per
-    item) with EMPTY technique notes — enrich each one right away with save_exercise
-    (technique_notes, common_mistakes, cautions) so the catalog isn't left bare and the
-    /trainer page stops showing "No saved technique notes yet". weight_lbs is null for
-    bodyweight/cardio.
+    Names resolve against the CLOSED catalog (fuzzily, so a near-spelling lands on the
+    right lift). The model never invents an exercise: a name that doesn't match an
+    existing one is SKIPPED and returned under `unmatched` with its closest `candidates`
+    — re-log it under one of those, or have the user add the movement on the library page
+    (the only way the catalog grows). The matched exercises still log (and join the
+    rotation), so capture isn't lost. weight_lbs is null for bodyweight/cardio.
     rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
-    judge whether to add weight next time. Returns per-exercise ids and which were
-    newly created.
+    judge whether to add weight next time. Returns the logged exercises (with the
+    catalog's canonical names) and any `unmatched`.
 
     CARDIO (running, walking, rowing, cycling): log it as an exercise too — give it
     `muscles: []` (so it's a true cardio entry, not counted in muscle recency) and
@@ -1787,22 +1836,18 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 "INSERT INTO workouts(workout_date, focus, feeling, notes, created_at) VALUES (?,?,?,?,?)",
                 (wd, focus, feeling, notes, now()),
             ).lastrowid
-        results = []
+        results, unmatched = [], []
         for ex in exercises:
             name = (ex.get("name") or "").strip()
             if not name:
                 continue
             row = _resolve_exercise(conn, name)
-            created = False
-            if row:
-                eid = row["id"]
-            else:
-                eid = conn.execute(
-                    "INSERT INTO exercises(name, created_at) VALUES (?,?)",
-                    (name, now()),
-                ).lastrowid
-                _set_muscles(conn, eid, ex.get("muscles"), None)
-                created = True
+            if not row:
+                # Closed catalog: don't invent the exercise. Skip its sets and hand back
+                # the nearest real names so the model re-logs under one that exists.
+                unmatched.append({"name": name, "candidates": _match_exercises(conn, name)})
+                continue
+            eid = row["id"]
             # A logged movement is one they actually do → it joins the rotation (the pool
             # the trainer programs from). Pruning stays manual via set_rotation.
             conn.execute("UPDATE exercises SET in_rotation=1 WHERE id=?", (eid,))
@@ -1820,11 +1865,13 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                      s.get("rpe"), s.get("duration_seconds"),
                      s.get("distance_miles"), s.get("note")),
                 )
-            results.append({"exercise_id": eid, "name": name,
-                            "sets": len(ex.get("sets") or []), "created": created})
-    return {"workout_id": wid, "workout_date": wd, "exercises": results,
-            "new_exercises": [r["name"] for r in results if r["created"]],
-            "appended": workout_id is not None}
+            results.append({"exercise_id": eid, "name": row["name"],
+                            "sets": len(ex.get("sets") or [])})
+    out = {"workout_id": wid, "workout_date": wd, "exercises": results,
+           "appended": workout_id is not None}
+    if unmatched:
+        out["unmatched"] = unmatched
+    return out
 
 
 @trainer_mcp.tool()
@@ -2064,25 +2111,23 @@ def _bad_planned(exercises: list[dict]) -> Optional[dict]:
     return None
 
 
-def _insert_planned(conn: sqlite3.Connection, wid: int, exercises: list[dict]) -> list[dict]:
-    """Append pending (planned) sets to a workout. Resolves/auto-stubs each exercise
-    (seeding muscles for new ones) and continues set numbering per exercise — the same
-    catalog path log_workout uses, but writing targets + status='pending'."""
-    results = []
+def _insert_planned(conn: sqlite3.Connection, wid: int,
+                    exercises: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Append pending (planned) sets to a workout. Resolves each exercise against the
+    CLOSED catalog (no auto-stub) and continues set numbering per exercise — the same
+    path log_workout uses, but writing targets + status='pending'. Returns
+    (results, unmatched): names that don't resolve are skipped and returned with their
+    closest candidates rather than invented."""
+    results, unmatched = [], []
     for ex in exercises:
         name = (ex.get("name") or "").strip()
         if not name:
             continue
         row = _resolve_exercise(conn, name)
-        created = False
-        if row:
-            eid = row["id"]
-        else:
-            eid = conn.execute(
-                "INSERT INTO exercises(name, created_at) VALUES (?,?)", (name, now()),
-            ).lastrowid
-            _set_muscles(conn, eid, ex.get("muscles"), None)
-            created = True
+        if not row:
+            unmatched.append({"name": name, "candidates": _match_exercises(conn, name)})
+            continue
+        eid = row["id"]
         planned = _expand_planned_sets(ex)
         start = (conn.execute(
             "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
@@ -2095,20 +2140,20 @@ def _insert_planned(conn: sqlite3.Connection, wid: int, exercises: list[dict]) -
                    VALUES (?,?,?,?,?, 'pending', ?)""",
                 (wid, eid, i, s.get("target_weight_lbs"), s.get("target_reps"), s.get("note")),
             )
-        results.append({"exercise_id": eid, "name": name,
-                        "planned_sets": len(planned), "created": created})
-    return results
+        results.append({"exercise_id": eid, "name": row["name"],
+                        "planned_sets": len(planned)})
+    return results, unmatched
 
 
 def _plan_payload(conn: sqlite3.Connection, wid: int,
-                  new_exercises: Optional[list[str]] = None) -> dict:
+                  unmatched: Optional[list[dict]] = None) -> dict:
     """The plan for one workout: exercises in insertion order, each with its sets
     (target + actual + status), plus a done/total progress count (skipped sets are
     excluded from the total). Used by every plan tool's return and by the web UI.
 
-    `new_exercises` (names auto-stubbed by this call) is surfaced so the model knows
-    which catalog entries are bare and should be enriched with technique notes via
-    save_exercise — the same `new_exercises` signal log_workout returns."""
+    `unmatched` (names this call couldn't resolve to a real catalog exercise, each with
+    its closest `candidates`) is surfaced so the model re-issues them under a name that
+    exists instead of inventing one — the catalog is closed to the assistant."""
     w = conn.execute(
         "SELECT id, workout_date, focus, feeling, notes, status FROM workouts WHERE id=?",
         (wid,),
@@ -2145,8 +2190,8 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
                "workout_date": w["workout_date"], "focus": w["focus"],
                "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
                "progress": {"done": done, "total": total}, "exercises": exercises}
-    if new_exercises:
-        payload["new_exercises"] = new_exercises
+    if unmatched:
+        payload["unmatched"] = unmatched
     return payload
 
 
@@ -2214,11 +2259,12 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
     or the shorthand for N identical sets:
         {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
          "target_reps": 12, "target_weight_lbs": 25}
-    Unknown names are auto-stubbed (seeded with `muscles`). Use the canonical muscle
-    labels (chest, lats, quadriceps, …) so recency lines up. Any auto-stubbed names come back
-    under `new_exercises` with EMPTY technique notes — enrich each one with save_exercise
-    (technique_notes, common_mistakes, cautions) so the catalog stays coached and the
-    /trainer page doesn't show "No saved technique notes yet".
+    Pick the movements from the library with `exercises(muscle=..., rotation_only=True)` —
+    the catalog is closed, so program only names it already holds (prefer the rotation).
+    Names resolve fuzzily; a name with no real match is SKIPPED and returned under
+    `unmatched` with its closest `candidates` — re-issue it under one of those, or have the
+    user add the movement on the library page. Matched exercises are still planned, so the
+    rest of the routine lands.
 
     Only ONE plan is active at a time. If a plan is already active, this APPENDS the new
     exercises to it (focus/notes ignored) — unless `replace=True`, which discards the
@@ -2238,9 +2284,8 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
                    VALUES (?,?,?, 'active', ?)""",
                 (today(), focus, notes, now()),
             ).lastrowid
-        results = _insert_planned(conn, wid, exercises)
-        new = [r["name"] for r in results if r["created"]]
-        return _plan_payload(conn, wid, new_exercises=new)
+        results, unmatched = _insert_planned(conn, wid, exercises)
+        return _plan_payload(conn, wid, unmatched=unmatched)
 
 
 @trainer_mcp.tool()
@@ -2285,7 +2330,6 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
 
 @trainer_mcp.tool()
 def swap_exercise(from_exercise: str, to_exercise: str,
-                  muscles: Optional[list[str]] = None,
                   sets: Optional[list[dict]] = None,
                   workout_id: Optional[int] = None) -> dict:
     """Substitute an exercise in the active plan — for a busy/broken machine, a tweak,
@@ -2304,9 +2348,9 @@ def swap_exercise(from_exercise: str, to_exercise: str,
     By default the substitute mirrors the count and targets of the swapped-out pending
     sets — but those targets came from a DIFFERENT exercise, so pass `sets`
     (e.g. [{"target_weight_lbs": 60, "target_reps": 10}, …]) whenever the right weight
-    differs (it usually does). Unknown `to_exercise` is auto-stubbed with `muscles` and
-    returned under `new_exercises` — enrich it with save_exercise (technique_notes,
-    common_mistakes, cautions) so the new catalog entry isn't left bare.
+    differs (it usually does). `to_exercise` MUST already be in the closed library — if it
+    doesn't resolve, the swap is refused with the closest `candidates` (and nothing is
+    skipped); pick one of those or have the user add it on the library page.
     Returns the updated plan."""
     with db() as conn:
         w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
@@ -2316,6 +2360,11 @@ def swap_exercise(from_exercise: str, to_exercise: str,
         frm = _resolve_exercise(conn, from_exercise)
         if not frm:
             return {"error": f"{from_exercise!r} isn't in this plan"}
+        to = _resolve_exercise(conn, to_exercise)
+        if not to:
+            return {"error": f"{to_exercise!r} isn't in the library — pick a peer from "
+                             "exercises(similar_to=...) or add it on the library page",
+                    "candidates": _match_exercises(conn, to_exercise)}
         pend = conn.execute(
             """SELECT target_weight_lbs, target_reps FROM sets
                WHERE workout_id=? AND exercise_id=? AND status='pending'
@@ -2328,26 +2377,26 @@ def swap_exercise(from_exercise: str, to_exercise: str,
             {"target_weight_lbs": p["target_weight_lbs"], "target_reps": p["target_reps"]}
             for p in pend
         ]
-        spec = [{"name": to_exercise, "muscles": muscles, "sets": sub_sets}]
+        spec = [{"name": to["name"], "sets": sub_sets}]
         if err := _bad_planned(spec):
             return err
         conn.execute(
             "UPDATE sets SET status='skipped' WHERE workout_id=? AND exercise_id=? AND status='pending'",
             (w["id"], frm["id"]),
         )
-        results = _insert_planned(conn, w["id"], spec)
-        new = [r["name"] for r in results if r["created"]]
-        return _plan_payload(conn, w["id"], new_exercises=new)
+        _results, unmatched = _insert_planned(conn, w["id"], spec)
+        return _plan_payload(conn, w["id"], unmatched=unmatched)
 
 
 @trainer_mcp.tool()
 def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict:
     """Append exercises (or extra sets of an exercise already present) to the active
     plan mid-session — e.g. "add some calf raises" or "give me one more drop set". Same
-    `exercises` shape as start_workout_plan. Errors if no plan is active. Returns the
-    updated plan; any newly auto-stubbed names come back under `new_exercises` — enrich
-    each with save_exercise (technique_notes, common_mistakes, cautions) so the catalog
-    isn't left bare. (To retarget an existing pending set, use update_set with
+    `exercises` shape as start_workout_plan; pick the movements from the library with
+    `exercises(...)`. Errors if no plan is active. Names resolve against the closed
+    catalog — a name that doesn't match comes back under `unmatched` with its closest
+    `candidates` and is not added; re-issue it under one of those (or have the user add it
+    on the library page). (To retarget an existing pending set, use update_set with
     target_weight_lbs/target_reps; to drop one, delete_record(kind="set").)"""
     if err := _bad_planned(exercises):
         return err
@@ -2356,9 +2405,8 @@ def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict
              if workout_id is not None else _active_workout(conn))
         if not w:
             return {"error": "no active workout plan; start one with start_workout_plan"}
-        results = _insert_planned(conn, w["id"], exercises)
-        new = [r["name"] for r in results if r["created"]]
-        return _plan_payload(conn, w["id"], new_exercises=new)
+        results, unmatched = _insert_planned(conn, w["id"], exercises)
+        return _plan_payload(conn, w["id"], unmatched=unmatched)
 
 
 @trainer_mcp.tool()
