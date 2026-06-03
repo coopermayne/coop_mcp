@@ -373,6 +373,11 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             d = mmap.setdefault(mr["exercise_id"],
                                 {"primary": [], "secondary": [], "tertiary": []})
             d.setdefault(mr["role"], []).append(mr["muscle"])
+        # AKAs per exercise, so the name search also matches alternative names and the
+        # card can show them ({exercise_id: [alias, ...]}).
+        akamap: dict[int, list[str]] = {}
+        for ar in conn.execute("SELECT exercise_id, alias FROM exercise_aliases ORDER BY alias"):
+            akamap.setdefault(ar["exercise_id"], []).append(ar["alias"])
         # training volume per exercise (completed sets only): session count + last done
         vol: dict[int, dict] = {}
         for vr in conn.execute(
@@ -391,16 +396,18 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             rotation_count += 1
         m = mmap.get(r["id"], {"primary": [], "secondary": [], "tertiary": []})
         all_m = m["primary"] + m["secondary"] + m["tertiary"]
+        aka = akamap.get(r["id"], [])
         if rotation and not in_rotation:
             continue
         if muscle and muscle not in all_m:
             continue
-        if q and q.lower() not in r["name"].lower():
+        if q and q.lower() not in r["name"].lower() \
+                and not any(q.lower() in a for a in aka):
             continue
         v = vol.get(r["id"], {"sessions": 0, "last_done": None})
         out.append({
             "exercise_id": r["id"], "name": r["name"], "category": r["category"],
-            "equipment": r["equipment"], "muscles": m, "in_rotation": in_rotation,
+            "equipment": r["equipment"], "muscles": m, "aka": aka, "in_rotation": in_rotation,
             "level": r["level"], "mechanic": r["mechanic"], "force": r["force"],
             "technique_notes": r["technique_notes"],
             "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],

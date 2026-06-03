@@ -114,6 +114,10 @@ _EXERCISE_INSTRUCTIONS = (
     "- technique_notes: a concise setup + execution walkthrough (the key cues).\n"
     "- common_mistakes: the usual form errors.\n"
     "- cautions: injury / safety caveats.\n"
+    "- aliases: common alternative names this movement is searched/spoken by (AKAs), "
+    "lowercased — e.g. a Romanian Deadlift gets ['rdl','stiff leg deadlift']. Fill the "
+    "obvious ones from your own knowledge so the lift is findable by whatever the user "
+    "calls it; don't repeat the canonical name.\n"
     "- video_link: optional, only if the user hands you a URL. Never ask for images.\n\n"
     "How to work:\n"
     "1. ALWAYS call check_library FIRST with the movement name (and any obvious variant) "
@@ -131,7 +135,7 @@ _EXERCISE_INSTRUCTIONS = (
     "propose sensible values and proceed.\n"
     "4. PREVIEW before saving — do NOT call create_exercise yet. Lay out the full record "
     "for the user to review: name, category, equipment, force, level, mechanic, the three "
-    "muscle tiers, technique_notes, common_mistakes, and cautions (use a compact "
+    "muscle tiers, aliases (AKAs), technique_notes, common_mistakes, and cautions (use a compact "
     "field-by-field layout, e.g. a markdown list or table, so every field is visible). "
     "Lead the preview with the dedup result from check_library: either confirm nothing "
     "close enough is already in the library, or name the close-but-different entries you "
@@ -168,7 +172,8 @@ def _exercise_check(name: str) -> dict:
 def _exercise_create(name: str, category=None, equipment=None, muscles=None,
                      secondary_muscles=None, tertiary_muscles=None,
                      technique_notes=None, common_mistakes=None, cautions=None,
-                     force=None, level=None, mechanic=None, video_link=None) -> dict:
+                     force=None, level=None, mechanic=None, aliases=None,
+                     video_link=None) -> dict:
     """Create the exercise through the website's trusted path (server.create_exercise),
     defaulting it into the user's rotation just as the old manual add form did. Image
     links are intentionally omitted — this surface doesn't handle images."""
@@ -177,7 +182,7 @@ def _exercise_create(name: str, category=None, equipment=None, muscles=None,
         muscles=muscles, secondary_muscles=secondary_muscles,
         tertiary_muscles=tertiary_muscles, technique_notes=technique_notes,
         common_mistakes=common_mistakes, cautions=cautions, force=force, level=level,
-        mechanic=mechanic, video_link=video_link)
+        mechanic=mechanic, aliases=aliases, video_link=video_link)
 
 
 def _exercise_tools():
@@ -225,6 +230,10 @@ def _exercise_tools():
                                         "description": "Concise setup + execution walkthrough / key cues."},
                     "common_mistakes": {"type": "string", "description": "The usual form errors."},
                     "cautions": {"type": "string", "description": "Injury / safety caveats."},
+                    "aliases": {"type": "array", "items": {"type": "string"},
+                                "description": "Common alternative names this movement is "
+                                "searched/spoken by (AKAs), e.g. ['rdl','stiff leg deadlift']. "
+                                "Lowercased; don't repeat the canonical name."},
                     "video_link": {"type": "string",
                                    "description": "Optional URL, only if the user provides one."},
                 },

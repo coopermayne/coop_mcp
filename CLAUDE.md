@@ -222,6 +222,14 @@ working.
   *enriches* existing rows or toggles `in_rotation`.
   `exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
   mechanic).
+- `exercise_aliases` — AKAs (common alternative names) per exercise, the `aliases` table's
+  twin for the catalog: one canonical row, many surface forms ("rdl"→Romanian Deadlift,
+  "bench"→Barbell Bench Press). `_resolve_exercise`/`_match_exercises` score against the
+  canonical name AND its AKAs, so a lift resolves and the library search surfaces it by
+  whatever the user calls it. Stored lowercased; an AKA never creates a row (catalog stays
+  closed). Set via `save_exercise`/`create_exercise`'s `aliases=`; the default-library AKAs
+  are seeded by `scripts/seed_exercise_akas.py` (keyed by exact NAME, not id — ids differ
+  between dev and prod — so it's safe to run against production; merge, idempotent).
 - `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a
   plain GROUP BY. `role` is one of three EMPHASIS tiers — primary|secondary|tertiary
   ("how hard" each muscle is worked, e.g. a thruster = shoulders primary, quads/glutes
