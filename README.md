@@ -301,21 +301,56 @@ If the connector shows "disconnected" after adding Google: usually the redirect 
 Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 `TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
 
-## Web frontend (read-only)
+## Web frontend
 
-`webapp/` is a small **read-only** browser UI for reviewing what's been recorded —
-journal entries (with FTS search), workout sessions, drinking trends, and people. It
-has no forms and no chat: capture, resolution and coaching all stay in the conversation
-with Claude. It reads the **same** SQLite DB and reuses `server.py`'s retrieval
-functions directly (the single source of truth for data shapes), so it never duplicates
-query logic and never writes.
+`webapp/` is a small browser UI for reviewing what's been recorded — journal entries
+(with FTS search), workout sessions, drinking trends, and people. The browse/reading
+pages are **read-only**: they read the **same** SQLite DB and reuse `server.py`'s
+retrieval functions directly (the single source of truth for data shapes), so they never
+duplicate query logic. Writes are confined to two purpose-built surfaces: the **journal
+chat panel** (AI) and the **direct drinks form** (no AI) — see below.
 
 Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 `workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
 uppercase `tracking-widest` labels, stat-tile grids.
 
-Pages: dashboard · journal (+ `?q=` search) · entry detail · workouts · drinking ·
-people · person detail.
+Pages: dashboard · journal (+ `?q=` search, + AI chat panel) · entry detail · workouts ·
+drinking (+ direct entry) · people · person detail.
+
+### In-app AI chat — toolset-scoped
+
+Off by default; turns on only when `ANTHROPIC_API_KEY` is set. It's the web app acting as
+an MCP *client*: an agent loop (`webapp/chat.py`) streams `anthropic.messages` and
+dispatches each `tool_use` to the **same** `@mcp.tool()` functions in `server.py` — so
+the project's rule holds, there's still no LLM *inside* the server; the model lives in the
+web app exactly like Claude Desktop does. The system prompt and tool schemas are lifted
+live from each server's `instructions` + `list_tools()`, so editing a docstring in
+`server.py` updates the chat with no duplication. Conversations are in-memory per
+`(agent, session)` (lost on restart — fine for a single user). Tool calls surface as
+chips linking to the affected page.
+
+Each surface is bound to **one** toolset (smaller tool surface = less latency, the same
+reason the MCP servers are split):
+
+- **`journal`** — the journal server's people/entry tools, *minus* the drink tools
+  (drinks are direct entry now). Lives as a **slide-in panel** on the `/journal` page
+  (near-fullscreen on mobile, a right-edge side panel on desktop). Posts to
+  `/chat/journal/send`.
+- **`trainer`** — the trainer server's workout tools. Will get its **own page** linked
+  from the workout page (longer, workout-length conversations). Wired in `chat.py`; the
+  page itself is a later round.
+
+Env: `ANTHROPIC_API_KEY` (required to enable), `CHAT_MODEL` (default
+`claude-sonnet-4-6`). Adds `anthropic` to `webapp/requirements.txt`. The web app also
+auto-loads a git-ignored `.env` at the project root (a tiny zero-dep loader in
+`app.py`; a real shell/Coolify var still wins, a present-but-blank one yields to `.env`).
+
+### Direct drinks entry — no AI
+
+Drinks are simple structured data, so the `/drinking` page has its own write form:
+quick-add buttons (`+1 beer/wine/cocktail`) and a custom amount/kind/date/notes form, both
+POSTing to `/drinking/add`, which calls `server.log_drinks` and redirects back
+(Post/Redirect/Get). `server.log_drinks` does the validation. No LLM, no chat.
 
 **Same process as the MCP server.** In production one container runs both:
 `webapp/combined.py` mounts the MCP app at the origin root (so `/mcp` and its

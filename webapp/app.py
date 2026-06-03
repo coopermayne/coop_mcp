@@ -16,6 +16,7 @@ Env: PORT, WEB_HOST, WEB_BASE_URL (public origin, for the OAuth redirect),
 """
 
 import html
+import json
 import os
 import re
 import sys
@@ -29,8 +30,35 @@ for p in (HERE, ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+
+def _load_dotenv():
+    """Minimal, zero-dependency `.env` loader for local dev. Reads `KEY=value`
+    lines from a `.env` at the project root (`.env` is git-ignored, so it's the
+    safe home for secrets like ANTHROPIC_API_KEY). A *non-empty* existing env var
+    always wins, so a real shell `export` or a Coolify-set var is never overridden
+    — but a present-but-blank var (e.g. `ANTHROPIC_API_KEY=''` exported by some
+    shells) is treated as unset so `.env` can fill it. Must run before the imports
+    below read their config (e.g. chat.ENABLED)."""
+    path = os.path.join(ROOT, ".env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip('"').strip("'")
+                if not os.environ.get(key):  # unset OR present-but-empty
+                    os.environ[key] = val
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv()
+
 import data            # noqa: E402  local data layer
 import server          # noqa: E402  reused for db()/reads and ALLOWED_EMAILS
+import chat            # noqa: E402  in-app AI chat agent loop (the one write path)
 
 from fastapi import FastAPI, Request                          # noqa: E402
 from fastapi.responses import RedirectResponse                # noqa: E402
@@ -180,6 +208,7 @@ def base_path(request: Request) -> str:
 
 def page(request: Request, template: str, active: str = "", status_code: int = 200, **ctx):
     ctx.update(active=active, auth_enabled=AUTH_ENABLED, show_logout=SHOW_LOGOUT,
+               chat_enabled=chat.ENABLED,
                user=request.session.get("email"), base=base_path(request))
     return templates.TemplateResponse(request=request, name=template,
                                       context=ctx, status_code=status_code)
@@ -343,10 +372,87 @@ async def workouts(request: Request):
 
 
 @app.get("/drinking")
-async def drinking(request: Request):
+async def drinking(request: Request, error: str = ""):
     s = data.drinking(days=30)
     return page(request, "drinking.html", active="drinking",
-                s=s, log=data.recent_drinks(limit=30))
+                s=s, log=data.recent_drinks(limit=30),
+                today=server.today(), error=error)
+
+
+@app.post("/drinking/add")
+async def drinking_add(request: Request):
+    """Direct drink entry — the one write on the drinking page. Drinks are simple
+    enough that they don't need the AI: this calls server.log_drinks straight and
+    redirects back (Post/Redirect/Get). server.log_drinks does the validation."""
+    form = await request.form()
+    base = base_path(request)
+    raw = (form.get("standard_drinks") or "").strip()
+    try:
+        amount = float(raw)
+    except ValueError:
+        return RedirectResponse(base + "/drinking?error=Enter+a+number+of+drinks.",
+                                status_code=303)
+    res = server.log_drinks(
+        standard_drinks=amount,
+        drink_date=(form.get("drink_date") or "").strip() or None,
+        kind=(form.get("kind") or "").strip() or None,
+        notes=(form.get("notes") or "").strip() or None,
+    )
+    if isinstance(res, dict) and res.get("error"):
+        from urllib.parse import quote_plus
+        return RedirectResponse(base + "/drinking?error=" + quote_plus(res["error"]),
+                                status_code=303)
+    return RedirectResponse(base + "/drinking", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+# AI chat — a write path for prose (the journal). Browse pages above stay
+# read-only; drinks have their own direct-entry form. Each surface is scoped to
+# one toolset: the `journal` panel (journal page) and the `trainer` page get
+# different tools. Gated by RequireAuth (these paths aren't in PUBLIC_PATHS).
+# --------------------------------------------------------------------------- #
+
+def _chat_id(request: Request) -> str:
+    """Per-session conversation key, stored small in the signed cookie (the
+    history itself lives in chat._CONVERSATIONS, not the cookie)."""
+    cid = request.session.get("chat_id")
+    if not cid:
+        import uuid
+        cid = uuid.uuid4().hex
+        request.session["chat_id"] = cid
+    return cid
+
+
+@app.post("/chat/{agent}/send")
+async def chat_send(request: Request, agent: str):
+    from fastapi.responses import JSONResponse, StreamingResponse
+    if not chat.ENABLED:
+        return JSONResponse({"error": "Chat is not configured."}, status_code=503)
+    if not chat.is_agent(agent):
+        return JSONResponse({"error": f"Unknown chat agent '{agent}'."}, status_code=404)
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "Empty message."}, status_code=400)
+    cid = _chat_id(request)
+    base = base_path(request)
+
+    async def event_stream():
+        async for ev in chat.run_turn(agent, cid, text):
+            if ev.get("href"):  # prefix tool-chip links with the mount path
+                ev["href"] = base + ev["href"]
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.post("/chat/{agent}/reset")
+async def chat_reset(request: Request, agent: str):
+    from fastapi.responses import JSONResponse
+    chat.reset(agent, _chat_id(request))
+    return JSONResponse({"status": "ok"})
 
 
 @app.get("/people")
