@@ -141,31 +141,46 @@ Two ways to record training:
     muscle — add_to_plan tacks on more, update_set
     retargets a pending set, and finish_workout closes it out (leftover pending sets are
     skipped). get_workout_plan returns the current state. Only ONE plan is active at a
-    time. Design the routine yourself from the briefing — progress what was easy (low
-    RPE), hold/deload what was hard, and keep staple lifts so the tracked data stays
-    comparable; vary exercises only modestly. Program a substantial session: aim for
-    roughly 21-26 working sets total, built from about 6-8 different exercises at 3-4
-    sets each, spread across the muscle groups that are due.
+    time. Design the routine yourself from the briefing, choosing movements from the
+    user's `rotation` — progress what was easy (low RPE), hold/deload what was hard, and
+    keep staple lifts so the tracked data stays comparable; vary exercises only modestly.
+    Program a substantial session: aim for roughly 21-26 working sets total, built from
+    about 6-8 different exercises at 3-4 sets each, spread across the muscle groups that
+    are due.
   - POST-HOC (log what already happened): log_workout records a finished session (or
     appends to one) in a single call — use it when the user just tells you what they
     did rather than working a plan live.
 Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
 yet-done set doesn't, so the briefing stays honest mid-session.
 
-The exercise catalog is also a LIBRARY the user browses at /trainer/library — every
-movement they do or want to introduce later, with its muscles, equipment, technique, and
-a form gif/video. Keep it coached, not bare. Whenever you put an exercise into a workout
-or plan and it's NEW to the catalog (the return lists it under `new_exercises`),
-immediately enrich that entry with save_exercise from your own knowledge of the movement:
-the muscles it works in three EMPHASIS tiers (muscles = primary, secondary_muscles,
-tertiary_muscles — e.g. a Kettlebell Thruster is shoulders primary, quads/glutes
-secondary, triceps tertiary), the `equipment` it needs, technique_notes (how to do it,
-the key cues), common_mistakes, cautions (especially the user's left-shoulder limits),
-and a video_link and/or image_link (a looping form gif) if you have a good one. Don't
-make the user ask; an empty stub is why "No saved technique notes yet" appears. Do this
-once per exercise — a name already in the catalog keeps what it has and needs no re-write.
-The user can also just ask you to add exercises to the library they don't do yet; treat
-that as a save_exercise with the same full enrichment.
+The catalog has two layers — a LIBRARY and a ROTATION:
+  - LIBRARY: the whole catalog, PRE-LOADED with ~870 public-domain movements from
+    free-exercise-db (via scripts/import_exercises.py), each carrying muscles, equipment,
+    a demo image, and step-by-step technique. It's a reference the user searches/browses
+    at /trainer/library. Almost any movement you mention is already here with full data —
+    look it up with `exercises` rather than re-deriving it.
+  - ROTATION: the curated subset (in_rotation) the user actually trains. get_fitness_
+    briefing returns it as `rotation`, and it is the ONLY pool you PROGRAM ROUTINES FROM.
+    Build start_workout_plan / log_workout sessions out of rotation movements. If you want
+    something NOT in the rotation, don't silently slip it in — propose it to the user and,
+    if they agree, set_rotation to add it first (you can surface candidates from the wider
+    library with exercises(muscle=…)). Logging a movement the user actually did adds it to
+    the rotation automatically, so the rotation grows from real training.
+
+Keep entries coached, not bare. When a movement is genuinely NEW to the catalog (a tool
+returns it under `new_exercises`), immediately enrich it with save_exercise from your own
+knowledge, matching the imported entries' shape: the muscles in three EMPHASIS tiers
+(muscles = primary, secondary_muscles, tertiary_muscles — e.g. a Kettlebell Thruster is
+shoulders primary, quadriceps/glutes secondary, triceps tertiary), the `equipment` it
+needs, technique_notes (the key cues), common_mistakes, cautions (especially the user's
+left-shoulder limits), and a video_link and/or image_link (a looping form gif) if you have
+a good one. Use the canonical muscle labels (they mirror the library's vocabulary):
+abdominals, abductors, adductors, biceps, calves, chest, forearms, glutes, hamstrings,
+lats, lower back, middle back, neck, quadriceps, shoulders, traps, triceps. Don't make the
+user ask; an empty stub is why "No saved technique notes yet" appears. Do this once per
+exercise — a name already in the catalog keeps what it has. The user can also just ask you
+to add movements to their rotation ("add Bulgarian split squats"); that's set_rotation,
+plus save_exercise enrichment if the entry is somehow bare.
 
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
@@ -278,26 +293,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
 -- Personal trainer. `exercises` is a catalog of stable exercise ENTITIES
 -- (like people): technique lives here so the model can coach form. Muscles
 -- are normalized into a child table so "what's rested vs worked" is a plain
--- SQL aggregate, not an LLM guess. `workouts`/`sets` are the two-level log
--- (session + per-set weight/reps/rpe), mirroring entries/mentions. The
--- server stores and retrieves; progression judgment happens in conversation.
+-- SQL aggregate, not an LLM guess. Its columns mirror the free-exercise-db
+-- dataset (slug/force/level/mechanic/equipment/category + primary/secondary
+-- muscles + instructions) so the public-domain LIBRARY imports 1:1; our own
+-- coaching layer (common_mistakes, cautions, video_link) sits on top. The
+-- `in_rotation` flag marks the curated subset the trainer actually programs
+-- from. `workouts`/`sets` are the two-level log (session + per-set
+-- weight/reps/rpe), mirroring entries/mentions. The server stores and
+-- retrieves; progression judgment happens in conversation.
 -- ----------------------------------------------------------------------- --
 CREATE TABLE IF NOT EXISTS exercises (
     id              INTEGER PRIMARY KEY,
     name            TEXT NOT NULL UNIQUE,
-    category        TEXT,             -- 'strength' | 'cardio' | 'prehab' | 'mobility'
+    slug            TEXT,             -- free-exercise-db id; stable external key + image base
+    category        TEXT,             -- 'strength' | 'cardio' | 'stretching' | 'plyometrics' | ...
+    force           TEXT,             -- 'push' | 'pull' | 'static'
+    level           TEXT,             -- 'beginner' | 'intermediate' | 'expert'
+    mechanic        TEXT,             -- 'compound' | 'isolation' (also guides like-for-like swaps)
     equipment       TEXT,
     technique_notes TEXT,
     common_mistakes TEXT,
     cautions        TEXT,             -- injury / shoulder considerations
     video_link      TEXT,
     image_link      TEXT,             -- gif / still of proper technique (loops inline in the UI)
+    in_rotation     INTEGER NOT NULL DEFAULT 0,  -- 1 = in the user's curated programming pool
     created_at      TEXT NOT NULL
 );
+-- NB: idx_exercises_rotation is created in init_db(), AFTER the ALTER that adds
+-- in_rotation to pre-existing DBs (it can't live here or executescript fails on them).
 
 CREATE TABLE IF NOT EXISTS exercise_muscles (
     exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
-    muscle      TEXT NOT NULL,        -- canonical lowercase, e.g. 'chest', 'lats', 'quads'
+    muscle      TEXT NOT NULL,        -- canonical lowercase, e.g. 'chest', 'lats', 'quadriceps'
     role        TEXT NOT NULL DEFAULT 'primary',  -- 'primary' | 'secondary' | 'tertiary' (emphasis tier)
     PRIMARY KEY (exercise_id, muscle)
 );
@@ -417,6 +444,25 @@ def init_db() -> None:
         xcols = [r["name"] for r in conn.execute("PRAGMA table_info(exercises)")]
         if "image_link" not in xcols:
             conn.execute("ALTER TABLE exercises ADD COLUMN image_link TEXT")
+        # Columns added when the catalog was lined up with free-exercise-db + rotation.
+        for col, decl in (("slug", "TEXT"), ("force", "TEXT"), ("level", "TEXT"),
+                          ("mechanic", "TEXT"),
+                          ("in_rotation", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in xcols:
+                conn.execute(f"ALTER TABLE exercises ADD COLUMN {col} {decl}")
+        # Index lives here (not in SCHEMA) so it's created only after in_rotation exists.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_exercises_rotation ON exercises(in_rotation)")
+        # Muscle vocabulary now mirrors free-exercise-db (see MUSCLES); rename any rows
+        # stored under the old labels so existing data still aggregates. OR IGNORE skips a
+        # rename that would collide with a row already in the target tier; the trailing
+        # DELETE then clears those now-redundant legacy rows. Idempotent (old labels gone
+        # after the first run).
+        for old, new in (("abs", "abdominals"), ("obliques", "abdominals"),
+                         ("quads", "quadriceps"), ("upper back", "middle back")):
+            conn.execute("UPDATE OR IGNORE exercise_muscles SET muscle=? WHERE muscle=?",
+                         (new, old))
+        conn.execute(
+            "DELETE FROM exercise_muscles WHERE muscle IN ('abs','obliques','quads','upper back')")
         # Backfill any legacy rows that predate the status column: existing workouts
         # and sets are completed history, so they read back as 'done'.
         conn.execute("UPDATE workouts SET status='done' WHERE status IS NULL OR status=''")
@@ -1169,12 +1215,14 @@ def get_briefing(recent_entries: int = 5) -> dict:
 # Drinking + trainer helpers
 # --------------------------------------------------------------------------- #
 
-# Canonical muscle vocabulary — kept small and consistent so recency/volume
-# aggregates line up. The model should map onto these labels when logging.
+# Canonical muscle vocabulary — kept consistent so recency/volume aggregates line up.
+# Deliberately MIRRORS the free-exercise-db vocabulary (scripts/import_exercises.py), so
+# the imported library, its per-muscle filters, and the model's own enrichment all use
+# one shared label set with no mapping. The model should use these labels when logging.
 MUSCLES = [
-    "chest", "upper back", "lats", "traps", "shoulders", "biceps", "triceps",
-    "forearms", "abs", "obliques", "lower back", "glutes", "quads",
-    "hamstrings", "calves",
+    "abdominals", "abductors", "adductors", "biceps", "calves", "chest",
+    "forearms", "glutes", "hamstrings", "lats", "lower back", "middle back",
+    "neck", "quadriceps", "shoulders", "traps", "triceps",
 ]
 
 
@@ -1414,11 +1462,16 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   common_mistakes: Optional[str] = None,
                   cautions: Optional[str] = None,
                   video_link: Optional[str] = None,
-                  image_link: Optional[str] = None) -> dict:
+                  image_link: Optional[str] = None,
+                  slug: Optional[str] = None,
+                  force: Optional[str] = None,
+                  level: Optional[str] = None,
+                  mechanic: Optional[str] = None,
+                  in_rotation: Optional[bool] = None) -> dict:
     """Create or enrich a catalog exercise (a stable entity, like a person) — the one
     write tool for the catalog, which doubles as the exercise LIBRARY (browsable at
-    /trainer/library). Fill an exercise in fully the first time you meet it: the lift
-    you do AND ones you plan to introduce later all belong here.
+    /trainer/library). The library comes PRE-LOADED from free-exercise-db, so a movement
+    is usually already here; this tool is mostly for enriching one or adding a new one.
 
     Target it by `exercise_id`, or by `name` (resolved case-insensitively): a KNOWN
     name updates that exercise, an UNKNOWN name creates it. The logging/planning tools
@@ -1427,19 +1480,25 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     enriching one with coaching content right after — how to do it (`technique_notes`),
     what to watch for (`common_mistakes`), injury caveats (`cautions`, e.g. the user's
     left-shoulder limits), the `equipment` it needs, and a `video_link` and/or
-    `image_link` (a looping gif/still of proper form). Filling these in is what keeps
-    the /trainer page from showing "No saved technique notes yet"; do it for every newly
-    created exercise. Only non-null scalar fields are written.
+    `image_link` (a looping gif/still of proper form). The dataset-aligned descriptors
+    `force` (push/pull/static), `level`, `mechanic` (compound/isolation), and `slug` round
+    out a record. Filling these in is what keeps the /trainer page from showing "No saved
+    technique notes yet"; do it for every newly created exercise. Only non-null fields are
+    written. Pass `in_rotation=True` to add it to the programming pool, but prefer the
+    dedicated `set_rotation` tool for that (and note logging a movement adds it for you).
 
     MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
     `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
     so "how hard each muscle is worked" is captured, e.g. a Kettlebell Thruster is
-    muscles=["shoulders"], secondary_muscles=["quads","glutes"],
+    muscles=["shoulders"], secondary_muscles=["quadriceps","glutes"],
     tertiary_muscles=["triceps"]. Passing ANY tier REPLACES the whole mapping (a muscle
     listed in two tiers lands in the higher one), so send every tier you want kept. Use
-    the canonical muscle labels so recency lines up: chest, upper back, lats, traps,
-    shoulders, biceps, triceps, forearms, abs, obliques, lower back, glutes, quads,
-    hamstrings, calves. Returns the exercise_id and whether it was newly created."""
+    the canonical muscle labels so recency lines up (they mirror the imported library's
+    vocabulary): abdominals, abductors, adductors, biceps, calves, chest, forearms,
+    glutes, hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
+    triceps. Returns the exercise_id and whether it was newly created."""
+    if in_rotation is not None:
+        in_rotation = int(bool(in_rotation))
     with db() as conn:
         if exercise_id is not None:
             row = conn.execute("SELECT id FROM exercises WHERE id=?", (exercise_id,)).fetchone()
@@ -1449,25 +1508,27 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
             row = _resolve_exercise(conn, name)
         else:
             return {"error": "pass name or exercise_id"}
+        # Writable scalar columns (everything but name/created_at and the muscle tiers).
+        fields = {"slug": slug, "category": category, "force": force, "level": level,
+                  "mechanic": mechanic, "equipment": equipment,
+                  "technique_notes": technique_notes, "common_mistakes": common_mistakes,
+                  "cautions": cautions, "video_link": video_link, "image_link": image_link,
+                  "in_rotation": in_rotation}
+        sets_ = {k: v for k, v in fields.items() if v is not None}
         if row:
             eid = row["id"]
             created = False
-            fields = {"category": category, "equipment": equipment,
-                      "technique_notes": technique_notes, "common_mistakes": common_mistakes,
-                      "cautions": cautions, "video_link": video_link, "image_link": image_link}
-            sets_ = {k: v for k, v in fields.items() if v is not None}
             if sets_:
                 cols = ", ".join(f"{k}=?" for k in sets_)
                 conn.execute(f"UPDATE exercises SET {cols} WHERE id=?", (*sets_.values(), eid))
         else:
+            cols = ["name", *sets_, "created_at"]
+            vals = [name.strip(), *sets_.values(), now()]
+            ph = ", ".join("?" for _ in cols)
             eid = conn.execute(
-                """INSERT INTO exercises(name, category, equipment, technique_notes,
-                   common_mistakes, cautions, video_link, image_link, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (name.strip(), category, equipment, technique_notes, common_mistakes,
-                 cautions, video_link, image_link, now()),
+                f"INSERT INTO exercises({', '.join(cols)}) VALUES ({ph})", vals,
             ).lastrowid
-            created, sets_ = True, {}
+            created = True
         _set_muscles(conn, eid, muscles, secondary_muscles, tertiary_muscles)
         out_name = conn.execute("SELECT name FROM exercises WHERE id=?", (eid,)).fetchone()["name"]
     if created:
@@ -1479,17 +1540,44 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
 
 
 @trainer_mcp.tool()
+def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                 in_rotation: bool = True) -> dict:
+    """Add an exercise to (or remove it from) the user's ROTATION — the curated pool of
+    movements they actually train. The rotation is the ONLY set you program routines from
+    (the wider catalog is a browsable reference library, ~870 movements, that the user
+    searches to decide what to add). Target by `exercise_id` or `name` (case-insensitive);
+    an unknown name is an error here (add it with save_exercise first). Pass
+    in_rotation=False to take it out. Logging a movement the user actually did already
+    flags it into rotation automatically, so reach for this when curating ahead of time —
+    e.g. the user says "add Bulgarian split squats to my rotation" — or pruning."""
+    in_rotation = int(bool(in_rotation))
+    with db() as conn:
+        if exercise_id is not None:
+            row = conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+        elif name:
+            row = _resolve_exercise(conn, name)
+        else:
+            return {"error": "pass name or exercise_id"}
+        if not row:
+            return {"error": "no matching exercise (create it with save_exercise first)"}
+        conn.execute("UPDATE exercises SET in_rotation=? WHERE id=?", (in_rotation, row["id"]))
+    return {"exercise_id": row["id"], "name": row["name"], "in_rotation": bool(in_rotation)}
+
+
+@trainer_mcp.tool()
 def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
               muscle: Optional[str] = None, equipment: Optional[str] = None,
-              category: Optional[str] = None) -> dict:
+              category: Optional[str] = None, rotation_only: bool = False) -> dict:
     """Read the exercise catalog — one full record, or a filtered list.
 
     Pass `name` or `exercise_id` to get ONE exercise in full, including its muscle
     emphasis tiers (primary/secondary/tertiary), technique notes, common mistakes,
-    cautions, and any video_link/image_link, so you can coach proper form. Otherwise it
-    returns the compact registry (id, name, category, equipment, muscles); narrow it
-    with `muscle` (matches any emphasis tier), an `equipment` fragment, or `category` to
-    pick exercises for a session."""
+    cautions, in_rotation, and any video_link/image_link, so you can coach proper form.
+    Otherwise it returns the compact registry (id, name, category, equipment, muscles,
+    in_rotation); narrow it with `muscle` (matches any emphasis tier), an `equipment`
+    fragment, `category`, or `rotation_only=True` to see just the programming pool. The
+    full catalog is large (~870), so when picking exercises for a session, prefer
+    rotation_only=True — that's the set the user actually trains from."""
     with db() as conn:
         if name is not None or exercise_id is not None:
             if exercise_id is not None:
@@ -1501,12 +1589,16 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
             m = _muscles_for(conn, r["id"])
             return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
                     "equipment": r["equipment"], "muscles": m,
+                    "force": r["force"], "level": r["level"], "mechanic": r["mechanic"],
+                    "in_rotation": bool(r["in_rotation"]),
                     "technique_notes": r["technique_notes"],
                     "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
                     "video_link": r["video_link"], "image_link": r["image_link"]}
         rows = conn.execute("SELECT * FROM exercises ORDER BY name").fetchall()
         out = []
         for r in rows:
+            if rotation_only and not r["in_rotation"]:
+                continue
             m = _muscles_for(conn, r["id"])
             if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"] + m["tertiary"]):
                 continue
@@ -1516,7 +1608,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                 continue
             out.append({"exercise_id": r["id"], "name": r["name"],
                         "category": r["category"], "equipment": r["equipment"],
-                        "muscles": m})
+                        "muscles": m, "in_rotation": bool(r["in_rotation"])})
     return {"exercises": out, "count": len(out)}
 
 
@@ -1542,7 +1634,7 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     Each item in `exercises` is:
         {
           "name": "Leg Press",
-          "muscles": ["quads", "glutes"],   # optional; seeds the catalog if NEW
+          "muscles": ["quadriceps", "glutes"],   # optional; seeds the catalog if NEW
           "sets": [
             {"weight_lbs": 180, "reps": 10, "rpe": 7, "note": ""},
             {"weight_lbs": 180, "reps": 10, "rpe": 8},
@@ -1613,6 +1705,9 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 ).lastrowid
                 _set_muscles(conn, eid, ex.get("muscles"), None)
                 created = True
+            # A logged movement is one they actually do → it joins the rotation (the pool
+            # the trainer programs from). Pruning stays manual via set_rotation.
+            conn.execute("UPDATE exercises SET in_rotation=1 WHERE id=?", (eid,))
             # continue set numbering if this exercise already has sets in the session
             start = (conn.execute(
                 "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
@@ -2020,7 +2115,7 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
         {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
          "target_reps": 12, "target_weight_lbs": 25}
     Unknown names are auto-stubbed (seeded with `muscles`). Use the canonical muscle
-    labels (chest, lats, quads, …) so recency lines up. Any auto-stubbed names come back
+    labels (chest, lats, quadriceps, …) so recency lines up. Any auto-stubbed names come back
     under `new_exercises` with EMPTY technique notes — enrich each one with save_exercise
     (technique_notes, common_mistakes, cautions) so the catalog stays coached and the
     /trainer page doesn't show "No saved technique notes yet".
@@ -2083,6 +2178,8 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
                status='done' WHERE id=?""",
             (w, rp, rpe, note, set_id),
         )
+        # Completing a set means the movement was actually trained → keep it in rotation.
+        conn.execute("UPDATE exercises SET in_rotation=1 WHERE id=?", (r["exercise_id"],))
         return _plan_payload(conn, r["workout_id"])
 
 
@@ -2244,12 +2341,16 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     per-muscle recency (days since each muscle was last trained + sets in the last 7
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
     in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
-    logged last time is a caution this time), and `bodyweight` (latest reading, days
-    since, and 30-day change; negative = down). Call this at the start of a training
-    conversation to decide what to work and what to rest: muscles with the most
-    days_since (and low recent volume) are recovered and due; ones trained in the last
-    ~1-2 days should rest. Cardio is tracked separately because it carries no muscle
-    mapping. The recommendation itself is yours to make from this data."""
+    logged last time is a caution this time), `bodyweight` (latest reading, days since,
+    and 30-day change; negative = down), and `rotation` — the curated pool of movements
+    the user trains (id, name, category, equipment, primary muscles). Call this at the
+    start of a training conversation to decide what to work and what to rest: muscles with
+    the most days_since (and low recent volume) are recovered and due; ones trained in the
+    last ~1-2 days should rest. Cardio is tracked separately because it carries no muscle
+    mapping. BUILD SESSIONS FROM `rotation` — it's the set the user actually trains; don't
+    pull in movements outside it without asking (the full ~870-movement library is a
+    reference the user curates from, via the library page or set_rotation). The
+    recommendation itself is yours to make from this data."""
     week_ago = date.fromordinal(date.fromisoformat(today()).toordinal() - 6).isoformat()
     with db() as conn:
         profile = _get_profile(conn)
@@ -2277,6 +2378,21 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                GROUP BY e.id""",
             (week_ago, week_ago),
         ).fetchall()
+        # The rotation: the curated pool the model programs from. Compact (id, name,
+        # category, equipment, primary muscles) — one query for the muscles, grouped in.
+        rot_rows = conn.execute(
+            "SELECT id, name, category, equipment FROM exercises WHERE in_rotation=1 ORDER BY name"
+        ).fetchall()
+        rot_primary: dict[int, list[str]] = {}
+        for pr in conn.execute(
+            "SELECT em.exercise_id, em.muscle FROM exercise_muscles em "
+            "JOIN exercises e ON e.id = em.exercise_id "
+            "WHERE e.in_rotation=1 AND em.role='primary' ORDER BY em.muscle"
+        ):
+            rot_primary.setdefault(pr["exercise_id"], []).append(pr["muscle"])
+        rotation = [{"exercise_id": r["id"], "name": r["name"], "category": r["category"],
+                     "equipment": r["equipment"], "primary_muscles": rot_primary.get(r["id"], [])}
+                    for r in rot_rows]
         # Recent history is COMPLETED sessions only; an in-progress plan (status
         # 'active') is surfaced separately via get_workout_plan.
         recent = conn.execute(
@@ -2330,7 +2446,8 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     )
     return {"now": current_clock(), "profile": profile,
             "muscle_recency": recency, "cardio_recency": cardio,
-            "bodyweight": bodyweight, "recent_workouts": recent_out}
+            "bodyweight": bodyweight, "recent_workouts": recent_out,
+            "rotation": rotation}
 
 
 @trainer_mcp.tool()
