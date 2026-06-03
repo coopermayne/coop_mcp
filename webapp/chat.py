@@ -94,6 +94,40 @@ def is_agent(name: str) -> bool:
     return name in _AGENTS
 
 
+def person_context(person_id: int):
+    """Build a chat *context* for the journal surface pinned to one person — used by
+    the chat panel on that person's profile page. Returns a dict with its own
+    conversation `key` (so each person gets an isolated thread) and a `system`
+    addendum, or None if the id is unknown.
+
+    The system text tells the model which entity "this person / them / here" refers
+    to and to write edits straight onto this person_id, so on a profile page the user
+    can just say "her birthday is in May" or "she's now my manager" and it lands on
+    the right record. Built server-side from the DB (never client-supplied prose) so
+    the pinned identity can't be steered by injected text."""
+    with server.db() as conn:
+        row = conn.execute(
+            "SELECT id, canonical_name, role FROM people WHERE id = ?",
+            (person_id,),
+        ).fetchone()
+    if not row:
+        return None
+    who = row["canonical_name"] + (f" ({row['role']})" if row["role"] else "")
+    return {
+        "key": f"person:{row['id']}",
+        "system": (
+            f"The user is viewing the profile page for {who}, person_id={row['id']}. "
+            "In this conversation, 'this person', 'them', 'they', 'her', 'him', and "
+            "'here' refer to this person unless the user clearly names someone else. "
+            "To add or correct their details — role, summary, notes, email, phone, "
+            "address, new aliases, group membership — call save_person with "
+            f"person_id={row['id']} (UPDATE, don't create a new person). Any journal "
+            "entry the user dictates here should mention this person so their history "
+            "links."
+        ),
+    }
+
+
 # Lazily-built, then cached per agent for the process: Anthropic tool schemas +
 # a name→fn dispatch map, both derived from the live server.
 _TOOLS: dict[str, list] = {}
@@ -148,13 +182,14 @@ def _client_singleton():
     return _client
 
 
-def _system_blocks(agent: str) -> list[dict]:
+def _system_blocks(agent: str, context: dict | None = None) -> list[dict]:
     """System prompt = the bound server's own model-facing instructions plus a
-    surface-specific blurb (cached), then a live Pacific-time anchor (uncached,
-    after the breakpoint so it never busts the cache as the clock advances)."""
+    surface-specific blurb (cached), then a live Pacific-time anchor and an optional
+    page context (both uncached, after the breakpoint so they never bust the cache as
+    the clock advances or the user moves between profile pages)."""
     cfg = _AGENTS[agent]
     clock = server.current_clock()
-    return [
+    blocks = [
         {
             "type": "text",
             "text": cfg["server"].instructions + cfg["blurb"],
@@ -169,6 +204,9 @@ def _system_blocks(agent: str) -> list[dict]:
             ),
         },
     ]
+    if context and context.get("system"):
+        blocks.append({"type": "text", "text": context["system"]})
+    return blocks
 
 
 # --------------------------------------------------------------------------- #
@@ -251,15 +289,17 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
 # The agent loop — an async generator of SSE-ready event dicts
 # --------------------------------------------------------------------------- #
 
-async def run_turn(agent: str, session_id: str, user_text: str):
+async def run_turn(agent: str, session_id: str, user_text: str, context: dict | None = None):
     """Run one user turn to completion for `agent`, yielding event dicts as they
     happen:
       {"type": "text", "text": ...}      streamed assistant prose
       {"type": "tool", ...}              a tool was called (chip payload)
       {"type": "done"}                   turn finished
       {"type": "error", "message": ...}  fatal error; turn aborts
-    Conversation state for (agent, session_id) is updated in place so the next
-    turn has full context (including the tool_use/tool_result blocks)."""
+    Conversation state is updated in place so the next turn has full context
+    (including the tool_use/tool_result blocks). An optional `context` (see
+    `person_context`) scopes the conversation to its own thread (via `context['key']`)
+    and adds a page-specific system block."""
     if not ENABLED:
         yield {"type": "error", "message": "Chat is not configured (ANTHROPIC_API_KEY unset)."}
         return
@@ -274,7 +314,8 @@ async def run_turn(agent: str, session_id: str, user_text: str):
         return
 
     tools, dispatch = _TOOLS[agent], _DISPATCH[agent]
-    messages = _CONVERSATIONS.setdefault((agent, session_id), [])
+    convo_key = (agent, session_id, context["key"]) if context else (agent, session_id)
+    messages = _CONVERSATIONS.setdefault(convo_key, [])
     messages.append({"role": "user", "content": user_text})
 
     try:
@@ -282,7 +323,7 @@ async def run_turn(agent: str, session_id: str, user_text: str):
             async with client.messages.stream(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=_system_blocks(agent),
+                system=_system_blocks(agent, context),
                 tools=tools,
                 messages=messages,
             ) as stream:
@@ -328,5 +369,6 @@ async def run_turn(agent: str, session_id: str, user_text: str):
         yield {"type": "error", "message": str(e)}
 
 
-def reset(agent: str, session_id: str) -> None:
-    _CONVERSATIONS.pop((agent, session_id), None)
+def reset(agent: str, session_id: str, context: dict | None = None) -> None:
+    key = (agent, session_id, context["key"]) if context else (agent, session_id)
+    _CONVERSATIONS.pop(key, None)
