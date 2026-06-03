@@ -86,55 +86,87 @@
   </div>
 </div>
 
-{# Recent days — one row per day, each an inline edit form (Save overwrites the
-   day's total/tags/notes/date via /drinking/edit) plus a Delete form. Blank a
-   field and Save leaves it unchanged; use Delete to clear a day entirely. #}
+{# Recent days — each row reads as a clean summary by default; a subtle pencil
+   reveals the inline edit form (Save overwrites the day's total/tags/notes/date
+   via /drinking/edit; Delete clears the day). These rarely change, so the edit
+   UI stays out of the way until asked for. The small script below toggles the
+   view/edit halves per row — same no-framework data-* pattern as macros.html. #}
 {% if log %}
-<div>
+<div data-recent-days>
   {{ m.section_label("Recent Days") }}
-  <p class="text-[11px] text-gray-400 mb-3 mt-1">One row per day — edit the total, tags or notes inline and Save, or remove the day.</p>
+  <p class="text-[11px] text-gray-400 mb-3 mt-1">One row per day — click the pencil to edit the total, tags or notes, or remove the day.</p>
   <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
     {% for r in log %}
-    <div class="px-4 sm:px-5 py-3 flex flex-wrap items-end gap-2">
-      <form method="post" action="{{ base }}/drinking/edit" class="flex flex-wrap items-end gap-2 grow">
-        <input type="hidden" name="drink_id" value="{{ r.id }}" />
-        <label class="block">
-          <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Date</span>
-          <input type="date" name="drink_date" value="{{ r.drink_date }}"
-                 class="px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-        </label>
-        <label class="block w-20">
-          <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Std</span>
-          <input type="number" name="standard_drinks" step="0.5" min="0" value="{{ r.standard_drinks }}"
-                 class="w-full px-2 py-1.5 border border-gray-200 text-sm tabular-nums focus:outline-none focus:border-black" />
-        </label>
-        <label class="block w-28">
-          <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Kind</span>
-          <input type="text" name="kind" value="{{ r.kind or '' }}" placeholder="beer, wine…"
-                 class="w-full px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-        </label>
-        <label class="block grow min-w-[8rem]">
-          <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Notes</span>
-          <input type="text" name="notes" value="{{ r.notes or '' }}"
-                 class="w-full px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
-        </label>
-        <button type="submit"
-                class="px-3 py-1.5 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">
-          Save
+    <div class="px-4 sm:px-5 py-3" data-day-row>
+      {# Read-only summary #}
+      <div class="flex items-center gap-3 text-sm" data-day-view>
+        <span class="w-24 shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ r.drink_date | short_date }}</span>
+        <span class="tabular-nums font-medium">{{ r.standard_drinks | num }}</span>
+        <span class="text-[10px] uppercase tracking-widest text-gray-400 -ml-1.5">std</span>
+        {% if r.kind %}<span class="text-gray-700">{{ r.kind }}</span>{% endif %}
+        {% if r.notes %}<span class="text-gray-400 truncate min-w-0">· {{ r.notes }}</span>{% endif %}
+        <button type="button" data-day-edit
+                class="ml-auto shrink-0 text-gray-300 hover:text-black transition-colors p-1 -mr-1"
+                title="Edit" aria-label="Edit this day">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         </button>
-      </form>
-      <form method="post" action="{{ base }}/drinking/delete"
-            onsubmit="return confirm('Delete this day’s drinks?');">
-        <input type="hidden" name="drink_id" value="{{ r.id }}" />
-        <button type="submit"
-                class="px-3 py-1.5 border border-gray-200 text-gray-500 text-xs hover:border-red-400 hover:text-red-600 transition-colors">
-          Delete
+      </div>
+      {# Inline edit form — hidden until the pencil is clicked #}
+      <div class="flex flex-wrap items-end gap-2" data-day-edit-form hidden>
+        <form method="post" action="{{ base }}/drinking/edit" class="flex flex-wrap items-end gap-2 grow">
+          <input type="hidden" name="drink_id" value="{{ r.id }}" />
+          <label class="block">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Date</span>
+            <input type="date" name="drink_date" value="{{ r.drink_date }}"
+                   class="px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+          </label>
+          <label class="block w-20">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Std</span>
+            <input type="number" name="standard_drinks" step="0.5" min="0" value="{{ r.standard_drinks }}"
+                   class="w-full px-2 py-1.5 border border-gray-200 text-sm tabular-nums focus:outline-none focus:border-black" />
+          </label>
+          <label class="block w-28">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Kind</span>
+            <input type="text" name="kind" value="{{ r.kind or '' }}" placeholder="beer, wine…"
+                   class="w-full px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+          </label>
+          <label class="block grow min-w-[8rem]">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Notes</span>
+            <input type="text" name="notes" value="{{ r.notes or '' }}"
+                   class="w-full px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+          </label>
+          <button type="submit"
+                  class="px-3 py-1.5 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">
+            Save
+          </button>
+        </form>
+        <button type="button" data-day-cancel
+                class="px-3 py-1.5 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">
+          Cancel
         </button>
-      </form>
+        <form method="post" action="{{ base }}/drinking/delete"
+              onsubmit="return confirm('Delete this day’s drinks?');">
+          <input type="hidden" name="drink_id" value="{{ r.id }}" />
+          <button type="submit"
+                  class="px-3 py-1.5 border border-gray-200 text-gray-500 text-xs hover:border-red-400 hover:text-red-600 transition-colors">
+            Delete
+          </button>
+        </form>
+      </div>
     </div>
     {% endfor %}
   </div>
 </div>
+<script>
+  // Per-row view ⇄ edit toggle. No framework — mirrors the data-* wiring in macros.html.
+  document.querySelectorAll('[data-recent-days] [data-day-row]').forEach(function (row) {
+    var view = row.querySelector('[data-day-view]');
+    var form = row.querySelector('[data-day-edit-form]');
+    function show(editing) { view.hidden = editing; form.hidden = !editing; }
+    row.querySelector('[data-day-edit]').addEventListener('click', function () { show(true); });
+    row.querySelector('[data-day-cancel]').addEventListener('click', function () { show(false); });
+  });
+</script>
 {% else %}
 <p class="text-sm text-gray-400">No drinks logged.</p>
 {% endif %}
