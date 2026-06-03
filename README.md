@@ -303,19 +303,39 @@ Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 
 ## Web frontend (read-only)
 
-`webapp/` is a small **read-only** browser UI for reviewing what's been recorded —
-journal entries (with FTS search), workout sessions, drinking trends, and people. It
-has no forms and no chat: capture, resolution and coaching all stay in the conversation
-with Claude. It reads the **same** SQLite DB and reuses `server.py`'s retrieval
-functions directly (the single source of truth for data shapes), so it never duplicates
-query logic and never writes.
+`webapp/` is a small browser UI for reviewing what's been recorded — journal entries
+(with FTS search), workout sessions, drinking trends, and people. The browse pages are
+strictly **read-only**: they read the **same** SQLite DB and reuse `server.py`'s
+retrieval functions directly (the single source of truth for data shapes), so they never
+duplicate query logic and never write.
+
+The one write path is the optional **`/chat`** page (see below): an in-app AI assistant
+that drives the same journal/drinking tools the Claude Desktop connector uses, in-process
+via the Anthropic API — capture and recall without a connector, notably on the phone.
 
 Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 `workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
 uppercase `tracking-widest` labels, stat-tile grids.
 
 Pages: dashboard · journal (+ `?q=` search) · entry detail · workouts · drinking ·
-people · person detail.
+people · person detail · chat (when enabled).
+
+### In-app AI chat (`/chat`)
+
+Off by default; turns on only when `ANTHROPIC_API_KEY` is set (the nav icon and page
+appear). It's the web app acting as an MCP *client*: an agent loop (`webapp/chat.py`)
+streams `anthropic.messages` and dispatches each `tool_use` to the **same**
+`@mcp.tool()` functions in `server.py` — so the project's rule holds, there's still no
+LLM *inside* the server; the model lives in the web app exactly like Claude Desktop does.
+Scope is the journal server's 16 tools (journal + people + drinking); the trainer is a
+later phase. The system prompt and tool schemas are lifted live from `mcp.instructions`
+and `mcp.list_tools()`, so editing a docstring in `server.py` updates the chat with no
+duplication. Conversations are in-memory per session (lost on restart — fine for a
+single user). Tool calls surface as chips linking to the affected page; writes flow only
+through here, leaving the browse pages read-only.
+
+Env: `ANTHROPIC_API_KEY` (required to enable), `CHAT_MODEL` (default
+`claude-sonnet-4-6`). Adds `anthropic` to `webapp/requirements.txt`.
 
 **Same process as the MCP server.** In production one container runs both:
 `webapp/combined.py` mounts the MCP app at the origin root (so `/mcp` and its
