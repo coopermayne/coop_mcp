@@ -317,6 +317,18 @@ uppercase `tracking-widest` labels, stat-tile grids.
 Pages: dashboard · journal (+ `?q=` search) · entry detail · workouts · drinking ·
 people · person detail.
 
+**Installable as a PWA.** The UI ships a web app manifest
+(`/manifest.webmanifest`) and a service worker (`/sw.js`), both generated
+per-request so their `start_url`/`scope`/icon paths carry the mount prefix
+(works mounted at `/app` or standalone at `/`). On a phone, open the site and
+use **Add to Home Screen** — it then launches full-screen (`display:
+standalone`) with its own icon (`webapp/static/icon-*.png`, regenerate with
+`python scripts/gen_icons.py`). The service worker is network-first for pages —
+it never caches authed HTML, just shows a small offline page when the network
+drops — and stale-while-revalidates the static icons; bump `VERSION` in the
+worker to retire old caches. Both the manifest and worker are unauthenticated
+(they carry no journal data) so install works before sign-in.
+
 **Same process as the MCP server.** In production one container runs both:
 `webapp/combined.py` mounts the MCP app at the origin root (so `/mcp` and its
 root-level OAuth — `/.well-known/*`, `/auth/callback` — are unchanged) and the UI under
