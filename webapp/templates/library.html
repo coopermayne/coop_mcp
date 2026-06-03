@@ -135,7 +135,7 @@
   {# Each exercise is a collapsible row: the summary carries name + muscle emphasis +
      how much it's been trained; expanding reveals equipment, coaching text and the clip.
      data-ex-row marks it as a target for j/k keyboard navigation (see the script below). #}
-  <details data-ex-row tabindex="-1" class="group px-5 sm:px-6 py-3.5 scroll-mt-4 focus:outline-none">
+  <details data-ex-row tabindex="-1" class="group px-5 sm:px-6 py-3.5 scroll-mt-20 focus:outline-none">
     <summary class="cursor-pointer list-none flex items-baseline justify-between gap-3">
       <div class="min-w-0">
         <div class="flex items-baseline gap-2 flex-wrap">
@@ -295,7 +295,8 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
     rows.forEach(function (r, idx) { r.open = idx === current; });
     var row = rows[current];
     row.focus({ preventScroll: true });
-    // Top of the opened row to the top of the page (scroll-mt-4 leaves a little gap).
+    // Top of the opened row to the top of the page; scroll-mt-20 clears the sticky
+    // h-14 header (plus a little gap) so the exercise name isn't hidden behind the nav.
     row.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
