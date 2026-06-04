@@ -78,7 +78,11 @@ There is no exercise-selection or progression logic in the server either.
   never the server's UTC midnight. `created_at` stays UTC (an unambiguous storage
   timestamp, not a user date). Both briefings return `now` (`current_clock()`) so the
   model can anchor "today"/"yesterday" before defaulting or back-dating. `tzdata` is a
-  dependency so `zoneinfo` resolves on the slim Docker image.
+  dependency so `zoneinfo` resolves on the slim Docker image. `get_fitness_briefing` also
+  takes `for_date` (the day a session is being PLANNED for): every recency number is
+  computed *as of* that day (echoed back as `as_of`), so when the user asks for "tomorrow's
+  leg day" the model sees the recovery state they'll be in on the training day, not today's
+  — pairs with the undated-until-finish plan so planning a day or two ahead is exact.
 - **Tool docstrings are the model-facing contract.** Claude reads them to decide when to
   ask vs. link vs. queue (e.g. the score thresholds). If you change a tool's behavior,
   update its docstring in the same edit — it's not just documentation.

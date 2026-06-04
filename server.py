@@ -132,6 +132,15 @@ split, goals), per-muscle recency, recent sessions (with their notes), and the l
 bodyweight before recommending work. Recent-session notes are durable context — read
 them so a "left shoulder twinge" last time shapes what you program next.
 
+PLANNING AHEAD: the user often asks you to build a workout for a FUTURE day ("a push day
+for tomorrow", "what should I do Saturday?"). Recovery is time-sensitive — a muscle
+trained today is fried today but fine in two days — so program for the day they'll TRAIN,
+not today. Resolve the day relative to `now`, pass it as get_fitness_briefing(for_date=
+<that day>), and every days_since then reflects the recovery state they'll actually be in
+on that day (the day is echoed back as `as_of`). Build the routine from THAT briefing. The
+plan is undated until finished, so there's nothing else to set — start_workout_plan now,
+finish_workout dates it to the day it's actually done.
+
 Two ways to record training:
   - PLAN-AS-YOU-LIFT (the live routine): start_workout_plan lays out today's session as
     PENDING sets with target weights/reps; the user completes them with complete_set as
@@ -2541,10 +2550,17 @@ def clear_plan_set(set_id: int) -> dict:
 @trainer_mcp.tool()
 def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
                        notes: Optional[str] = None, replace: bool = False) -> dict:
-    """Lay out today's routine as a plan the user works through — call this once you've
-    decided the session from get_fitness_briefing (+ get_exercise_history for the lifts
-    you're choosing weights for). Each exercise becomes a row of PENDING sets with
-    targets; the user completes them with complete_set as they go.
+    """Lay out a routine as a plan the user works through — call this once you've decided
+    the session from get_fitness_briefing (+ get_exercise_history for the lifts you're
+    choosing weights for). Each exercise becomes a row of PENDING sets with targets; the
+    user completes them with complete_set as they go.
+
+    The plan is UNDATED until finished — it's just the next intended session, so this is
+    the same tool whether the workout is for right now or for a day or two out. When the
+    user asks you to plan a FUTURE day ("make me a leg day for tomorrow"), base it on
+    get_fitness_briefing(for_date=<that day>) so the recovery picture is the one they'll be
+    in ON the training day, not today's — then call this. finish_workout stamps the actual
+    date when they complete it.
 
     Build a full session: aim for ~21-26 working sets total, roughly 6-8 exercises at
     3-4 sets each, across the muscle groups that are due.
@@ -2819,7 +2835,7 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
 
 
 @trainer_mcp.tool()
-def get_fitness_briefing(recent_workouts: int = 5) -> dict:
+def get_fitness_briefing(recent_workouts: int = 5, for_date: Optional[str] = None) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
@@ -2833,10 +2849,37 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     mapping. BUILD SESSIONS FROM `rotation` — it's the set the user actually trains; don't
     pull in movements outside it without asking (the full ~870-movement library is a
     reference the user curates from, via the library page or set_rotation). The
-    recommendation itself is yours to make from this data."""
-    week_ago = date.fromordinal(date.fromisoformat(today()).toordinal() - 6).isoformat()
+    recommendation itself is yours to make from this data.
+
+    `for_date` (YYYY-MM-DD) is the day the session is being PLANNED FOR — pass it whenever
+    the user wants a workout for a future day ("make me a leg day for tomorrow", "what
+    should I do Saturday?"). Every recency number is then computed AS OF that day, so a
+    muscle trained today reads days_since=0 for a today plan but days_since=2 when planning
+    two days out — i.e. it shows the recovery state the user will ACTUALLY be in on the
+    training day, not today's. The 7-day volume window and bodyweight trend shift with it
+    too. Defaults to today. The reference day is echoed back as `as_of`; `now` is always
+    the real current clock, so anchor relative days ("tomorrow") to `now` first, then pass
+    the resolved date here."""
+    if err := _bad_date(for_date, "for_date"):
+        return err
+    ref = for_date or today()
+    ref_ord = date.fromisoformat(ref).toordinal()
+
+    def _since(d: Optional[str]) -> Optional[int]:
+        """Days from `d` to the reference (planned) day — recovery as of `ref`."""
+        if not d:
+            return None
+        try:
+            return ref_ord - date.fromisoformat(d).toordinal()
+        except ValueError:
+            return None
+
+    week_ago = date.fromordinal(ref_ord - 6).isoformat()
     with db() as conn:
         profile = _get_profile(conn)
+        # All windows are bounded by `ref` (the planned day), so the briefing reflects
+        # the state as of that day — for a future plan, only training that will have
+        # actually happened by then counts.
         mrows = conn.execute(
             """SELECT em.muscle,
                       MAX(w.workout_date) AS last_date,
@@ -2844,9 +2887,9 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                FROM sets s
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
-               WHERE s.status='done'
+               WHERE s.status='done' AND w.workout_date <= ?
                GROUP BY em.muscle""",
-            (week_ago,),
+            (week_ago, ref),
         ).fetchall()
         crows = conn.execute(
             """SELECT e.name,
@@ -2857,9 +2900,9 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercises e ON e.id = s.exercise_id
                WHERE (s.duration_seconds IS NOT NULL OR s.distance_miles IS NOT NULL)
-                     AND s.status='done'
+                     AND s.status='done' AND w.workout_date <= ?
                GROUP BY e.id""",
-            (week_ago, week_ago),
+            (week_ago, week_ago, ref),
         ).fetchall()
         # The rotation: the curated pool the model programs from. Compact (id, name,
         # category, equipment, primary muscles) — one query for the muscles, grouped in.
@@ -2881,8 +2924,8 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
         # 'active') is surfaced separately via get_workout_plan.
         recent = conn.execute(
             "SELECT id, workout_date, focus, feeling, notes FROM workouts "
-            "WHERE status='done' ORDER BY workout_date DESC, id DESC LIMIT ?",
-            (recent_workouts,),
+            "WHERE status='done' AND workout_date <= ? ORDER BY workout_date DESC, id DESC LIMIT ?",
+            (ref, recent_workouts),
         ).fetchall()
         recent_out = []
         for w in recent:
@@ -2897,13 +2940,15 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
             if w["notes"]:
                 row["notes"] = w["notes"]
             recent_out.append(row)
-        # latest bodyweight + 30-day trend (negative change = losing)
+        # latest bodyweight (as of ref) + 30-day trend (negative change = losing)
         bw_latest = conn.execute(
-            "SELECT weigh_date, weight_lbs FROM body_weight ORDER BY weigh_date DESC, id DESC LIMIT 1"
+            "SELECT weigh_date, weight_lbs FROM body_weight WHERE weigh_date <= ? "
+            "ORDER BY weigh_date DESC, id DESC LIMIT 1",
+            (ref,),
         ).fetchone()
         bodyweight = None
         if bw_latest:
-            thirty_ago = date.fromordinal(date.fromisoformat(today()).toordinal() - 30).isoformat()
+            thirty_ago = date.fromordinal(ref_ord - 30).isoformat()
             base = conn.execute(
                 """SELECT weight_lbs FROM body_weight WHERE weigh_date <= ?
                    ORDER BY weigh_date DESC, id DESC LIMIT 1""",
@@ -2911,24 +2956,24 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
             ).fetchone()
             bodyweight = {"latest_lbs": bw_latest["weight_lbs"],
                           "date": bw_latest["weigh_date"],
-                          "days_since": _days_since(bw_latest["weigh_date"])}
+                          "days_since": _since(bw_latest["weigh_date"])}
             if base:
                 bodyweight["change_30d_lbs"] = round(bw_latest["weight_lbs"] - base["weight_lbs"], 1)
     recency = sorted(
         ({"muscle": r["muscle"], "last_trained": r["last_date"],
-          "days_since": _days_since(r["last_date"]), "sets_last_7d": r["sets_7d"]}
+          "days_since": _since(r["last_date"]), "sets_last_7d": r["sets_7d"]}
          for r in mrows),
         key=lambda m: (m["days_since"] is None, -(m["days_since"] or 0)),
     )
     cardio = sorted(
         ({"exercise": r["name"], "last_done": r["last_date"],
-          "days_since": _days_since(r["last_date"]),
+          "days_since": _since(r["last_date"]),
           "minutes_last_7d": round((r["dur_7d"] or 0) / 60, 1),
           "miles_last_7d": round(r["dist_7d"] or 0, 2)}
          for r in crows),
         key=lambda c: (c["days_since"] is None, -(c["days_since"] or 0)),
     )
-    return {"now": current_clock(), "profile": profile,
+    return {"now": current_clock(), "as_of": ref, "profile": profile,
             "muscle_recency": recency, "cardio_recency": cardio,
             "bodyweight": bodyweight, "recent_workouts": recent_out,
             "rotation": rotation}
