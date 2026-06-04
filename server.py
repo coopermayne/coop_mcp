@@ -419,6 +419,25 @@ def db() -> sqlite3.Connection:
     return conn
 
 
+def snapshot_db(dest: str) -> str:
+    """Write a consistent point-in-time backup of the live DB to `dest`.
+
+    Uses SQLite's `VACUUM INTO`, which copies the whole database — schema, every
+    row, and the FTS5 index — inside a read transaction, so the snapshot is
+    atomic even if writes land mid-copy. The result is a plain, self-contained
+    SQLite file: restore is "drop it in at JOURNAL_DB and restart", nothing to
+    replay. `dest` must NOT already exist (VACUUM INTO refuses to overwrite).
+    Returns `dest`. This is a pure copy of the file we already own — no LLM, no
+    external service — so it stays on the server side of the architectural line.
+    """
+    conn = db()
+    try:
+        conn.execute("VACUUM INTO ?", (dest,))
+    finally:
+        conn.close()
+    return dest
+
+
 def _merge_kinds(*kinds: Optional[str]) -> Optional[str]:
     """Union drink-`kind` labels into one deduped, order-preserving comma list.
     Each input may itself be a comma list ("beer, wine"); matching is

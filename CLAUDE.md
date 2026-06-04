@@ -150,8 +150,10 @@ only). Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, if the trainer ho
 set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
-(show the logout control in the UI). The web app auto-loads `.env` (see `.env.example`);
-shell-exported vars win.
+(show the logout control in the UI), and `BACKUP_TOKEN` (strong random token that unlocks
+the headless backup download at `GET /export/journal.db` for a cron `curl` — bearer /
+`X-Backup-Token` / `?token=`; unset = browser-session-only; see README "Backup &
+restore"). The web app auto-loads `.env` (see `.env.example`); shell-exported vars win.
 
 ## Test
 
