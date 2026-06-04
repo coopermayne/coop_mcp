@@ -31,9 +31,10 @@ the trainer have already curated) and pulls the dataset over the network. Useful
     --source PATH/URL  read the dataset JSON from a local file or an alternate URL
 
 Notes on the source:
-  * Images are STATIC start/end photos (frame 0), not animated gifs — that's what this
-    public-domain set ships. The schema's image_link still loops a gif if you later add
-    one; the trainer can fill richer media per exercise over time.
+  * Each movement ships TWO still photos — a start and a finish frame. We import both
+    (image_link + image_link_end), and the library alternates them (~1s) into a crude
+    rep animation so a single frozen frame isn't all you get. image_link alone still
+    renders as a still (and a self-looping gif there works too, if you add one later).
   * common_mistakes / cautions aren't in the dataset, so they're left empty for the
     trainer to add in conversation (and re-running without --overwrite won't disturb them).
 """
@@ -162,8 +163,13 @@ def main():
         if equipment:
             equipment = EQUIPMENT_MAP.get(equipment.lower(), equipment)
 
+        # free-exercise-db ships two frames per movement (start, finish); we keep both so
+        # the library can alternate them into a crude rep animation. Older/odd entries with
+        # a single frame just leave image_link_end None and render as a still.
         images = ex.get("images") or []
         image_link = None if (args.no_images or not images) else IMAGE_BASE + images[0]
+        image_link_end = (None if (args.no_images or len(images) < 2)
+                          else IMAGE_BASE + images[1])
 
         # in_rotation is left at its default (0): the import builds the LIBRARY; the
         # rotation is curated afterwards (set_rotation / logging / the library page).
@@ -179,6 +185,7 @@ def main():
             secondary_muscles=secondary or None,
             technique_notes=technique_notes(ex.get("instructions")),
             image_link=image_link,
+            image_link_end=image_link_end,
         )
 
         if args.dry_run:

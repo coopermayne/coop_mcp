@@ -12,6 +12,18 @@
 
 {% block content %}
 
+{# Crossfade the finish frame over the start frame and back, ~2s, forever — turns the two
+   static photos free-exercise-db ships into a sense of the movement. Pure CSS so it needs
+   no JS; honored only when the user hasn't asked for reduced motion (then it sits on the
+   finish frame as a plain still). #}
+<style>
+  @keyframes repLoopFade { 0%, 40% { opacity: 0; } 60%, 100% { opacity: 1; } }
+  .rep-loop-end { opacity: 0; animation: repLoopFade 2s ease-in-out infinite alternate; }
+  @media (prefers-reduced-motion: reduce) {
+    .rep-loop-end { animation: none; opacity: 1; }
+  }
+</style>
+
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Exercise Library</h1>
   <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} shown · {{ rotation_count }} in rotation</span>
@@ -110,9 +122,21 @@
       {% endif %}
 
       {% if ex.image_link %}
-      {# A gif loops on its own; any still just renders. Lazy so a long list stays light. #}
+      {% if ex.image_link_end %}
+      {# Two frames (start + finish): overlay them and let CSS crossfade back and forth
+         (~2s loop) so the rep actually moves. A single still or a self-looping gif still
+         renders fine through the branch below. Lazy so a long list stays light. #}
+      <div class="rep-loop relative inline-block rounded-[4px] border border-gray-100 overflow-hidden">
+        <img src="{{ ex.image_link }}" alt="{{ ex.name }} — start of the rep" loading="lazy"
+             class="block max-h-56 w-auto" />
+        <img src="{{ ex.image_link_end }}" alt="{{ ex.name }} — finish of the rep" loading="lazy"
+             class="rep-loop-end absolute inset-0 h-full w-full object-cover" />
+      </div>
+      {% else %}
+      {# A gif loops on its own; any still just renders. #}
       <img src="{{ ex.image_link }}" alt="{{ ex.name }} technique" loading="lazy"
            class="rounded-[4px] border border-gray-100 max-h-56 w-auto" />
+      {% endif %}
       {% endif %}
 
       {{ coach_block("Technique", ex.technique_notes) }}
