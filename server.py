@@ -153,6 +153,15 @@ Two ways to record training:
 Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
 yet-done set doesn't, so the briefing stays honest mid-session.
 
+Weight on a lift is SIGNED added/removed load, not total bodyweight: 0 (or null) = plain
+bodyweight, positive = weight added (a +25 weighted pull-up), and NEGATIVE = assistance,
+the load a band or machine took OFF (an assisted pull-up at -20). This lets one movement
+track a full assisted→bodyweight→weighted arc on a single number line, -20 → 0 → +20 as
+the user gets stronger. Log negatives as given, program the next target along that line
+(less assistance, then added load), and read movement toward 0 and beyond as progress.
+Don't lean on estimated-1RM for assisted (negative-weight) sets — it isn't physically
+meaningful below bodyweight; judge those by assistance level and RPE instead.
+
 The catalog has two layers — a LIBRARY and a ROTATION:
   - LIBRARY: the whole catalog, PRE-LOADED with ~870 public-domain movements from
     free-exercise-db (via scripts/import_exercises.py), each carrying muscles, equipment,
@@ -576,9 +585,9 @@ def _bad_set(s: dict) -> Optional[str]:
     reps = s.get("reps")
     if reps is not None and reps < 0:
         return f"reps must be >= 0, got {reps}"
-    w = s.get("weight_lbs")
-    if w is not None and w < 0:
-        return f"weight_lbs must be >= 0, got {w}"
+    # weight_lbs is SIGNED: negative = assisted (band/machine took load off, e.g. an
+    # assisted pull-up at -20), 0 = unassisted bodyweight, positive = added load. So no
+    # lower bound here — a negative is a valid measurement, not bad data.
     dur = s.get("duration_seconds")
     if dur is not None and dur < 0:
         return f"duration_seconds must be >= 0, got {dur}"
@@ -1959,8 +1968,13 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     existing one is SKIPPED and returned under `unmatched` with its closest `candidates`
     — re-log it under one of those, or have the user add the movement on the library page
     (the only way the catalog grows). The matched exercises still log (and join the
-    rotation), so capture isn't lost. weight_lbs is null for bodyweight/cardio.
-    rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
+    rotation), so capture isn't lost. weight_lbs is null for cardio. For lifts it is
+    SIGNED added/removed load, not total: 0 (or null) = plain bodyweight, a positive
+    number = weight added (a +25 weighted pull-up, a dumbbell), and a NEGATIVE number =
+    assistance, the load a band/machine took OFF (an assisted pull-up at -20). So an
+    assisted→bodyweight→weighted progression is one number line climbing -20 → 0 → +20;
+    log the negatives as the user gives them and read the trend toward 0 as getting
+    stronger. rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
     judge whether to add weight next time. Returns the logged exercises (with the
     catalog's canonical names) and any `unmatched`.
 
@@ -2206,7 +2220,8 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
     field back to NULL (e.g. clear a weight to mark bodyweight) — delete the set with
     delete_record(kind="set") and re-log it for that. Find the `set_id` with
     get_exercise_history (logged sets) or get_workout_plan (the active plan). `rpe` is
-    1-10. `duration_seconds`/`distance_miles` are the cardio fields (run/walk/row).
+    1-10. `weight_lbs` is SIGNED added/removed load (negative = assisted, 0 = bodyweight,
+    positive = added). `duration_seconds`/`distance_miles` are the cardio fields (run/walk/row).
     `target_weight_lbs`/`target_reps` retarget a still-pending planned set (e.g. bump
     the planned weight) without completing it — to actually log a planned set as done,
     use complete_set."""
@@ -2475,8 +2490,10 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
     """Mark one planned set done, recording what was actually lifted. Omitted
     `weight_lbs`/`reps` default to the set's targets, so "did it as planned" needs only
     the set_id (add `rpe` 1-10 for how hard it felt — that's how you judge the next
-    weight). Find `set_id` in get_workout_plan. Flips the set to 'done' and returns the
-    updated plan. (To CORRECT an already-logged set, use update_set instead.)"""
+    weight). Find `set_id` in get_workout_plan. `weight_lbs` is SIGNED: negative =
+    assistance taken off (assisted pull-up at -20), 0 = bodyweight, positive = added
+    load. Flips the set to 'done' and returns the updated plan. (To CORRECT an
+    already-logged set, use update_set instead.)"""
     with db() as conn:
         r = conn.execute("SELECT * FROM sets WHERE id=?", (set_id,)).fetchone()
         if not r:

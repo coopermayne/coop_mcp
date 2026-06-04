@@ -204,7 +204,8 @@
       return { wrap: w, input: inp };
     }
     // Done sets prefill their actuals (you're correcting them); pending prefill targets.
-    var weight = field('Weight', done ? s.weight_lbs : s.target_weight_lbs, 'any', 0, null);
+    // Weight is signed: negative = assistance (band/machine), 0 = bodyweight, positive = added.
+    var weight = field('Weight', done ? s.weight_lbs : s.target_weight_lbs, 'any', null, null);
     var reps = field('Reps', done ? s.reps : s.target_reps, '1', 0, null);
     var rpe = field('RPE', done ? s.rpe : null, '0.5', 1, 10);
     rpe.input.placeholder = '1–10';
