@@ -6,14 +6,12 @@
 <h1 class="text-2xl font-bold tracking-tight mb-8">Trainer</h1>
 
 {# ── Context header ──────────────────────────────────────────────────────────
-   A quiet line of context from get_fitness_briefing: latest bodyweight, last
-   completed session, and the muscles most/least recently trained. The coaching
-   itself happens in the chat; this just orients. #}
-{% set bw = brief.bodyweight %}
+   A quiet line of context from get_fitness_briefing: last completed session and
+   the muscles most/least recently trained. The coaching itself happens in the chat;
+   this just orients. (Bodyweight is entered on the plan card, not shown here.) #}
 {% set last = brief.recent_workouts[0] if brief.recent_workouts else None %}
 {% set fresh = brief.muscle_recency | selectattr('days_since', 'ne', None) | list %}
 <div class="mb-8 flex flex-wrap gap-x-8 gap-y-3">
-  {{ m.stat(bw.latest_lbs | num ~ (' lb' if bw else ''), 'Bodyweight') if bw else m.stat('—', 'Bodyweight') }}
   {% if last %}
     {{ m.stat((last.focus or 'Session'), 'Last · ' ~ (last.date | short_date)) }}
   {% else %}

@@ -387,6 +387,7 @@ CREATE TABLE IF NOT EXISTS sets (
     target_weight_lbs REAL,           -- plan target (lift); NULL for ad-hoc logged sets
     target_reps       INTEGER,        -- plan target (lift)
     status      TEXT NOT NULL DEFAULT 'done',  -- 'pending' | 'done' | 'skipped'
+    ex_position INTEGER,              -- exercise's slot in the workout (all its sets share it); NULL = insertion order
     note        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);
@@ -498,7 +499,8 @@ def init_db() -> None:
         scols = [r["name"] for r in conn.execute("PRAGMA table_info(sets)")]
         for col, decl in (("duration_seconds", "INTEGER"), ("distance_miles", "REAL"),
                           ("target_weight_lbs", "REAL"), ("target_reps", "INTEGER"),
-                          ("status", "TEXT NOT NULL DEFAULT 'done'")):
+                          ("status", "TEXT NOT NULL DEFAULT 'done'"),
+                          ("ex_position", "INTEGER")):
             if col not in scols:
                 conn.execute(f"ALTER TABLE sets ADD COLUMN {col} {decl}")
         wcols = [r["name"] for r in conn.execute("PRAGMA table_info(workouts)")]
@@ -2417,9 +2419,10 @@ def _insert_planned(conn: sqlite3.Connection, wid: int,
 
 def _plan_payload(conn: sqlite3.Connection, wid: int,
                   unmatched: Optional[list[dict]] = None) -> dict:
-    """The plan for one workout: exercises in insertion order, each with its sets
-    (target + actual + status), plus a done/total progress count (skipped sets are
-    excluded from the total). Used by every plan tool's return and by the web UI.
+    """The plan for one workout: exercises ordered by `ex_position` (the user-set order,
+    via reorder_plan or the /trainer reorder UX) and otherwise by insertion order, each
+    with its sets (target + actual + status), plus a done/total progress count (skipped
+    sets are excluded from the total). Used by every plan tool's return and by the web UI.
 
     `unmatched` (names this call couldn't resolve to a real catalog exercise, each with
     its closest `candidates`) is surfaced so the model re-issues them under a name that
@@ -2434,18 +2437,24 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
         """SELECT s.id, s.exercise_id, e.name, s.set_index, s.status,
                   s.target_weight_lbs, s.target_reps,
                   s.weight_lbs, s.reps, s.rpe,
-                  s.duration_seconds, s.distance_miles, s.note
+                  s.duration_seconds, s.distance_miles, s.ex_position, s.note
            FROM sets s JOIN exercises e ON e.id = s.exercise_id
            WHERE s.workout_id=? ORDER BY s.id""",
         (wid,),
     ).fetchall()
     exercises, by_eid, done, total = [], {}, 0, 0
-    for r in rows:
+    # Track each exercise's slot key: its ex_position if set, else where it was first
+    # inserted — so a reordered plan honors the user's order and newly-added exercises
+    # (ex_position NULL) fall in after the positioned ones, in insertion order.
+    sort_key = {}
+    for seen, r in enumerate(rows):
         ex = by_eid.get(r["exercise_id"])
         if ex is None:
             ex = {"exercise_id": r["exercise_id"], "name": r["name"], "sets": []}
             by_eid[r["exercise_id"]] = ex
             exercises.append(ex)
+            pos = r["ex_position"]
+            sort_key[r["exercise_id"]] = (0, pos) if pos is not None else (1, seen)
         ex["sets"].append({
             "set_id": r["id"], "set_index": r["set_index"], "status": r["status"],
             "target_weight_lbs": r["target_weight_lbs"], "target_reps": r["target_reps"],
@@ -2458,6 +2467,7 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
             total += 1
         elif r["status"] == "pending":
             total += 1
+    exercises.sort(key=lambda ex: sort_key[ex["exercise_id"]])
     payload = {"active": w["status"] == "active", "workout_id": w["id"],
                "workout_date": w["workout_date"], "focus": w["focus"],
                "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
@@ -2479,6 +2489,22 @@ def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> 
             return {"error": "no active workout plan"}
         conn.execute("DELETE FROM sets WHERE workout_id=? AND exercise_id=?",
                      (w["id"], exercise_id))
+        return _plan_payload(conn, w["id"])
+
+
+def reorder_plan_exercises(order: list[int], workout_id: Optional[int] = None) -> dict:
+    """Set the order of exercises in the active plan from a list of exercise_ids. Each
+    exercise's sets get an `ex_position` matching its slot in `order`; exercises not named
+    keep ex_position NULL and fall in after (in insertion order). Backs the /trainer page's
+    "reorder" UX (the ↑/↓ arrows) and the reorder_plan tool. Returns the updated plan."""
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan"}
+        for pos, eid in enumerate(order):
+            conn.execute("UPDATE sets SET ex_position=? WHERE workout_id=? AND exercise_id=?",
+                         (pos, w["id"], int(eid)))
         return _plan_payload(conn, w["id"])
 
 
@@ -2681,6 +2707,28 @@ def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict
             return {"error": "no active workout plan; start one with start_workout_plan"}
         results, unmatched = _insert_planned(conn, w["id"], exercises)
         return _plan_payload(conn, w["id"], unmatched=unmatched)
+
+
+@trainer_mcp.tool()
+def reorder_plan(order: list[str], workout_id: Optional[int] = None) -> dict:
+    """Reorder the exercises in the active plan. `order` is the exercise names in the
+    sequence you want them done, e.g. ["Squat", "Bench Press", "Curls"] — names resolve
+    against the plan's exercises fuzzily (same matching as everywhere). Any plan exercise
+    you leave out keeps its place after the ones you listed. Use this when the user asks to
+    move a lift earlier/later or to lay the session out in a particular order (warm-up
+    compounds first, accessories last). Returns the updated plan in the new order."""
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan"}
+        ids, seen = [], set()
+        for name in order:
+            row = _resolve_exercise(conn, (name or "").strip())
+            if row and row["id"] not in seen:
+                ids.append(row["id"])
+                seen.add(row["id"])
+    return reorder_plan_exercises(ids, workout_id=w["id"])
 
 
 @trainer_mcp.tool()
