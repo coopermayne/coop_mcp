@@ -260,12 +260,13 @@ def person_detail(person_id: int, history_limit: int = 60):
     """Everything the read UI shows for one person."""
     with server.db() as conn:
         p = conn.execute(
-            "SELECT id, canonical_name, role, summary, notes, email, phone, address "
+            "SELECT id, canonical_name, role, summary, notes "
             "FROM people WHERE id = ?",
             (person_id,),
         ).fetchone()
         if not p:
             return None
+        contact = server._get_contact(conn, person_id)
         aliases = conn.execute(
             "SELECT surface_form, source FROM aliases WHERE person_id = ? "
             "ORDER BY source, surface_form",
@@ -280,9 +281,7 @@ def person_detail(person_id: int, history_limit: int = 60):
         "role": p["role"],
         "summary": p["summary"],
         "notes": p["notes"],
-        "email": p["email"],
-        "phone": p["phone"],
-        "address": p["address"],
+        "contact": contact,
         "groups": groups,
         "aliases": [{"surface_form": a["surface_form"], "source": a["source"]} for a in aliases],
         "history": hist.get("entries", []),
