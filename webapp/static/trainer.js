@@ -18,6 +18,8 @@
   var currentPlan = null;  // last rendered plan (Finish reads its bodyweight/progress)
   var pendingBodyweight = ''; // weigh-in typed but not yet saved — submitted only on Finish,
                               // kept here so set-by-set re-renders don't wipe what you typed
+  var reordering = false;  // reorder mode: arrows to the left of each exercise, header "Done"
+  var reorderList = null;  // working copy of the visible exercises while reordering
 
   function num(x) {
     if (x === null || x === undefined || x === '') return '';
@@ -75,74 +77,189 @@
 
   // ── Rendering ──────────────────────────────────────────────────────────────
 
+  function liveSets(ex) {
+    return ex.sets.filter(function (s) { return s.status !== 'skipped'; });
+  }
+
   function render(plan) {
     root.innerHTML = '';
     editingSetId = null;
     openPanel = null;
     currentPlan = plan;
-    if (!plan || !plan.active) { renderEmpty(plan); return; }
+    if (!plan || !plan.active) { reordering = false; reorderList = null; renderEmpty(plan); return; }
 
-    // Header: focus + progress + finish.
+    var pr = plan.progress || { done: 0, total: 0 };
+    var visible = plan.exercises.filter(function (ex) { return liveSets(ex).length; });
+
+    // Header: focus + progress, with a reorder toggle on the right (Done while reordering).
     var head = el('div', 'flex items-end justify-between mb-4');
     var left = el('div');
     left.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400 mb-1',
       'Today’s plan' + (plan.focus ? ' · ' + plan.focus : '')));
-    var pr = plan.progress || { done: 0, total: 0 };
     left.appendChild(el('p', 'text-lg font-semibold tracking-tight',
       pr.done + ' / ' + pr.total + ' sets'));
     head.appendChild(left);
-    var finish = el('button',
-      'text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors', 'Finish');
-    finish.addEventListener('click', onFinish);
-    head.appendChild(finish);
+    if (reordering) head.appendChild(reorderDoneBtn());
+    else if (visible.length > 1) head.appendChild(reorderToggleBtn());
     root.appendChild(head);
 
+    // Reorder mode: just the exercises with ↑/↓ arrows; weigh-in & Finish are hidden.
+    if (reordering) {
+      reorderList.forEach(function (ex, i) { root.appendChild(renderReorderRow(ex, i)); });
+      root.appendChild(el('p', 'text-[11px] text-gray-400 mt-3 mb-1',
+        'Reorder with the arrows, then tap Done.'));
+      return;
+    }
+
     // Exercises (fully swapped-out ones are hidden).
-    plan.exercises.forEach(function (ex) {
-      var live = ex.sets.filter(function (s) { return s.status !== 'skipped'; });
-      if (!live.length) return;
-      root.appendChild(renderExercise(ex));
-    });
+    visible.forEach(function (ex) { root.appendChild(renderExercise(ex)); });
 
     // Weigh-in box — its own row under the sets, encouraging (not requiring) a
-    // bodyweight while you're at the gym. Highlights once every set is in.
+    // bodyweight while you're at the gym.
     root.appendChild(renderBodyweight(plan, pr));
+
+    // The big full-width Finish ("Done") button at the bottom.
+    root.appendChild(renderFinish());
+  }
+
+  // ── Reorder mode ────────────────────────────────────────────────────────────
+
+  function reorderToggleBtn() {
+    var b = el('button', 'shrink-0 w-8 h-8 flex items-center justify-center rounded-[4px] ' +
+      'text-gray-400 hover:text-black hover:bg-gray-100 transition-colors', null);
+    b.type = 'button';
+    b.setAttribute('aria-label', 'Reorder exercises');
+    b.title = 'Reorder exercises';
+    b.appendChild(reorderIcon());
+    b.addEventListener('click', function () {
+      reordering = true;
+      reorderList = (currentPlan.exercises || []).filter(function (ex) { return liveSets(ex).length; });
+      render(currentPlan);
+    });
+    return b;
+  }
+
+  function reorderDoneBtn() {
+    var b = el('button', 'shrink-0 px-4 h-8 rounded-[4px] bg-black text-white text-xs ' +
+      'uppercase tracking-widest font-semibold hover:bg-gray-800 transition-colors', 'Done');
+    b.type = 'button';
+    b.addEventListener('click', submitReorder);
+    return b;
+  }
+
+  function renderReorderRow(ex, i) {
+    var box = el('div', 'border border-gray-200 rounded-[4px] pl-2 pr-4 py-3 mb-2 flex items-center gap-3');
+    var arrows = el('div', 'flex flex-col shrink-0');
+    var up = arrowBtn('up', i === 0);
+    up.addEventListener('click', function () { moveReorder(i, -1); });
+    var down = arrowBtn('down', i === reorderList.length - 1);
+    down.addEventListener('click', function () { moveReorder(i, 1); });
+    arrows.appendChild(up);
+    arrows.appendChild(down);
+    box.appendChild(arrows);
+    box.appendChild(el('p', 'text-sm font-medium', ex.name));
+    return box;
+  }
+
+  function moveReorder(i, dir) {
+    var j = i + dir;
+    if (j < 0 || j >= reorderList.length) return;
+    var tmp = reorderList[i];
+    reorderList[i] = reorderList[j];
+    reorderList[j] = tmp;
+    render(currentPlan);
+  }
+
+  async function submitReorder() {
+    var order = (reorderList || []).map(function (ex) { return ex.exercise_id; });
+    reordering = false;
+    reorderList = null;
+    var r = await postJSON(base + '/trainer/reorder', { order: order });
+    if (r.ok && r.data && !r.data.error) render(r.data);
+    else refresh();
+  }
+
+  // A small up/down arrow for a reorder row (disabled at the ends).
+  function arrowBtn(dir, disabled) {
+    var b = el('button', 'w-7 h-6 flex items-center justify-center rounded text-gray-400 ' +
+      'hover:text-black hover:bg-gray-100 transition-colors ' +
+      'disabled:opacity-20 disabled:hover:bg-transparent disabled:hover:text-gray-400', null);
+    b.type = 'button';
+    b.disabled = !!disabled;
+    b.setAttribute('aria-label', dir === 'up' ? 'Move up' : 'Move down');
+    b.appendChild(chevron(dir));
+    return b;
+  }
+
+  function svgEl(view, cls) {
+    var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', view); s.setAttribute('fill', 'none');
+    s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '2');
+    s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
+    s.setAttribute('class', cls);
+    return s;
+  }
+
+  function chevron(dir) {
+    var s = svgEl('0 0 24 24', 'w-4 h-4');
+    var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', dir === 'up' ? 'M18 15l-6-6-6 6' : 'M6 9l6 6 6-6');
+    s.appendChild(p);
+    return s;
+  }
+
+  // The reorder toggle's glyph: two opposed arrows (⇅).
+  function reorderIcon() {
+    var s = svgEl('0 0 24 24', 'w-5 h-5');
+    [['M8 4v16', 'M4 8l4-4 4 4'], ['M16 20V4', 'M20 16l-4 4-4-4']].forEach(function (d) {
+      d.forEach(function (path) {
+        var p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        p.setAttribute('d', path); s.appendChild(p);
+      });
+    });
+    return s;
+  }
+
+  // The big full-width Finish button — bold white "Done" on yellow, anchoring the card.
+  function renderFinish() {
+    var b = el('button', 'w-full py-5 mt-1 rounded-[4px] bg-yellow-400 hover:bg-yellow-500 ' +
+      'text-white font-bold text-lg uppercase tracking-widest transition-colors', 'Done');
+    b.type = 'button';
+    b.addEventListener('click', onFinish);
+    return b;
   }
 
   // A full-width box mirroring the exercise cards: a label + a number entry for
   // today's bodyweight. The entry starts EMPTY and is never submitted on its own —
-  // Finish reads it and saves it (so a weigh-in commits with the workout, not before).
-  // Rings itself as a reminder when all sets are done but nothing's been entered yet.
+  // there's no log/update button; Finish reads it and saves it (so a weigh-in commits
+  // with the workout, not before). The input goes yellow as a typo guard whenever a
+  // value is entered that isn't a plausible reading (between 160 and 230 lbs).
   function renderBodyweight(plan, pr) {
-    var logged = plan.bodyweight != null;        // already weighed in earlier today
-    var pending = pendingBodyweight.trim() !== ''; // typed this session, not yet saved
-    var allDone = pr && pr.total > 0 && pr.done === pr.total;
-    var remind = allDone && !logged && !pending;
-    var box = el('div', 'border rounded-[4px] px-5 sm:px-6 py-4 mb-3 transition-colors ' +
-      (remind ? 'border-black ring-1 ring-black' : 'border-gray-200'));
+    var box = el('div', 'border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-3');
     box.dataset.weighIn = '1';
+    box.appendChild(el('p', 'text-sm font-medium mb-3', 'Bodyweight'));
 
-    var head = el('div', 'flex items-center justify-between gap-2 mb-3');
-    head.appendChild(el('p', 'text-sm font-medium', 'Bodyweight'));
-    if (logged) {
-      head.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400',
-        'logged ✓ · ' + num(plan.bodyweight) + ' lbs'));
-    } else if (remind) {
-      head.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400',
-        'weigh in while you’re here'));
-    }
-    box.appendChild(head);
-
-    // No submit button: the value is held in pendingBodyweight and saved on Finish.
-    var inp = el('input', 'w-full border border-gray-200 rounded-[4px] px-3 py-2 text-base ' +
-      'focus:outline-none focus:border-black transition-colors');
+    var INPUT_BASE = 'w-full border rounded-[4px] px-3 py-2 text-base focus:outline-none transition-colors';
+    var inp = el('input', INPUT_BASE);
     inp.type = 'number'; inp.inputMode = 'decimal'; inp.step = 'any'; inp.min = '0';
-    inp.placeholder = logged ? 'lbs · type a new reading to update' : 'lbs';
+    inp.placeholder = 'lbs';
     inp.value = pendingBodyweight; // empty by default; restored across re-renders
-    inp.addEventListener('input', function () { pendingBodyweight = inp.value; });
+
+    // Yellow when a value is present but outside a plausible range — catches typos
+    // (a dropped/extra digit) without ever blocking the entry.
+    function paint() {
+      var v = inp.value.trim();
+      var n = parseFloat(v);
+      var bad = v !== '' && !(n >= 160 && n <= 230);
+      inp.className = INPUT_BASE + (bad
+        ? ' border-yellow-400 bg-yellow-50 focus:border-yellow-500'
+        : ' border-gray-200 focus:border-black');
+    }
+    inp.addEventListener('input', function () { pendingBodyweight = inp.value; paint(); });
     inp.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
     });
+    paint();
     box.appendChild(inp);
     return box;
   }
