@@ -215,7 +215,8 @@ CREATE TABLE IF NOT EXISTS people (
     role           TEXT,
     notes          TEXT,
     summary        TEXT,   -- rolling profile Claude maintains, for fast context
-    email          TEXT,   -- vCard-aligned contact fields
+    contact        TEXT,   -- free-form JSON blob: emails/phones/addresses/websites/…
+    email          TEXT,   -- legacy single-valued fields (folded into `contact` on migrate)
     phone          TEXT,
     address        TEXT,
     created_at     TEXT NOT NULL
@@ -447,9 +448,25 @@ def init_db() -> None:
         if "raw_body" not in ecols:
             conn.execute("ALTER TABLE entries ADD COLUMN raw_body TEXT")
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
-        for col in ("summary", "email", "phone", "address"):
+        for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
                 conn.execute(f"ALTER TABLE people ADD COLUMN {col} TEXT")
+        # Fold the legacy single-valued email/phone/address columns into the JSON
+        # `contact` blob. One-time and idempotent: only touches rows whose contact is
+        # still empty, and contact becomes non-NULL after, so it never re-runs.
+        for r in conn.execute(
+            "SELECT id, email, phone, address FROM people WHERE contact IS NULL "
+            "AND (email IS NOT NULL OR phone IS NOT NULL OR address IS NOT NULL)"
+        ).fetchall():
+            blob: dict = {}
+            if r["email"]:
+                blob["emails"] = [r["email"]]
+            if r["phone"]:
+                blob["phones"] = [r["phone"]]
+            if r["address"]:
+                blob["addresses"] = [r["address"]]
+            conn.execute("UPDATE people SET contact=? WHERE id=?",
+                         (json.dumps(blob), r["id"]))
         scols = [r["name"] for r in conn.execute("PRAGMA table_info(sets)")]
         for col, decl in (("duration_seconds", "INTEGER"), ("distance_miles", "REAL"),
                           ("target_weight_lbs", "REAL"), ("target_reps", "INTEGER"),
@@ -767,8 +784,7 @@ def link_mentions(links: list[dict]) -> dict:
 @mcp.tool()
 def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] = None,
                 role: Optional[str] = None, notes: Optional[str] = None,
-                summary: Optional[str] = None, email: Optional[str] = None,
-                phone: Optional[str] = None, address: Optional[str] = None,
+                summary: Optional[str] = None,
                 aliases: Optional[list[str]] = None,
                 groups: Optional[list[str]] = None) -> dict:
     """Create or update a person (an entity) — the one write tool for people.
@@ -782,15 +798,18 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
     seed the person, on update they are ADDED — so this is also how you attach a new
     alias to someone later. `groups` are circle names like ["family"], created if new;
     passing `groups` REPLACES the person's circle membership. Returns the person_id and
-    whether it was newly created."""
+    whether it was newly created.
+
+    Contact details (emails, phones, addresses, websites, …) live in a separate
+    multi-valued blob — write them with `update_contact`, not here."""
     with db() as conn:
         if person_id is None:
             if not canonical_name:
                 return {"error": "canonical_name is required to create a person"}
             person_id = conn.execute(
-                """INSERT INTO people(canonical_name, role, notes, summary, email, phone,
-                   address, created_at) VALUES (?,?,?,?,?,?,?,?)""",
-                (canonical_name, role, notes, summary, email, phone, address, now()),
+                """INSERT INTO people(canonical_name, role, notes, summary, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (canonical_name, role, notes, summary, now()),
             ).lastrowid
             created, updated = True, []
         else:
@@ -798,7 +817,7 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
                 return {"error": f"no person with id {person_id}"}
             created = False
             fields = {"canonical_name": canonical_name, "role": role, "notes": notes,
-                      "summary": summary, "email": email, "phone": phone, "address": address}
+                      "summary": summary}
             sets = {k: v for k, v in fields.items() if v is not None}
             if sets:
                 cols = ", ".join(f"{k}=?" for k in sets)
@@ -818,6 +837,39 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
     return {"person_id": person_id, "created": False,
             "updated": updated + (["aliases"] if aliases else [])
                        + (["groups"] if groups is not None else [])}
+
+
+@mcp.tool()
+def update_contact(person_id: int, contact: dict) -> dict:
+    """Merge contact details into a person's CONTACT blob (free-form JSON) and return
+    the merged result. This is the home for everything vCard-ish — emails, phones,
+    addresses, websites, birthdays, handles — and it's MULTI-VALUED: one person can have
+    several phones, two addresses, whatever.
+
+    THE MERGE IS SHALLOW, by top-level key: passing {"phones": [...]} rewrites the whole
+    phones list but leaves emails/addresses untouched. So to ADD one item to a list that
+    already has entries, first READ the current blob (get_person_history returns it as
+    `contact`), then write the FULL updated list back — otherwise you overwrite what was
+    there. To DROP a category, pass it with a null value, e.g. {"phones": null}.
+
+    Keep the shape renderable: top-level keys are category names; each value is a string,
+    a list of strings, or a list of {"label","value"} objects — e.g.
+    {"emails": ["tom@work.com"],
+     "phones": [{"label": "mobile", "value": "555-0100"}],
+     "addresses": [{"label": "home", "value": "12 Oak St, Portland OR"}],
+     "websites": ["https://tom.example"]}. Within that, store whatever fits."""
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM people WHERE id=?", (person_id,)).fetchone():
+            return {"error": f"no person with id {person_id}"}
+        current = _get_contact(conn, person_id)
+        for k, v in contact.items():
+            if v is None:
+                current.pop(k, None)
+            else:
+                current[k] = v
+        conn.execute("UPDATE people SET contact=? WHERE id=?",
+                     (json.dumps(current) if current else None, person_id))
+    return {"person_id": person_id, "contact": current}
 
 
 @mcp.tool()
@@ -882,7 +934,8 @@ def get_person_history(person_id: int, limit: int = 50,
                        max_chars: int = 600) -> dict:
     """Every entry that mentions this person, newest first — the payoff query.
     This is an indexed lookup on the entity, so 'everything about Tom my father'
-    never pulls in the other Tom. Bodies are truncated to max_chars."""
+    never pulls in the other Tom. Bodies are truncated to max_chars. Also returns the
+    person's `contact` blob — read it here before editing it with update_contact."""
     if err := _bad_date(since, "since"):
         return err
     sql = """SELECT DISTINCT e.id, e.entry_date, e.body
@@ -898,16 +951,18 @@ def get_person_history(person_id: int, limit: int = 50,
         person = conn.execute(
             "SELECT canonical_name, role FROM people WHERE id=?", (person_id,)
         ).fetchone()
+        if not person:
+            return {"error": f"no person with id {person_id}"}
+        contact = _get_contact(conn, person_id)
         rows = conn.execute(sql, params).fetchall()
-    if not person:
-        return {"error": f"no person with id {person_id}"}
     entries = [
         {"entry_id": r["id"], "entry_date": r["entry_date"],
          "body": _truncate(r["body"], max_chars)}
         for r in rows
     ]
     return {"person_id": person_id, "name": person["canonical_name"],
-            "role": person["role"], "entries": entries, "count": len(entries)}
+            "role": person["role"], "contact": contact,
+            "entries": entries, "count": len(entries)}
 
 
 @mcp.tool()
@@ -964,6 +1019,18 @@ def _groups_for(conn: sqlite3.Connection, person_id: int) -> list[str]:
         (person_id,),
     ).fetchall()
     return [r["name"] for r in rows]
+
+
+def _get_contact(conn: sqlite3.Connection, person_id: int) -> dict:
+    """A person's contact blob as a dict ({} if unset or malformed)."""
+    row = conn.execute("SELECT contact FROM people WHERE id=?", (person_id,)).fetchone()
+    if not row or not row["contact"]:
+        return {}
+    try:
+        v = json.loads(row["contact"])
+    except (ValueError, TypeError):
+        return {}
+    return v if isinstance(v, dict) else {}
 
 
 @mcp.tool()
@@ -1113,17 +1180,17 @@ def merge_people(survivor_person_id: int, loser_person_id: int) -> dict:
     deduped; the loser's canonical name becomes an alias so the surface form stays
     discoverable). The loser is then deleted. Irreversible.
 
-    This is a relational merge only — the survivor's role/notes/summary/email/
-    phone/address are NOT overwritten. The loser's fields are returned as
-    `discarded_fields` so you can decide whether any are worth copying onto the
-    survivor via save_person(person_id=survivor_person_id, …)."""
+    This is a relational merge only — the survivor's role/notes/summary/contact are
+    NOT overwritten. The loser's fields are returned as `discarded_fields` so you can
+    decide whether any are worth copying onto the survivor via
+    save_person/update_contact(person_id=survivor_person_id, …)."""
     if survivor_person_id == loser_person_id:
         return {"error": "survivor and loser must be different people"}
     with db() as conn:
         if not conn.execute("SELECT 1 FROM people WHERE id=?", (survivor_person_id,)).fetchone():
             return {"error": f"no person with id {survivor_person_id} (survivor)"}
         loser = conn.execute(
-            """SELECT id, canonical_name, role, notes, summary, email, phone, address
+            """SELECT id, canonical_name, role, notes, summary, contact
                FROM people WHERE id=?""", (loser_person_id,)
         ).fetchone()
         if not loser:
@@ -1158,8 +1225,12 @@ def merge_people(survivor_person_id: int, loser_person_id: int) -> dict:
             "DELETE FROM person_groups WHERE person_id=?", (loser_person_id,)
         ).rowcount
         conn.execute("DELETE FROM people WHERE id=?", (loser_person_id,))
-        discarded = {k: loser[k] for k in
-                     ("role", "notes", "summary", "email", "phone", "address") if loser[k]}
+        discarded = {k: loser[k] for k in ("role", "notes", "summary") if loser[k]}
+        if loser["contact"]:
+            try:
+                discarded["contact"] = json.loads(loser["contact"])
+            except (ValueError, TypeError):
+                pass
     return {
         "survivor_person_id": survivor_person_id,
         "merged_person_id": loser_person_id,

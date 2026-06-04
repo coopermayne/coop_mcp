@@ -18,8 +18,9 @@ no LLM inside it. The judgment ("which Tom?") happens in the conversation.
   the other Tom.
 - **It gets quieter over time.** Confirm that a garbled transcription meant a given
   person and that surface form is stored as a learned alias — it auto-matches next time.
-- **Contacts live on the person.** Email, phone, and address are vCard-aligned fields
-  on each person — no separate contacts app. Import/export as vCard to move data in or out.
+- **Contacts live on the person.** Each person carries a free-form `contact` blob —
+  emails, phones, addresses, websites, anything — multi-valued, edited via
+  `update_contact`. No separate contacts app.
 - **Circles + emergent network.** Assign people to groups (family, colleagues,
   Hallie's friends). Separately, `get_related_people` derives who gets talked about
   together straight from the journal — no tagging needed.
@@ -432,6 +433,7 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `add_journal_entry` | Save an entry + return candidate matches per named person |
 | `link_mentions` | Resolve pending mentions to people (with optional alias learning) |
 | `save_person` | Create or update a person — omit `person_id` to create, pass it to edit; `aliases` adds/learns surface forms, `groups` sets circles |
+| `update_contact` | Merge contact details (emails/phones/addresses/websites/…) into a person's free-form JSON blob; shallow per-key merge, read-then-write for lists |
 | `list_pending_mentions` | The "tell you later" queue |
 | `list_people` | Compact registry; filter by name/role or group |
 | `get_person_history` | Every entry about one person — the payoff query |
@@ -466,9 +468,10 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
   date default roll over at Pacific midnight, not the server's UTC midnight. Both
   briefings return `now` (current Pacific date/time) so the model can anchor
   "today"/"yesterday" correctly. `created_at` stays UTC — it's a storage timestamp.
-- Contact fields are single-valued (one email/phone/address). If you need multiple
-  per person (home/work), promote them to a `contact_methods(person_id, kind, label,
-  value)` table — straightforward, and still vCard-aligned.
+- Contact info is a free-form JSON `contact` blob per person (multi-valued — several
+  phones, two addresses, websites), edited via `update_contact` with a shallow per-key
+  merge. The legacy single-valued `email`/`phone`/`address` columns are folded into it
+  on migration and otherwise unused. A future vCard import/export would map onto this blob.
 - **Deferred on purpose:** a typed relationship graph (edges like "X is Hallie's
   friend"). Groups + the emergent co-mention query cover most of the "networking"
   value without it; add edges only when you actually hit a question they can't answer.

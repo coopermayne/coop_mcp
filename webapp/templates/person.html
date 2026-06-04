@@ -27,12 +27,25 @@
 </div>
 {% endif %}
 
-{% if p.email or p.phone or p.address or p.notes %}
+{# Render one contact value: a string, a list of strings, or a list of {label,value}. #}
+{% macro contact_value(val) -%}
+  {%- if val is string -%}{{ val }}
+  {%- elif val is mapping -%}{{ val.value if val.value is defined else val }}{% if val.label %} <span class="text-gray-400">({{ val.label }})</span>{% endif %}
+  {%- else -%}
+    {%- for item in val -%}
+      {%- if item is mapping -%}{{ item.value if item.value is defined else item }}{% if item.label %} <span class="text-gray-400">({{ item.label }})</span>{% endif %}
+      {%- else -%}{{ item }}{%- endif -%}
+      {%- if not loop.last %}, {% endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% if p.contact or p.notes %}
 <div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-6 space-y-1.5">
   {{ m.section_label("Details") }}
-  {% if p.email %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Email:</span> {{ p.email }}</p>{% endif %}
-  {% if p.phone %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Phone:</span> {{ p.phone }}</p>{% endif %}
-  {% if p.address %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Address:</span> {{ p.address }}</p>{% endif %}
+  {% for key, val in p.contact.items() %}
+  <p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">{{ key|replace("_", " ")|capitalize }}:</span> {{ contact_value(val) }}</p>
+  {% endfor %}
   {% if p.notes %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Notes:</span> {{ p.notes }}</p>{% endif %}
 </div>
 {% endif %}
