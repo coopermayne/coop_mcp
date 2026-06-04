@@ -2577,10 +2577,16 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
         if active:
             wid = active["id"]
         else:
+            # A plan in progress has NO date yet — it's just today's intended routine,
+            # not a thing that happened. The date is stamped only at finish_workout, when
+            # the session is actually done (so a plan started late and finished after
+            # midnight records the day it was completed). '' is the not-yet-done sentinel
+            # (the column is NOT NULL); active workouts are excluded from all history /
+            # briefing aggregates by status, so the empty date never leaks anywhere.
             wid = conn.execute(
                 """INSERT INTO workouts(workout_date, focus, notes, status, created_at)
-                   VALUES (?,?,?, 'active', ?)""",
-                (today(), focus, notes, now()),
+                   VALUES ('',?,?, 'active', ?)""",
+                (focus, notes, now()),
             ).lastrowid
         results, unmatched = _insert_planned(conn, wid, exercises)
         return _plan_payload(conn, wid, unmatched=unmatched)
@@ -2757,13 +2763,18 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
             (w["id"],),
         ).rowcount
         fields = {"status": "done"}
+        # Stamp the date now — this is when the session was actually done. A plan carries
+        # no date while in progress (the '' sentinel), so finishing is what dates it.
+        wd = w["workout_date"] or today()
+        if not w["workout_date"]:
+            fields["workout_date"] = wd
         if feeling is not None:
             fields["feeling"] = feeling
         if notes is not None:
             fields["notes"] = notes
         cols = ", ".join(f"{k}=?" for k in fields)
         conn.execute(f"UPDATE workouts SET {cols} WHERE id=?", (*fields.values(), w["id"]))
-        return {"finished": True, "workout_id": w["id"], "workout_date": w["workout_date"],
+        return {"finished": True, "workout_id": w["id"], "workout_date": wd,
                 "done_sets": done, "skipped_sets": skipped, "active": False}
 
 

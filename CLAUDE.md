@@ -256,7 +256,14 @@ working.
   list is `MUSCLES`.
 - `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), plus
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
-  lifts, weight/reps NULL for cardio). The two-level log mirroring entries/mentions.
+  lifts, weight/reps NULL for cardio). The two-level log mirroring entries/mentions. A
+  *planned* session (`status='active'`, from `start_workout_plan`) is UNDATED — its
+  `workout_date` is the `''` not-yet-done sentinel until `finish_workout` stamps it with
+  the day it was actually completed (so a plan started late and finished after Pacific
+  midnight dates to the finish day, not the start). A direct `log_workout` is already
+  done, so it dates immediately. Active workouts are excluded from all history/briefing
+  aggregates by `status`, so the empty date never leaks. (`log_workout` is the
+  immediate-done path; the empty sentinel only ever exists on an in-progress plan.)
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
   `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the
