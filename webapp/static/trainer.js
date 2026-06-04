@@ -95,7 +95,7 @@
     var head = el('div', 'flex items-end justify-between mb-4');
     var left = el('div');
     left.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400 mb-1',
-      'Today’s plan' + (plan.focus ? ' · ' + plan.focus : '')));
+      'Next Plan' + (plan.focus ? ' · ' + plan.focus : '')));
     left.appendChild(el('p', 'text-lg font-semibold tracking-tight',
       pr.done + ' / ' + pr.total + ' sets'));
     head.appendChild(left);
@@ -551,7 +551,7 @@
   }
 
   async function doDelete(ex) {
-    if (!window.confirm('Remove ' + ex.name + ' from today’s plan? Any sets you logged for it will be deleted.')) return;
+    if (!window.confirm('Remove ' + ex.name + ' from your plan? Any sets you logged for it will be deleted.')) return;
     closePanels();
     var r = await postJSON(base + '/trainer/exercise/' + ex.exercise_id + '/remove', {});
     if (r.ok && r.data && !r.data.error) render(r.data);
