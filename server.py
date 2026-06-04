@@ -328,7 +328,9 @@ CREATE TABLE IF NOT EXISTS exercises (
     common_mistakes TEXT,
     cautions        TEXT,             -- injury / shoulder considerations
     video_link      TEXT,
-    image_link      TEXT,             -- gif / still of proper technique (loops inline in the UI)
+    image_link      TEXT,             -- start frame (or a self-looping gif) of proper technique
+    image_link_end  TEXT,             -- finish frame; with image_link the UI alternates the two
+                                      -- (~1s) to animate the rep — free-exercise-db ships both
     in_rotation     INTEGER NOT NULL DEFAULT 0,  -- 1 = in the user's curated programming pool
     archived        INTEGER NOT NULL DEFAULT 0,  -- 1 = soft-deleted: hidden everywhere the
                                                  -- catalog is discovered, row kept so past
@@ -509,6 +511,8 @@ def init_db() -> None:
         xcols = [r["name"] for r in conn.execute("PRAGMA table_info(exercises)")]
         if "image_link" not in xcols:
             conn.execute("ALTER TABLE exercises ADD COLUMN image_link TEXT")
+        if "image_link_end" not in xcols:
+            conn.execute("ALTER TABLE exercises ADD COLUMN image_link_end TEXT")
         # Columns added when the catalog was lined up with free-exercise-db + rotation.
         for col, decl in (("slug", "TEXT"), ("force", "TEXT"), ("level", "TEXT"),
                           ("mechanic", "TEXT"),
@@ -1733,8 +1737,9 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 
 def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                      secondary_muscles, tertiary_muscles, technique_notes,
-                     common_mistakes, cautions, video_link, image_link, slug, force,
-                     level, mechanic, in_rotation, aliases=None, allow_create: bool) -> dict:
+                     common_mistakes, cautions, video_link, image_link, image_link_end,
+                     slug, force, level, mechanic, in_rotation, aliases=None,
+                     allow_create: bool) -> dict:
     """Shared worker behind save_exercise (enrich-only, allow_create=False) and
     create_exercise (the website's add form, allow_create=True). New rows are born ONLY
     when allow_create is set, which the model-facing tool never passes — that's what keeps
@@ -1757,7 +1762,7 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                   "mechanic": mechanic, "equipment": equipment,
                   "technique_notes": technique_notes, "common_mistakes": common_mistakes,
                   "cautions": cautions, "video_link": video_link, "image_link": image_link,
-                  "in_rotation": in_rotation}
+                  "image_link_end": image_link_end, "in_rotation": in_rotation}
         sets_ = {k: v for k, v in fields.items() if v is not None}
         if row:
             eid = row["id"]
@@ -1806,6 +1811,7 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   cautions: Optional[str] = None,
                   video_link: Optional[str] = None,
                   image_link: Optional[str] = None,
+                  image_link_end: Optional[str] = None,
                   slug: Optional[str] = None,
                   force: Optional[str] = None,
                   level: Optional[str] = None,
@@ -1848,7 +1854,8 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
         name=name, exercise_id=exercise_id, category=category, equipment=equipment,
         muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
         technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
-        video_link=video_link, image_link=image_link, slug=slug, force=force, level=level,
+        video_link=video_link, image_link=image_link, image_link_end=image_link_end,
+        slug=slug, force=force, level=level,
         mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=False)
 
 
@@ -1861,6 +1868,7 @@ def create_exercise(name: str, category: Optional[str] = None, equipment: Option
                     cautions: Optional[str] = None,
                     video_link: Optional[str] = None,
                     image_link: Optional[str] = None,
+                    image_link_end: Optional[str] = None,
                     slug: Optional[str] = None,
                     force: Optional[str] = None,
                     level: Optional[str] = None,
@@ -1879,7 +1887,8 @@ def create_exercise(name: str, category: Optional[str] = None, equipment: Option
         name=name, exercise_id=None, category=category, equipment=equipment,
         muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
         technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
-        video_link=video_link, image_link=image_link, slug=slug, force=force, level=level,
+        video_link=video_link, image_link=image_link, image_link_end=image_link_end,
+        slug=slug, force=force, level=level,
         mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=True)
 
 
@@ -1983,7 +1992,8 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                     "in_rotation": bool(r["in_rotation"]),
                     "technique_notes": r["technique_notes"],
                     "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
-                    "video_link": r["video_link"], "image_link": r["image_link"]}
+                    "video_link": r["video_link"], "image_link": r["image_link"],
+                    "image_link_end": r["image_link_end"]}
 
         def _row(r):
             return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
