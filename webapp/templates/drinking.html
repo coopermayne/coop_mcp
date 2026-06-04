@@ -191,10 +191,12 @@
     <div data-chart-tip hidden
          class="absolute z-10 -translate-x-1/2 -translate-y-full px-2 py-1 bg-black text-white text-[11px] rounded whitespace-nowrap pointer-events-none tabular-nums"></div>
   </div>
-  {# First letter of each weekday under its bar — same size/style as the dates below. #}
+  {# Mon/Wed/Fri letter under its bar — sparse on purpose; the rest read from context.
+     Same size/style as the dates below. #}
   <div class="flex gap-px mt-1" data-chart-dow>
     {% for day in s.series %}
-      <span class="flex-1 text-center text-[10px] uppercase tracking-widest text-gray-400">{{ day.date | weekday | first }}</span>
+      {% set wd = day.date | weekday %}
+      <span class="flex-1 text-center text-[10px] uppercase tracking-widest text-gray-400">{{ wd[0] if wd in ['Mon', 'Wed', 'Fri'] else '' }}</span>
     {% endfor %}
   </div>
   <div class="flex justify-between text-[10px] uppercase tracking-widest text-gray-400 mt-2">
@@ -240,10 +242,10 @@
       return new Date(+p[0], +p[1] - 1, +p[2])
         .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     }
-    function dowLetter(iso) {  // mirror the `weekday | first` label: "M", "T", "W"…
+    function dowLetter(iso) {  // sparse label: only Mon/Wed/Fri, the rest blank
       var p = iso.split('-');
-      return new Date(+p[0], +p[1] - 1, +p[2])
-        .toLocaleDateString('en-US', { weekday: 'narrow' });
+      var d = new Date(+p[0], +p[1] - 1, +p[2]);
+      return { 1: 'M', 3: 'W', 5: 'F' }[d.getDay()] || '';
     }
     function isoShift(iso, delta) {
       var p = iso.split('-');
