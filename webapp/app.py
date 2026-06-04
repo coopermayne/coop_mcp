@@ -741,6 +741,25 @@ async def trainer_remove_exercise(request: Request, exercise_id: int):
     return JSONResponse(_with_bodyweight(res))
 
 
+@app.post("/trainer/reorder")
+async def trainer_reorder(request: Request):
+    """Set the exercise order of the active plan from the /trainer card's reorder UX (the
+    ↑/↓ arrows). Body: {"order": [exercise_id, ...]} in the desired sequence. Writes
+    through server.reorder_plan_exercises and returns the updated plan so the card
+    re-renders off one render path."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    order = body.get("order") or []
+    try:
+        ids = [int(x) for x in order]
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "order must be a list of exercise ids"}, status_code=400)
+    res = server.reorder_plan_exercises(ids)
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(_with_bodyweight(res))
+
+
 @app.get("/trainer/exercise/{exercise_id}/info.json")
 async def trainer_exercise_info(request: Request, exercise_id: int):
     """Technique for the plan card's "i" button: the catalog's saved technique notes,

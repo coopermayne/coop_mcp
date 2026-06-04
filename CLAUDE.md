@@ -259,7 +259,13 @@ working.
   lifts, weight/reps NULL for cardio). The two-level log mirroring entries/mentions.
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
-  `muscle_recency`.
+  `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the
+  workout (all the exercise's sets share it; NULL = insertion order). `_plan_payload`
+  orders exercises by it, so the active plan honors a user-chosen order; it's set by
+  `reorder_plan` (a trainer tool, names → order, so chat can sequence the session) and by
+  the deterministic `reorder_plan_exercises` helper behind the /trainer card's reorder UX
+  (↑/↓ arrows → `POST /trainer/reorder` with exercise ids). Newly-added exercises keep
+  `ex_position` NULL and fall in after the positioned ones.
 - `body_weight` — bodyweight readings, one row per weigh-in, keyed by `weigh_date`
   (the drinks pattern, not a `workouts` column: weight is a daily metric you may log on
   rest days too, and the point is the trend). The latest reading on a day is "the"
