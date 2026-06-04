@@ -2503,6 +2503,23 @@ def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> 
         return _plan_payload(conn, w["id"])
 
 
+def discard_plan(workout_id: Optional[int] = None) -> dict:
+    """Delete the active workout plan outright — the session row and every set on it
+    (planned or already logged), via the sets table's ON DELETE CASCADE. Backs the
+    /trainer card's plan-level "..." menu (Delete plan): a routine built by mistake (or
+    one the user just doesn't want) leaves no trace. Unlike finish_workout this keeps
+    nothing and writes no history. The model never needs it (it rebuilds via
+    start_workout_plan), so it stays a plain helper, not an MCP tool. Returns the
+    empty-plan state."""
+    with db() as conn:
+        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
+             if workout_id is not None else _active_workout(conn))
+        if not w:
+            return {"error": "no active workout plan"}
+        conn.execute("DELETE FROM workouts WHERE id=?", (w["id"],))
+        return {"active": False, "discarded": True, "workout_id": w["id"]}
+
+
 def reorder_plan_exercises(order: list[int], workout_id: Optional[int] = None) -> dict:
     """Set the order of exercises in the active plan from a list of exercise_ids. Each
     exercise's sets get an `ex_position` matching its slot in `order`; exercises not named
