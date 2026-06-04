@@ -317,15 +317,15 @@ Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 The whole life log is one SQLite file (`JOURNAL_DB`, on the `/data` volume in prod). If
 the volume is lost, so is everything — so pull a copy *off the box* on a schedule.
 
-**Download** a backup at `GET /export/journal.db` (in the app it's the **Back up
-database** item in the menu). The server builds the file with SQLite's `VACUUM INTO`, so
-it's a consistent, self-contained snapshot — schema, every row, and the FTS5 search index
-— taken inside a read transaction, safe to grab while the app is live. The download is
-named `journal-YYYY-MM-DD.db` (Pacific date).
+**Download** a backup at `GET /export/journal.db`. There's no button for this in the UI
+— it's just a URL you hit with curl (or a browser tab). The server builds the file with
+SQLite's `VACUUM INTO`, so it's a consistent, self-contained snapshot — schema, every row,
+and the FTS5 search index — taken inside a read transaction, safe to grab while the app is
+live. The download is named `journal-YYYY-MM-DD.db` (Pacific date).
 
 Two ways to authenticate:
 
-- **In the browser** — a logged-in session (the menu item) just works.
+- **In the browser** — a logged-in session just works (paste the URL in a tab).
 - **Headless (cron from another machine)** — set `BACKUP_TOKEN` to a strong random value
   (`openssl rand -hex 32`) and present it. No Google login, no cookie jar. This is a
   read-only, backup-only credential, kept separate from your account login — so a leaked

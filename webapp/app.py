@@ -328,9 +328,10 @@ def _backup_token_presented(request: Request) -> Optional[str]:
 
 
 def _backup_authorized(request: Request) -> bool:
-    """Allow the backup download for a logged-in browser session OR a headless
-    client presenting the BACKUP_TOKEN (constant-time compare). With auth off
-    entirely (dev), everything is open anyway."""
+    """Allow the backup download for a logged-in browser session (so you can pull
+    it from a browser tab while signed in) OR a headless client presenting the
+    BACKUP_TOKEN (constant-time compare). With auth off entirely (dev), everything
+    is open anyway."""
     if not AUTH_ENABLED:
         return True
     if request.session.get("email"):
@@ -346,9 +347,9 @@ def _backup_authorized(request: Request) -> bool:
 async def export_db(request: Request):
     """Stream a consistent SQLite snapshot of the entire journal DB.
 
-    Two ways in (see `_backup_authorized`): a logged-in browser session (the
-    in-app "Back up database" menu item) or, for a headless cron, the
-    `BACKUP_TOKEN` as a bearer token / `X-Backup-Token` header / `?token=`. The
+    Two ways in (see `_backup_authorized`): a logged-in browser session or, for a
+    headless cron, the `BACKUP_TOKEN` as a bearer token / `X-Backup-Token` header
+    / `?token=`. There is no UI for this — it's a plain URL you hit with curl. The
     file is a plain SQLite db built with VACUUM INTO — restore is "drop it in at
     JOURNAL_DB and restart" (see README, "Backup & restore"). Pull it on a
     schedule from off-box to survive a lost volume. Built in a temp dir and
