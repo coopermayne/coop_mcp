@@ -186,7 +186,14 @@ working.
 ## Data model (tables)
 
 - `people` — entities. `canonical_name`, `role` (the human disambiguator), `notes`,
-  `summary` (rolling profile for context), `email`/`phone`/`address` (vCard-aligned).
+  `summary` (rolling profile for context), `contact` — a free-form JSON blob holding
+  multi-valued contact info (emails, phones, addresses, websites, …), written via
+  `update_contact` with a shallow per-top-level-key merge (so adding phones never touches
+  addresses; lists are replaced wholesale, so the model READS via `get_person_history`
+  then writes the full list back; a key set to `null` is dropped). The legacy single-
+  valued `email`/`phone`/`address` columns are folded into `contact` once on migration
+  and are otherwise dormant. `get_person_history` returns the blob so the model can
+  read-before-write; there is NO LLM in this path — the server just merges JSON.
 - `aliases` — surface forms per person; `phonetic_key` (metaphone), `source`
   (`manual`|`learned`).
 - `entries` — `body` (clean), `raw_body` (verbatim), `entry_date` (day it's *about*,
@@ -317,6 +324,7 @@ origin — fine when there's no OAuth, so the collision is moot.
 
 ## Things deliberately NOT built (don't assume they exist)
 
-Typed person-to-person relationship graph; multi-valued contacts (one email/phone/address
-each — promote to a `contact_methods` table if needed); vCard import/export; Google
-Contacts sync; automated `summary` regeneration. See README "Notes / next steps".
+Typed person-to-person relationship graph; vCard import/export (would map onto the
+`contact` blob); Google Contacts sync; automated `summary` regeneration. See README
+"Notes / next steps". (Contact info IS multi-valued now — the free-form `contact` JSON
+blob, edited via `update_contact`.)
