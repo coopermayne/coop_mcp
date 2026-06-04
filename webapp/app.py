@@ -511,7 +511,7 @@ async def trainer(request: Request):
     client-side from the bootstrapped JSON so chat-driven and tap-driven changes share
     one render path (static/trainer.js)."""
     return page(request, "trainer.html", active="trainer",
-                plan=data.active_plan(),
+                plan=_with_bodyweight(data.active_plan()),
                 brief=server.get_fitness_briefing(recent_workouts=1))
 
 
@@ -566,10 +566,37 @@ def _num(v):
         return None
 
 
+def _with_bodyweight(plan: dict) -> dict:
+    """Attach the workout day's latest bodyweight reading to a plan payload so the
+    /trainer card's weigh-in box knows whether today's weight is already in. Webapp-only
+    enrichment — deliberately kept OFF server.get_workout_plan / _plan_payload so the
+    model-facing tool returns stay lean (the box is a pure UI concern)."""
+    if isinstance(plan, dict) and plan.get("workout_date"):
+        plan["bodyweight"] = data.bodyweight_on(plan["workout_date"])
+    return plan
+
+
 @app.get("/trainer/plan.json")
 async def trainer_plan(request: Request):
     from fastapi.responses import JSONResponse
-    return JSONResponse(data.active_plan())
+    return JSONResponse(_with_bodyweight(data.active_plan()))
+
+
+@app.post("/trainer/bodyweight")
+async def trainer_log_bodyweight(request: Request):
+    """Log today's bodyweight from the /trainer plan card's weigh-in box (the box under the
+    sets — a standing nudge to weigh in while at the gym). Body: {weight_lbs}. Writes
+    through server.log_bodyweight and returns the updated plan so the card re-renders with
+    the reading in place (one render path)."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    w = _num(body.get("weight_lbs"))
+    if w is None or w <= 0:
+        return JSONResponse({"error": "weight_lbs must be a positive number"}, status_code=400)
+    res = server.log_bodyweight(weight_lbs=w)
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(_with_bodyweight(data.active_plan()))
 
 
 @app.post("/trainer/set/{set_id}/complete")
@@ -587,8 +614,9 @@ async def trainer_complete_set(request: Request, set_id: int):
         rpe=_num(body.get("rpe")),
         note=(body.get("note") or "").strip() or None,
     )
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(_with_bodyweight(res))
 
 
 @app.post("/trainer/finish")
@@ -627,7 +655,7 @@ async def trainer_update_set(request: Request, set_id: int):
     )
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(server.get_workout_plan())
+    return JSONResponse(_with_bodyweight(server.get_workout_plan()))
 
 
 @app.post("/trainer/exercise/{exercise_id}/remove")
@@ -636,8 +664,9 @@ async def trainer_remove_exercise(request: Request, exercise_id: int):
     its sets go. Returns the updated plan."""
     from fastapi.responses import JSONResponse
     res = server.remove_plan_exercise(exercise_id)
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(_with_bodyweight(res))
 
 
 @app.get("/trainer/exercise/{exercise_id}/info.json")
