@@ -285,5 +285,39 @@
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
     })();
   </script>
+  {# Global keyboard shortcuts: 1-4 jump to the primary sections (journal,
+     trainer, training, drinking) and "/" focuses the page's search box if it
+     has one. Bare keys only — we bail when a modifier is held or when focus is
+     in a text field (input/textarea/select/contenteditable) so the keys still
+     reach search, the chat composer, and any other input. #}
+  <script>
+    (function () {
+      var dests = {
+        '1': '{{ base }}/journal',
+        '2': '{{ base }}/trainer',
+        '3': '{{ base }}/workouts',
+        '4': '{{ base }}/drinking',
+      };
+      function typingInField(el) {
+        if (!el) return false;
+        if (el.isContentEditable) return true;
+        var tag = el.tagName;
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+      }
+      document.addEventListener('keydown', function (e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (typingInField(e.target)) return;
+        if (e.key === '/') {
+          var search = document.querySelector('input[type="search"]');
+          if (search) { e.preventDefault(); search.focus(); search.select(); }
+          return;
+        }
+        if (dests.hasOwnProperty(e.key)) {
+          e.preventDefault();
+          window.location.href = dests[e.key];
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
