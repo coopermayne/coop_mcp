@@ -250,13 +250,17 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
    create exercises). It dedupes, fills every field from what you say plus its own
    knowledge, shows a preview, and saves only once you approve. #}
 {% if chat_enabled %}
-<div data-add-modal hidden class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
+{# Full-screen sheet on mobile (no padding, fills the viewport); a centered, capped
+   card on sm+ (padding + backdrop gutter around it). #}
+<div data-add-modal hidden class="fixed inset-0 z-50 flex items-stretch justify-center sm:items-center sm:p-6"
      role="dialog" aria-modal="true" aria-label="Add an exercise">
   {# Backdrop — taps outside the card to close. #}
   <div data-add-backdrop class="absolute inset-0 bg-black/30"></div>
 
-  <div data-chat-root class="relative z-10 w-full max-w-lg bg-white border border-gray-200 rounded-lg shadow-xl flex flex-col max-h-[85vh]">
-    <div class="flex items-center justify-between px-5 h-14 border-b border-gray-100 shrink-0">
+  <div data-chat-root class="relative z-10 w-full h-full bg-white flex flex-col
+              sm:h-auto sm:max-w-lg sm:max-h-[85vh] sm:border sm:border-gray-200 sm:rounded-lg sm:shadow-xl">
+    <div class="flex items-center justify-between px-5 h-14 border-b border-gray-100 shrink-0"
+         style="padding-top: env(safe-area-inset-top);">
       <div class="flex items-baseline gap-2">
         <span class="text-sm font-semibold tracking-tight">Add an exercise</span>
         <span class="text-[10px] uppercase tracking-widest text-gray-400">AI</span>
@@ -282,7 +286,8 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
         </p>
       </div>
       {# Composer. #}
-      <div class="px-5 pt-3 pb-4 border-t border-gray-100 shrink-0">
+      <div class="px-5 pt-3 pb-4 border-t border-gray-100 shrink-0"
+           style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
         <form data-chat-form class="flex items-end gap-2">
           <textarea data-chat-input rows="1" autocomplete="off" placeholder="Name the exercise…"
                     class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
