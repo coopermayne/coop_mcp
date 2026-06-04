@@ -697,6 +697,24 @@ async def drinking(request: Request, error: str = ""):
                 s=s, log=log, today=today, today_drink=today_drink, error=error)
 
 
+@app.get("/drinking/chart.json")
+async def drinking_chart(request: Request, until: str = "", days: int = 30):
+    """Windowed bar-chart data for the drinking page's paging arrows. Returns the
+    gap-filled per-day series for the `days` window ending on `until` (default
+    today), plus the peak for scaling and `can_next` (whether a newer window
+    exists, i.e. the window doesn't already end today). The page renders the first
+    window server-side; this feeds the prev/next re-render without a reload."""
+    from fastapi.responses import JSONResponse
+    u = until.strip() or None
+    s = data.drinking(days=days, until=u)
+    return JSONResponse({
+        "since": s["since"], "until": s["until"], "window_days": s["window_days"],
+        "peak": s["peak"], "series": s["series"],
+        "since_label": short_date(s["since"]), "until_label": short_date(s["until"]),
+        "can_next": s["until"] < server.today(),
+    })
+
+
 @app.post("/drinking/add")
 async def drinking_add(request: Request):
     """Direct drink entry — the one write on the drinking page. Drinks are simple
