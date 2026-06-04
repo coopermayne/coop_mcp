@@ -17,86 +17,8 @@
   <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} shown · {{ rotation_count }} in rotation</span>
 </div>
 
-<p class="text-sm text-gray-500 mb-6 leading-relaxed">
-  The full movement library (~870, from the open free-exercise-db) — muscles by emphasis,
-  gear, difficulty, how to do it, and a form clip. Star a movement to add it to your
-  <strong>rotation</strong>: the curated pool the trainer actually programs your sessions
-  from. Logging a workout adds its movements automatically. The catalog is closed to the
-  trainer — it programs only from what's here and never invents a movement; add your own
-  with the AI panel below.
-</p>
-
 {% if error %}
 <div class="mb-5 px-4 py-3 border border-amber-200 bg-amber-50 text-sm text-amber-800 rounded-[4px]">{{ error }}</div>
-{% endif %}
-
-{# AI add — the ONLY way a new exercise enters the closed catalog. It runs as a webapp
-   agent (the journal/trainer MCP connectors still can't create exercises); it dedupes,
-   fills every field from what you say plus its own knowledge, and asks if unsure. #}
-{% if chat_enabled %}
-<details class="mb-6 border border-gray-200 rounded-[4px]">
-  <summary class="cursor-pointer list-none px-5 py-3 text-sm font-medium flex items-center justify-between">
-    <span>+ Add an exercise</span>
-    <span class="text-[10px] uppercase tracking-widest text-gray-400">AI</span>
-  </summary>
-  <div class="px-5 pb-5 pt-1">
-    <p class="text-xs text-gray-400 mb-3 leading-relaxed">
-      Describe the movement — a name is enough. I check it isn't already here, then fill in
-      the muscles, difficulty, technique and cautions from what you tell me plus what I
-      know. I'll show you a full preview to confirm — and save only once you approve.
-    </p>
-    <div data-chat-root>
-      {# Transcript: NOT an input — it's content-height (just the hint until messages
-         arrive, then grows to a capped, scrollable height). Keeping it borderless and
-         auto-height stops it reading as a giant empty text field; the real input is the
-         composer below. #}
-      <div data-chat-log class="space-y-4 mb-3 max-h-96 overflow-y-auto empty:hidden">
-        <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
-          Type below to start — e.g. “Add the Jefferson deadlift” · “Pallof press, cable,
-          for my core” · “Spanish squat with a band”.
-        </p>
-      </div>
-      <form data-chat-form class="flex items-end gap-2">
-        <textarea data-chat-input rows="1" autocomplete="off" placeholder="Name the exercise…"
-                  class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
-        <button type="submit" data-chat-send aria-label="Send"
-                class="shrink-0 h-[42px] w-[42px] flex items-center justify-center bg-black text-white rounded-[4px] hover:bg-gray-800 transition-colors disabled:opacity-30">
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-        </button>
-      </form>
-      <div class="mt-2 flex justify-end">
-        <button type="button" data-chat-reset class="text-[10px] uppercase tracking-widest text-gray-400 hover:text-black transition-colors">New</button>
-      </div>
-    </div>
-  </div>
-</details>
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-<script src="{{ base }}/static/chat.js"></script>
-<script>
-(function () {
-  var root = document.querySelector('[data-chat-root]');
-  if (!root) return;
-  var endpoint = {{ base | tojson }} + '/chat/exercise';
-  ChatWidget.init({
-    root: root,
-    endpoint: endpoint,
-    // A new exercise landed: clear the thread so the next add starts fresh, then reload
-    // so the list shows it — after a beat so the confirmation stays readable.
-    onWrite: function () {
-      fetch(endpoint + '/reset', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-      }).catch(function () {}).finally(function () {
-        setTimeout(function () { window.location.reload(); }, 1800);
-      });
-    },
-  });
-})();
-</script>
-{% else %}
-<div class="mb-6 px-4 py-3 border border-gray-200 rounded-[4px] text-sm text-gray-400 leading-relaxed">
-  Adding exercises is handled by the AI assistant — set <code>ANTHROPIC_API_KEY</code> to
-  enable it.
-</div>
 {% endif %}
 
 {# Rotation / All / Archived toggle, preserving the current name + muscle filters.
@@ -111,12 +33,20 @@
      class="badge hover:border-black hover:text-black transition-colors {% if archived %}badge-dark{% endif %}">Archived</a>
 </div>
 
-{# Name search + a Clear that also drops the muscle filter. #}
+{# Name search + a Clear that also drops the muscle filter. The square + button opens
+   the AI add-exercise chat in a modal (the ONLY way a new exercise enters the closed
+   catalog) — type="button" so it never submits the search. #}
 <form method="get" action="{{ base }}/trainer/library" class="mb-4 flex gap-2">
   <input type="search" name="q" value="{{ q }}" placeholder="Search name or AKA…"
          class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
   {% if muscle %}<input type="hidden" name="muscle" value="{{ muscle }}" />{% endif %}
   {% if rotation %}<input type="hidden" name="rotation" value="1" />{% endif %}
+  {% if chat_enabled %}
+  <button type="button" data-add-open aria-label="Add an exercise" title="Add an exercise"
+          class="shrink-0 w-10 flex items-center justify-center border border-gray-200 text-gray-500 hover:border-black hover:text-black transition-colors">
+    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+  {% endif %}
   <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
   {% if q or muscle %}<a href="{{ base }}/trainer/library{% if rotation %}?rotation=1{% endif %}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
@@ -314,5 +244,98 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
   });
 })();
 </script>
+
+{# AI add — the ONLY way a new exercise enters the closed catalog. Opened from the + by
+   the search box; runs as a webapp agent (the journal/trainer MCP connectors still can't
+   create exercises). It dedupes, fills every field from what you say plus its own
+   knowledge, shows a preview, and saves only once you approve. #}
+{% if chat_enabled %}
+<div data-add-modal hidden class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
+     role="dialog" aria-modal="true" aria-label="Add an exercise">
+  {# Backdrop — taps outside the card to close. #}
+  <div data-add-backdrop class="absolute inset-0 bg-black/30"></div>
+
+  <div data-chat-root class="relative z-10 w-full max-w-lg bg-white border border-gray-200 rounded-lg shadow-xl flex flex-col max-h-[85vh]">
+    <div class="flex items-center justify-between px-5 h-14 border-b border-gray-100 shrink-0">
+      <div class="flex items-baseline gap-2">
+        <span class="text-sm font-semibold tracking-tight">Add an exercise</span>
+        <span class="text-[10px] uppercase tracking-widest text-gray-400">AI</span>
+      </div>
+      <div class="flex items-center gap-4 text-gray-400">
+        <button type="button" data-chat-reset
+                class="text-[10px] uppercase tracking-widest hover:text-black transition-colors">New</button>
+        <button type="button" data-add-close aria-label="Close" title="Close"
+                class="hover:text-black transition-colors">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="flex flex-col min-h-0 flex-1">
+      {# Transcript — scrolls; seeded with a hint until the first message arrives. #}
+      <div data-chat-log class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
+          Describe the movement — a name is enough. I check it isn't already here, then
+          fill in the muscles, difficulty, technique and cautions from what you tell me
+          plus what I know, and show you a preview to confirm. Try “Add the Jefferson
+          deadlift” · “Pallof press, cable, for my core” · “Spanish squat with a band”.
+        </p>
+      </div>
+      {# Composer. #}
+      <div class="px-5 pt-3 pb-4 border-t border-gray-100 shrink-0">
+        <form data-chat-form class="flex items-end gap-2">
+          <textarea data-chat-input rows="1" autocomplete="off" placeholder="Name the exercise…"
+                    class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
+          <button type="submit" data-chat-send aria-label="Send"
+                  class="shrink-0 h-[42px] w-[42px] flex items-center justify-center bg-black text-white rounded-[4px] hover:bg-gray-800 transition-colors disabled:opacity-30">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="{{ base }}/static/chat.js"></script>
+<script>
+(function () {
+  var modal = document.querySelector('[data-add-modal]');
+  var root = modal && modal.querySelector('[data-chat-root]');
+  if (!root) return;
+  var openBtn = document.querySelector('[data-add-open]');
+  var closeBtn = modal.querySelector('[data-add-close]');
+  var backdrop = modal.querySelector('[data-add-backdrop]');
+  var input = modal.querySelector('[data-chat-input]');
+
+  function open() {
+    modal.hidden = false;
+    setTimeout(function () { input.focus(); }, 50);
+  }
+  function close() { modal.hidden = true; }
+
+  if (openBtn) openBtn.addEventListener('click', open);
+  closeBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !modal.hidden) close();
+  });
+
+  var endpoint = {{ base | tojson }} + '/chat/exercise';
+  ChatWidget.init({
+    root: root,
+    endpoint: endpoint,
+    // A new exercise landed: clear the thread so the next add starts fresh, then reload
+    // so the list shows it — after a beat so the confirmation stays readable.
+    onWrite: function () {
+      fetch(endpoint + '/reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      }).catch(function () {}).finally(function () {
+        setTimeout(function () { window.location.reload(); }, 1800);
+      });
+    },
+  });
+})();
+</script>
+{% endif %}
 
 {% endblock %}
