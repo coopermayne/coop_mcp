@@ -312,6 +312,35 @@ If the connector shows "disconnected" after adding Google: usually the redirect 
 Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 `TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
 
+## Backup & restore
+
+The whole life log is one SQLite file (`JOURNAL_DB`, on the `/data` volume in prod). If
+the volume is lost, so is everything — so pull a copy *off the box* on a schedule.
+
+**Download** a backup at `GET /export/journal.db` (in the app it's the **Back up
+database** item in the menu). It's auth-gated like every other page. The server builds
+the file with SQLite's `VACUUM INTO`, so it's a consistent, self-contained snapshot —
+schema, every row, and the FTS5 search index — taken inside a read transaction, safe to
+grab while the app is live. The download is named `journal-YYYY-MM-DD.db` (Pacific date).
+
+Pull it automatically with a cron on any machine you trust (it survives the server, which
+is the point):
+
+```bash
+# after signing in once, save the session cookie, then:
+curl -fsS -b cookies.txt https://YOUR-DOMAIN/app/export/journal.db \
+     -o "backups/journal-$(date +%F).db"
+```
+
+**Restore** is "drop it in and restart" — no dump to replay:
+
+```bash
+cp journal-2026-06-04.db /data/journal.db   # the path JOURNAL_DB points at
+# restart the app; init_db() runs its IF-NOT-EXISTS migrations and you're back.
+```
+
+(Authless/local: the route is open, same as the rest of the dev app.)
+
 ## Web frontend
 
 `webapp/` is a small browser UI for reviewing what's been recorded — journal entries
