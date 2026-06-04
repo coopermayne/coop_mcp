@@ -583,8 +583,7 @@ async def trainer(request: Request):
     client-side from the bootstrapped JSON so chat-driven and tap-driven changes share
     one render path (static/trainer.js)."""
     return page(request, "trainer.html", active="trainer",
-                plan=_with_bodyweight(data.active_plan()),
-                brief=server.get_fitness_briefing(recent_workouts=1))
+                plan=_with_bodyweight(data.active_plan()))
 
 
 @app.get("/trainer/library")
@@ -642,9 +641,11 @@ def _with_bodyweight(plan: dict) -> dict:
     """Attach the workout day's latest bodyweight reading to a plan payload so the
     /trainer card's weigh-in box knows whether today's weight is already in. Webapp-only
     enrichment — deliberately kept OFF server.get_workout_plan / _plan_payload so the
-    model-facing tool returns stay lean (the box is a pure UI concern)."""
-    if isinstance(plan, dict) and plan.get("workout_date"):
-        plan["bodyweight"] = data.bodyweight_on(plan["workout_date"])
+    model-facing tool returns stay lean (the box is a pure UI concern). An in-progress
+    plan carries no date yet (it's dated only at finish), so fall back to today for the
+    lookup."""
+    if isinstance(plan, dict) and plan.get("active"):
+        plan["bodyweight"] = data.bodyweight_on(plan.get("workout_date") or server.today())
     return plan
 
 

@@ -5,24 +5,6 @@
 
 <h1 class="text-2xl font-bold tracking-tight mb-8">Trainer</h1>
 
-{# ── Context header ──────────────────────────────────────────────────────────
-   A quiet line of context from get_fitness_briefing: last completed session and
-   the muscles most/least recently trained. The coaching itself happens in the chat;
-   this just orients. (Bodyweight is entered on the plan card, not shown here.) #}
-{% set last = brief.recent_workouts[0] if brief.recent_workouts else None %}
-{% set fresh = brief.muscle_recency | selectattr('days_since', 'ne', None) | list %}
-<div class="mb-8 flex flex-wrap gap-x-8 gap-y-3">
-  {% if last %}
-    {{ m.stat((last.focus or 'Session'), 'Last · ' ~ (last.date | short_date)) }}
-  {% else %}
-    {{ m.stat('—', 'Last session') }}
-  {% endif %}
-  {% if fresh %}
-    {% set due = fresh[-1] %}
-    {{ m.stat(due.muscle | capitalize, 'Most rested · ' ~ (due.days_since|string) ~ 'd') }}
-  {% endif %}
-</div>
-
 {# Plan card — rendered entirely by static/trainer.js from the bootstrapped JSON,
    so tap-driven and chat-driven changes share one render path. #}
 <div id="plan-root" data-base="{{ base }}" class="min-h-[8rem]"></div>
