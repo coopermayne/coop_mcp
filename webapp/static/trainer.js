@@ -15,6 +15,7 @@
   var base = root.dataset.base || '';
   var editingSetId = null; // only one inline set editor open at a time
   var openPanel = null;    // {eid, kind:'info'|'menu'} — at most one info/menu panel open
+  var currentPlan = null;  // last rendered plan (Finish reads its bodyweight/progress)
 
   function num(x) {
     if (x === null || x === undefined || x === '') return '';
@@ -76,6 +77,7 @@
     root.innerHTML = '';
     editingSetId = null;
     openPanel = null;
+    currentPlan = plan;
     if (!plan || !plan.active) { renderEmpty(plan); return; }
 
     // Header: focus + progress + finish.
@@ -99,6 +101,71 @@
       if (!live.length) return;
       root.appendChild(renderExercise(ex));
     });
+
+    // Weigh-in box — its own row under the sets, encouraging (not requiring) a
+    // bodyweight while you're at the gym. Highlights once every set is in.
+    root.appendChild(renderBodyweight(plan, pr));
+  }
+
+  // A full-width box mirroring the exercise cards: a label + a number entry for
+  // today's bodyweight. Shows the logged reading (tap to update) once entered, and
+  // rings itself as a reminder when all sets are done but no weight is in yet.
+  function renderBodyweight(plan, pr) {
+    var logged = plan.bodyweight != null;
+    var allDone = pr && pr.total > 0 && pr.done === pr.total;
+    var remind = allDone && !logged;
+    var box = el('div', 'border rounded-[4px] px-5 sm:px-6 py-4 mb-3 transition-colors ' +
+      (remind ? 'border-black ring-1 ring-black' : 'border-gray-200'));
+    box.dataset.weighIn = '1';
+
+    var head = el('div', 'flex items-center justify-between gap-2 mb-3');
+    head.appendChild(el('p', 'text-sm font-medium', 'Bodyweight'));
+    if (logged) {
+      var tag = el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'logged ✓');
+      head.appendChild(tag);
+    } else if (remind) {
+      head.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400',
+        'weigh in while you’re here'));
+    }
+    box.appendChild(head);
+
+    var formRow = el('div', 'flex items-center gap-2');
+    var inp = el('input', 'flex-1 border border-gray-200 rounded-[4px] px-3 py-2 text-base ' +
+      'focus:outline-none focus:border-black transition-colors');
+    inp.type = 'number'; inp.inputMode = 'decimal'; inp.step = 'any'; inp.min = '0';
+    inp.placeholder = 'lbs';
+    if (logged) inp.value = num(plan.bodyweight);
+    var btn = el('button', 'h-[42px] px-4 bg-black text-white rounded-[4px] text-sm ' +
+      'hover:bg-gray-800 transition-colors shrink-0', logged ? 'Update' : 'Log');
+    btn.addEventListener('click', function () { logBodyweight(inp, btn); });
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); btn.click(); }
+    });
+    formRow.appendChild(inp);
+    formRow.appendChild(btn);
+    box.appendChild(formRow);
+    return box;
+  }
+
+  async function logBodyweight(inp, btn) {
+    var w = parseFloat(inp.value);
+    if (!(w > 0)) { inp.focus(); return; }
+    btn.disabled = true;
+    var r = await postJSON(base + '/trainer/bodyweight', { weight_lbs: w });
+    if (!r.ok || (r.data && r.data.error)) {
+      btn.disabled = false; btn.textContent = 'Error';
+      return;
+    }
+    render(r.data); // response is the updated plan
+  }
+
+  // Scroll the weigh-in box into view and focus it — the post-last-set nudge.
+  function nudgeWeighIn() {
+    var box = root.querySelector('[data-weigh-in]');
+    if (!box) return;
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    var inp = box.querySelector('input');
+    if (inp) inp.focus({ preventScroll: true });
   }
 
   // A small round icon button for the per-exercise controls.
@@ -246,6 +313,9 @@
     }
     editingSetId = null;
     render(r.data); // response is the updated plan
+    // If that was the last set and there's no weight in yet, nudge a weigh-in.
+    var p = r.data, pr = p && p.progress;
+    if (pr && pr.total > 0 && pr.done === pr.total && p.bodyweight == null) nudgeWeighIn();
   }
 
   async function saveSet(setId, weightInp, repsInp, rpeInp, btn) {
@@ -385,6 +455,16 @@
 
   async function onFinish() {
     if (!window.confirm('Finish this workout? Unfinished sets will be dropped.')) return;
+    // One last nudge: if we logged work but no bodyweight, offer to weigh in now.
+    var p = currentPlan;
+    if (p && p.bodyweight == null && p.progress && p.progress.done > 0) {
+      var ans = window.prompt('Weigh in before you finish? Enter your bodyweight in lbs ' +
+        '(leave blank to skip).');
+      if (ans != null && ans.trim() !== '') {
+        var w = parseFloat(ans);
+        if (w > 0) await postJSON(base + '/trainer/bodyweight', { weight_lbs: w });
+      }
+    }
     var r = await postJSON(base + '/trainer/finish', {});
     render({ active: false, justFinished: !(r.data && r.data.deleted_empty) && r.ok });
   }
