@@ -191,6 +191,14 @@
     <div data-chart-tip hidden
          class="absolute z-10 -translate-x-1/2 -translate-y-full px-2 py-1 bg-black text-white text-[11px] rounded whitespace-nowrap pointer-events-none tabular-nums"></div>
   </div>
+  {# Mon/Wed/Fri letter under its bar — sparse on purpose; the rest read from context.
+     Same size/style as the dates below. #}
+  <div class="flex gap-px mt-1" data-chart-dow>
+    {% for day in s.series %}
+      {% set wd = day.date | weekday %}
+      <span class="flex-1 text-center text-[10px] uppercase tracking-widest text-gray-400">{{ wd[0] if wd in ['Mon', 'Wed', 'Fri'] else '' }}</span>
+    {% endfor %}
+  </div>
   <div class="flex justify-between text-[10px] uppercase tracking-widest text-gray-400 mt-2">
     <span data-chart-since>{{ s.since | short_date }}</span>
     <span data-chart-until>{{ s.until | short_date }}</span>
@@ -211,6 +219,7 @@
     var box = document.querySelector('[data-drink-chart]');
     if (!box) return;
     var bars = box.querySelector('[data-chart-bars]');
+    var dow = box.querySelector('[data-chart-dow]');
     var sinceEl = box.querySelector('[data-chart-since]');
     var untilEl = box.querySelector('[data-chart-until]');
     var prev = box.querySelector('[data-chart-prev]');
@@ -233,6 +242,11 @@
       return new Date(+p[0], +p[1] - 1, +p[2])
         .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     }
+    function dowLetter(iso) {  // sparse label: only Mon/Wed/Fri, the rest blank
+      var p = iso.split('-');
+      var d = new Date(+p[0], +p[1] - 1, +p[2]);
+      return { 1: 'M', 3: 'W', 5: 'F' }[d.getDay()] || '';
+    }
     function isoShift(iso, delta) {
       var p = iso.split('-');
       var d = new Date(+p[0], +p[1] - 1, +p[2]);
@@ -250,6 +264,10 @@
           : '<div class="w-full border-b border-dashed border-gray-200"></div>';
         return '<div class="flex-1 flex items-end h-full" data-bar data-date="'
           + day.date + '" data-total="' + t + '">' + inner + '</div>';
+      }).join('');
+      dow.innerHTML = d.series.map(function (day) {
+        return '<span class="flex-1 text-center text-[10px] uppercase tracking-widest text-gray-400">'
+          + dowLetter(day.date) + '</span>';
       }).join('');
       sinceEl.textContent = d.since_label;
       untilEl.textContent = d.until_label;
