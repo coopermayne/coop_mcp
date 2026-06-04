@@ -419,6 +419,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             "technique_notes": r["technique_notes"],
             "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
             "video_link": r["video_link"], "image_link": r["image_link"],
+            "image_link_end": r["image_link_end"],
             "youtube_search": "https://www.youtube.com/results?search_query="
                               + quote_plus((r["name"] or "") + " proper form technique"),
             "has_notes": bool(r["technique_notes"] or r["common_mistakes"] or r["cautions"]),
