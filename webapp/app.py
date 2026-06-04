@@ -303,6 +303,33 @@ async def health():
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
 
 
+@app.get("/export/journal.db")
+async def export_db(request: Request):
+    """Stream a consistent SQLite snapshot of the entire journal DB.
+
+    Auth-gated like every other page (it isn't a PUBLIC_PATH, so RequireAuth
+    bounces a logged-out request to /login). The file is a plain SQLite db built
+    with VACUUM INTO — restore is "drop it in at JOURNAL_DB and restart" (see
+    README, "Backup & restore"). Pull it on a schedule from off-box to survive a
+    lost volume. Built in a temp dir and deleted after the response is sent.
+    """
+    import tempfile, shutil
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    from starlette.concurrency import run_in_threadpool
+    tmpdir = tempfile.mkdtemp(prefix="journal-export-")
+    fname = f"journal-{server.today()}.db"
+    dest = os.path.join(tmpdir, fname)
+    # VACUUM INTO can block; keep it off the event loop for a large DB.
+    await run_in_threadpool(server.snapshot_db, dest)
+    return FileResponse(
+        dest,
+        media_type="application/x-sqlite3",
+        filename=fname,
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # PWA — installable on phones (Add to Home Screen)
 #
