@@ -1351,11 +1351,12 @@ MUSCLES = [
 ]
 
 
-def _days_since(d: Optional[str]) -> Optional[int]:
+def _days_since(d: Optional[str], ref: Optional[str] = None) -> Optional[int]:
     if not d:
         return None
     try:
-        return (date.fromisoformat(today()) - date.fromisoformat(d)).days
+        base = date.fromisoformat(ref) if ref else date.fromisoformat(today())
+        return (base - date.fromisoformat(d)).days
     except ValueError:
         return None
 
@@ -2551,10 +2552,13 @@ def clear_plan_set(set_id: int) -> dict:
 @trainer_mcp.tool()
 def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
                        notes: Optional[str] = None, replace: bool = False) -> dict:
-    """Lay out today's routine as a plan the user works through — call this once you've
-    decided the session from get_fitness_briefing (+ get_exercise_history for the lifts
-    you're choosing weights for). Each exercise becomes a row of PENDING sets with
-    targets; the user completes them with complete_set as they go.
+    """Lay out the next routine as a plan the user works through — usually today's, but
+    if they asked to plan TOMORROW's session, decide it from a get_fitness_briefing whose
+    `as_of` is tomorrow (so recovery is counted as of that day). Call this once you've
+    decided the session from the briefing (+ get_exercise_history for the lifts you're
+    choosing weights for). Each exercise becomes a row of PENDING sets with targets; the
+    user completes them with complete_set as they go. The plan stays undated until
+    finish_workout stamps the day it's actually completed, so planning ahead needs no date.
 
     Build a full session: aim for ~21-26 working sets total, roughly 6-8 exercises at
     3-4 sets each, across the muscle groups that are due.
@@ -2829,7 +2833,7 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
 
 
 @trainer_mcp.tool()
-def get_fitness_briefing(recent_workouts: int = 5) -> dict:
+def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
@@ -2843,8 +2847,18 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
     mapping. BUILD SESSIONS FROM `rotation` — it's the set the user actually trains; don't
     pull in movements outside it without asking (the full ~870-movement library is a
     reference the user curates from, via the library page or set_rotation). The
-    recommendation itself is yours to make from this data."""
-    week_ago = date.fromordinal(date.fromisoformat(today()).toordinal() - 6).isoformat()
+    recommendation itself is yours to make from this data.
+
+    `as_of` is the day you're planning FOR (YYYY-MM-DD), defaulting to today. When the
+    user wants TOMORROW's session, pass tomorrow's date (today + 1; today is in `now`):
+    `days_since` then counts recovery as of that day — a muscle trained today reads 0 in a
+    today briefing but 1 in a tomorrow one — so what's "due" already reflects the extra
+    rest. Plan as normal off the re-anchored numbers; the plan itself stays undated until
+    finish_workout stamps the day it's actually done."""
+    ref = as_of or today()
+    if err := _bad_date(as_of, "as_of"):
+        return err
+    week_ago = date.fromordinal(date.fromisoformat(ref).toordinal() - 6).isoformat()
     with db() as conn:
         profile = _get_profile(conn)
         mrows = conn.execute(
@@ -2926,13 +2940,13 @@ def get_fitness_briefing(recent_workouts: int = 5) -> dict:
                 bodyweight["change_30d_lbs"] = round(bw_latest["weight_lbs"] - base["weight_lbs"], 1)
     recency = sorted(
         ({"muscle": r["muscle"], "last_trained": r["last_date"],
-          "days_since": _days_since(r["last_date"]), "sets_last_7d": r["sets_7d"]}
+          "days_since": _days_since(r["last_date"], ref), "sets_last_7d": r["sets_7d"]}
          for r in mrows),
         key=lambda m: (m["days_since"] is None, -(m["days_since"] or 0)),
     )
     cardio = sorted(
         ({"exercise": r["name"], "last_done": r["last_date"],
-          "days_since": _days_since(r["last_date"]),
+          "days_since": _days_since(r["last_date"], ref),
           "minutes_last_7d": round((r["dur_7d"] or 0) / 60, 1),
           "miles_last_7d": round(r["dist_7d"] or 0, 2)}
          for r in crows),

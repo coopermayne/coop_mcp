@@ -266,6 +266,13 @@ working.
   done, so it dates immediately. Active workouts are excluded from all history/briefing
   aggregates by `status`, so the empty date never leaks. (`log_workout` is the
   immediate-done path; the empty sentinel only ever exists on an in-progress plan.)
+  Because a plan is undated until finish, **planning ahead needs no extra date plumbing** —
+  "make tomorrow's session" is just `start_workout_plan` now, finished (and so dated)
+  tomorrow. The only thing that shifts by a day is recovery: `get_fitness_briefing(as_of=…)`
+  re-anchors `days_since` to the day you're planning FOR (default today; pass tomorrow's
+  date for a tomorrow plan), so what's "due" already reflects the extra rest. The server
+  just changes the reference date for the subtraction — the programming judgment is still
+  the model's.
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
   `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the
