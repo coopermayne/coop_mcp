@@ -518,15 +518,20 @@ def muscle_breakdown() -> dict:
 # Drinking
 # --------------------------------------------------------------------------- #
 
-def drinking(days: int = 30) -> dict:
+def drinking(days: int = 30, until=None) -> dict:
     """Drink summary plus a gap-filled day-by-day series for the chart.
 
-    Adds two headline averages:
+    `until` (ISO date, default today) is the last day of the window — the chart's
+    paging arrows pass an earlier `until` to scroll back through history; the window
+    is the `days` calendar days ending on it.
+
+    Adds two headline averages (always today-relative, so they don't shift as the
+    chart pages back):
       - avg_alltime: total drinks across all calendar days from the first ever logged
         day through today (sober days count as 0).
       - avg_6d_excl_today: last 6 calendar days NOT counting today, divided by 6.
     """
-    s = server.get_drink_summary(days=days)
+    s = server.get_drink_summary(days=days, until=until)
     by_date = {d["date"]: d["total"] for d in s["daily"]}
     start = date.fromisoformat(s["since"])
     end = date.fromisoformat(s["until"])
