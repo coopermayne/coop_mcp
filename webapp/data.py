@@ -439,6 +439,18 @@ def active_plan() -> dict:
     return server.get_workout_plan()
 
 
+def bodyweight_on(d: str):
+    """The latest bodyweight reading (lbs) logged on day `d`, or None if not weighed —
+    backs the /trainer card's weigh-in box (does today's weight need entering yet). The
+    latest reading on a day is "the" weight for that day, matching server.log_bodyweight."""
+    with server.db() as conn:
+        r = conn.execute(
+            "SELECT weight_lbs FROM body_weight WHERE weigh_date=? ORDER BY id DESC LIMIT 1",
+            (d,),
+        ).fetchone()
+    return r["weight_lbs"] if r else None
+
+
 def muscle_breakdown() -> dict:
     """Per-muscle training breakdown for the /workouts body heatmap.
 
