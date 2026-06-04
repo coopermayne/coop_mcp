@@ -212,7 +212,9 @@ working.
   streak) in SQL; the webapp `/drinking` page edits/deletes past days inline.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
-  `common_mistakes`, `cautions`, `video_link`, `image_link`, `in_rotation`, and
+  `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's
+  start and finish frames — the library crossfades the two into a looping rep animation
+  rather than showing one frozen still), `in_rotation`, and
   `archived`. PRE-LOADED
   with ~870 movements from free-exercise-db (`scripts/import_exercises.py`); the schema
   mirrors that dataset. Two layers: the whole catalog is the **LIBRARY** (browsable at
