@@ -494,8 +494,20 @@
       });
       card.appendChild(mline);
     }
-    // A saved gif/still of proper form, if any (a gif loops on its own).
-    if (info.image_link) {
+    // Saved form photos. free-exercise-db ships a start + finish frame; with both, overlay
+    // them and let the shared .rep-loop CSS (base.html) crossfade the two so the rep moves.
+    // A lone image (or a self-looping gif) just renders as a still.
+    if (info.image_link && info.image_link_end) {
+      var wrap = el('div', 'rep-loop relative inline-block rounded-[4px] border border-gray-100 overflow-hidden');
+      var start = el('img', 'block max-h-48 w-auto');
+      start.src = info.image_link; start.alt = (info.name || ex.name || '') + ' — start of the rep';
+      start.loading = 'lazy';
+      var finish = el('img', 'rep-loop-end absolute inset-0 h-full w-full object-cover');
+      finish.src = info.image_link_end; finish.alt = (info.name || ex.name || '') + ' — finish of the rep';
+      finish.loading = 'lazy';
+      wrap.appendChild(start); wrap.appendChild(finish);
+      card.appendChild(wrap);
+    } else if (info.image_link) {
       var img = el('img', 'rounded-[4px] border border-gray-100 max-h-48 w-auto');
       img.src = info.image_link; img.alt = (info.name || ex.name || '') + ' technique';
       img.loading = 'lazy';
