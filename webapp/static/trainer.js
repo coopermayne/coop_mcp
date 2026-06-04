@@ -99,8 +99,16 @@
     left.appendChild(el('p', 'text-lg font-semibold tracking-tight',
       pr.done + ' / ' + pr.total + ' sets'));
     head.appendChild(left);
-    if (reordering) head.appendChild(reorderDoneBtn());
-    else if (visible.length > 1) head.appendChild(reorderToggleBtn());
+    if (reordering) {
+      head.appendChild(reorderDoneBtn());
+    } else {
+      // Reorder toggle (when there's more than one exercise to sort) sits left of a
+      // plan-level "..." menu that tucks away the destructive "Delete plan" action.
+      var ctrls = el('div', 'flex items-center gap-1 shrink-0');
+      if (visible.length > 1) ctrls.appendChild(reorderToggleBtn());
+      ctrls.appendChild(planMenuBtn());
+      head.appendChild(ctrls);
+    }
     root.appendChild(head);
 
     // Reorder mode: just the exercises with ↑/↓ arrows; weigh-in & Finish are hidden.
@@ -137,6 +145,94 @@
       render(currentPlan);
     });
     return b;
+  }
+
+  // The plan-level "..." menu in the header. Tucks the destructive "Delete plan" out of
+  // the way (one tap to reveal, a confirmation modal to commit) so it can't be hit by
+  // accident the way an always-visible button could.
+  function planMenuBtn() {
+    var wrap = el('div', 'relative shrink-0');
+    var b = el('button', 'w-8 h-8 flex items-center justify-center rounded-[4px] ' +
+      'text-gray-400 hover:text-black hover:bg-gray-100 transition-colors', null);
+    b.type = 'button';
+    b.setAttribute('aria-label', 'Plan options');
+    b.title = 'Plan options';
+    b.appendChild(el('span', 'text-lg leading-none', '⋯'));
+
+    var menu = el('div', 'hidden absolute right-0 top-9 z-20 min-w-[10rem] bg-white ' +
+      'border border-gray-200 rounded-[4px] shadow-lg py-1');
+    var del = el('button', 'w-full text-left px-3 py-2 text-sm text-red-500 ' +
+      'hover:bg-red-50 transition-colors', 'Delete plan');
+    del.type = 'button';
+    del.addEventListener('click', function () { menu.classList.add('hidden'); confirmDiscard(); });
+    menu.appendChild(del);
+
+    function closeMenu() {
+      menu.classList.add('hidden');
+      document.removeEventListener('click', closeMenu);
+    }
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (menu.classList.contains('hidden')) {
+        menu.classList.remove('hidden');
+        // Defer so this same click doesn't immediately close it.
+        setTimeout(function () { document.addEventListener('click', closeMenu); }, 0);
+      } else {
+        closeMenu();
+      }
+    });
+    wrap.appendChild(b);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
+  // A simple centered confirmation modal (overlay + card). Returns nothing; calls
+  // opts.onConfirm() when the user commits. Esc or a click on the backdrop cancels.
+  function confirmModal(opts) {
+    var overlay = el('div', 'fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/40');
+    var card = el('div', 'bg-white rounded-[6px] shadow-xl max-w-sm w-full p-6');
+    card.appendChild(el('p', 'text-base font-semibold mb-2', opts.title));
+    card.appendChild(el('p', 'text-sm text-gray-500 leading-relaxed mb-6', opts.body));
+
+    var rowBtns = el('div', 'flex justify-end gap-2');
+    var cancel = el('button', 'px-4 h-10 rounded-[4px] text-sm text-gray-500 ' +
+      'hover:text-black hover:bg-gray-100 transition-colors', 'Cancel');
+    cancel.type = 'button';
+    var ok = el('button', 'px-4 h-10 rounded-[4px] bg-red-500 text-white text-sm ' +
+      'font-medium hover:bg-red-600 transition-colors', opts.confirmText || 'Delete');
+    ok.type = 'button';
+
+    function close() {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+    }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    cancel.addEventListener('click', close);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    ok.addEventListener('click', function () { close(); opts.onConfirm(); });
+    document.addEventListener('keydown', onKey);
+
+    rowBtns.appendChild(cancel);
+    rowBtns.appendChild(ok);
+    card.appendChild(rowBtns);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  function confirmDiscard() {
+    confirmModal({
+      title: 'Delete this plan?',
+      body: 'This clears the whole workout plan, including any sets you’ve already ' +
+        'logged. It won’t be saved to your training history and can’t be undone.',
+      confirmText: 'Delete plan',
+      onConfirm: discardPlan,
+    });
+  }
+
+  async function discardPlan() {
+    var r = await postJSON(base + '/trainer/plan/discard', {});
+    if (r.ok && r.data && !r.data.error) render(r.data);
+    else refresh();
   }
 
   function reorderDoneBtn() {
