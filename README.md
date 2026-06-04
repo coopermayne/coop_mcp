@@ -312,6 +312,46 @@ If the connector shows "disconnected" after adding Google: usually the redirect 
 Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 `TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
 
+## Backup & restore
+
+The whole life log is one SQLite file (`JOURNAL_DB`, on the `/data` volume in prod). If
+the volume is lost, so is everything — so pull a copy *off the box* on a schedule.
+
+**Download** a backup at `GET /export/journal.db`. There's no button for this in the UI
+— it's just a URL you hit with curl (or a browser tab). The server builds the file with
+SQLite's `VACUUM INTO`, so it's a consistent, self-contained snapshot — schema, every row,
+and the FTS5 search index — taken inside a read transaction, safe to grab while the app is
+live. The download is named `journal-YYYY-MM-DD.db` (Pacific date).
+
+Two ways to authenticate:
+
+- **In the browser** — a logged-in session just works (paste the URL in a tab).
+- **Headless (cron from another machine)** — set `BACKUP_TOKEN` to a strong random value
+  (`openssl rand -hex 32`) and present it. No Google login, no cookie jar. This is a
+  read-only, backup-only credential, kept separate from your account login — so a leaked
+  cron token can pull backups but can't touch anything else. Leave `BACKUP_TOKEN` unset to
+  disable the headless path entirely (browser/session only).
+
+```bash
+# daily backup cron on any machine you trust (survives the server — the point):
+curl -fsS -H "Authorization: Bearer $BACKUP_TOKEN" \
+     https://YOUR-DOMAIN/app/export/journal.db \
+     -o "backups/journal-$(date +%F).db"
+```
+
+(The token can also go in an `X-Backup-Token:` header or, less ideally since it lands in
+logs, a `?token=` query param. Note the `/app` prefix on the combined deployment; a
+standalone `webapp/app.py` serves it at `/export/journal.db`.)
+
+**Restore** is "drop it in and restart" — no dump to replay:
+
+```bash
+cp journal-2026-06-04.db /data/journal.db   # the path JOURNAL_DB points at
+# restart the app; init_db() runs its IF-NOT-EXISTS migrations and you're back.
+```
+
+(Authless/local: the route is open, same as the rest of the dev app.)
+
 ## Web frontend
 
 `webapp/` is a small browser UI for reviewing what's been recorded — journal entries

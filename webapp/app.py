@@ -19,7 +19,9 @@ import html
 import json
 import os
 import re
+import secrets
 import sys
+from typing import Optional
 from datetime import datetime
 
 from markupsafe import Markup
@@ -80,6 +82,14 @@ AUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 # is off).
 SHOW_LOGOUT = AUTH_ENABLED or os.environ.get("SHOW_LOGOUT", "").lower() in ("1", "true", "yes")
 ALLOWED_EMAILS = server.ALLOWED_EMAILS  # reuse the MCP server's allowlist
+
+# A strong random token (e.g. `openssl rand -hex 32`) that unlocks the backup
+# download for a HEADLESS client — a cron `curl` from another machine — without a
+# browser/Google login. Presented as `Authorization: Bearer <token>`, an
+# `X-Backup-Token` header, or a `?token=` query param. Unset = no token path
+# (the backup is then browser/session-only). Distinct from the session login so a
+# leaked cron token grants nothing but read-only backups.
+BACKUP_TOKEN = (os.environ.get("BACKUP_TOKEN") or "").strip()
 
 app = FastAPI(title="Journal")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
@@ -222,7 +232,11 @@ def page(request: Request, template: str, active: str = "", status_code: int = 2
 # browser pulls them itself, and an auth redirect to /login would hand back HTML
 # instead, breaking install. They expose no journal data — just app metadata.
 PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health",
-                "/manifest.webmanifest", "/sw.js"}
+                "/manifest.webmanifest", "/sw.js",
+                # The backup endpoint opts OUT of the redirect-to-login middleware so
+                # a headless cron isn't bounced to an HTML login page; it does its OWN
+                # auth (a logged-in session OR the BACKUP_TOKEN) inside the route.
+                "/export/journal.db"}
 
 oauth = None
 if AUTH_ENABLED:
@@ -301,6 +315,64 @@ async def health():
         return JSONResponse({"status": "ok"})
     except Exception as e:  # pragma: no cover
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
+
+
+def _backup_token_presented(request: Request) -> Optional[str]:
+    """Pull a caller-presented backup token from (in order) an
+    `Authorization: Bearer <t>` header, an `X-Backup-Token` header, or a
+    `?token=` query param. Returns None if none present."""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    return request.headers.get("x-backup-token") or request.query_params.get("token") or None
+
+
+def _backup_authorized(request: Request) -> bool:
+    """Allow the backup download for a logged-in browser session (so you can pull
+    it from a browser tab while signed in) OR a headless client presenting the
+    BACKUP_TOKEN (constant-time compare). With auth off entirely (dev), everything
+    is open anyway."""
+    if not AUTH_ENABLED:
+        return True
+    if request.session.get("email"):
+        return True
+    if BACKUP_TOKEN:
+        presented = _backup_token_presented(request)
+        if presented and secrets.compare_digest(presented, BACKUP_TOKEN):
+            return True
+    return False
+
+
+@app.get("/export/journal.db")
+async def export_db(request: Request):
+    """Stream a consistent SQLite snapshot of the entire journal DB.
+
+    Two ways in (see `_backup_authorized`): a logged-in browser session or, for a
+    headless cron, the `BACKUP_TOKEN` as a bearer token / `X-Backup-Token` header
+    / `?token=`. There is no UI for this — it's a plain URL you hit with curl. The
+    file is a plain SQLite db built with VACUUM INTO — restore is "drop it in at
+    JOURNAL_DB and restart" (see README, "Backup & restore"). Pull it on a
+    schedule from off-box to survive a lost volume. Built in a temp dir and
+    deleted after the response is sent.
+    """
+    from fastapi.responses import Response as _Resp
+    if not _backup_authorized(request):
+        return _Resp(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    import tempfile, shutil
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    from starlette.concurrency import run_in_threadpool
+    tmpdir = tempfile.mkdtemp(prefix="journal-export-")
+    fname = f"journal-{server.today()}.db"
+    dest = os.path.join(tmpdir, fname)
+    # VACUUM INTO can block; keep it off the event loop for a large DB.
+    await run_in_threadpool(server.snapshot_db, dest)
+    return FileResponse(
+        dest,
+        media_type="application/x-sqlite3",
+        filename=fname,
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+    )
 
 
 # --------------------------------------------------------------------------- #
