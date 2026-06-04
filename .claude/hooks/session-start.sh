@@ -44,6 +44,16 @@ DEV_DB="$CLAUDE_PROJECT_DIR/journal_dev.db"
   echo "export PYTHONPATH=\"$CLAUDE_PROJECT_DIR\""
 } >> "$CLAUDE_ENV_FILE"
 
+# Report whether the webapp's in-app /chat surface will be on. The secret itself
+# is NOT set here — add ANTHROPIC_API_KEY (and optionally CHAT_MODEL) in the web
+# environment's config and it's injected into the container; combined.py reads
+# it straight from the env (a real env var wins over the gitignored .env).
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "chat: enabled (ANTHROPIC_API_KEY present, model ${CHAT_MODEL:-claude-sonnet-4-6})"
+else
+  echo "chat: disabled (set ANTHROPIC_API_KEY in the web env config to enable /chat)"
+fi
+
 # 3. Seed the dev DB once. seed_dev.py is fully offline and self-contained (it
 #    creates its own minimal exercise catalog for the workout history), so the
 #    populated baseline always lands even with no network.
