@@ -485,9 +485,10 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
 | `get_drink_summary` | Daily totals + rolling stats and sober streak; `include_rows=True` adds individual rows with ids for editing |
 | `update_drink` | Correct a logged drink in either direction (incl. downward) or move its day |
-| `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
-| `set_rotation` | Add/remove an exercise from the rotation (the curated pool the trainer programs from) |
-| `exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
+| `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
+| `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
+| `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |
+| `exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`/`hearted_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
 | `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; names resolve against the closed catalog, unmatched ones come back under `unmatched`/`candidates` (never auto-created) |
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `append_note` adds a line without clobbering earlier notes |
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |

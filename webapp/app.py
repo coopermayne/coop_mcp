@@ -844,27 +844,42 @@ async def trainer(request: Request):
 
 @app.get("/trainer/library")
 async def trainer_library(request: Request, muscle: str = "", q: str = "",
-                          rotation: str = "", archived: str = "", error: str = ""):
+                          rotation: str = "", hearted: str = "", archived: str = "",
+                          error: str = ""):
     """The exercise library: browse the whole catalog — muscles (by emphasis tier),
     equipment, level/mechanic, technique, and a form gif/video per exercise. Filterable
-    by muscle, name, or `rotation` (the curated programming pool); `archived` shows the
-    soft-deleted movements (the Archived view, where each row offers Restore). Each row
-    toggles in/out of the rotation and can be archived (removed from the library without
-    breaking past workouts). The user curates the closed catalog here: the page's AI add
-    panel (the `exercise` chat agent → server.create_exercise) is the only way a new
-    exercise enters it — the trainer chat can enrich technique but never creates one."""
+    by muscle, name, `rotation` (the small programming pool) or `hearted` (the wider
+    favorites superset it's drawn from); `archived` shows the soft-deleted movements (the
+    Archived view, where each row offers Restore). Each row toggles in/out of the rotation
+    and the hearted superset and can be archived (removed from the library without breaking
+    past workouts). The user curates the closed catalog here: the page's AI add panel (the
+    `exercise` chat agent → server.create_exercise) is the only way a new exercise enters
+    it — the trainer chat can enrich technique but never creates one."""
     lib = data.exercise_library(muscle=muscle, q=q, rotation=bool(rotation),
-                                archived=bool(archived))
+                                hearted=bool(hearted), archived=bool(archived))
     return page(request, "library.html", active="library", error=error, **lib)
 
 
 @app.post("/trainer/exercise/{exercise_id}/rotation")
 async def trainer_set_rotation(request: Request, exercise_id: int):
     """Toggle one exercise in/out of the rotation (the library page's star button). Body:
-    {"in_rotation": true|false}. Writes through server.set_rotation."""
+    {"in_rotation": true|false}. Writes through server.set_rotation (which also hearts it
+    when adding). Returns the resulting {in_rotation, hearted} so the UI can sync both."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     res = server.set_rotation(exercise_id=exercise_id, in_rotation=bool(body.get("in_rotation")))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
+
+
+@app.post("/trainer/exercise/{exercise_id}/hearted")
+async def trainer_set_hearted(request: Request, exercise_id: int):
+    """Toggle one exercise in/out of the hearted superset (the library page's heart button).
+    Body: {"hearted": true|false}. Writes through server.set_hearted (un-hearting also drops
+    it from the rotation). Returns the resulting {in_rotation, hearted} so the UI syncs both."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    res = server.set_hearted(exercise_id=exercise_id, hearted=bool(body.get("hearted")))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 

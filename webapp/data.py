@@ -350,13 +350,15 @@ def workouts_full(limit: int = 20) -> list:
 
 
 def exercise_library(muscle: str | None = None, q: str | None = None,
-                     rotation: bool = False, archived: bool = False) -> dict:
+                     rotation: bool = False, hearted: bool = False,
+                     archived: bool = False) -> dict:
     """The exercise catalog as a browsable LIBRARY: every movement in full — muscles in
     their three emphasis tiers (primary/secondary/tertiary), equipment, technique notes,
     common mistakes, cautions, and a form gif/video — plus `in_rotation` (is it in the
-    user's programming pool) and how much it's actually been trained (`sessions`,
-    `last_done`). Optionally filtered by `muscle` (any tier), a name fragment `q`, or
-    `rotation=True` to show only the rotation.
+    small programming pool), `hearted` (is it in the wider favorites SUPERSET the rotation
+    is drawn from; rotation ⊆ hearted) and how much it's actually been trained (`sessions`,
+    `last_done`). Optionally filtered by `muscle` (any tier), a name fragment `q`,
+    `rotation=True` to show only the rotation, or `hearted=True` to show the superset.
 
     By default only LIVE movements are listed; `archived=True` instead shows the
     soft-deleted ones (the Archived view, where each row offers Restore). Archived
@@ -364,9 +366,9 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
     past-workout links are kept.
 
     Also returns `muscles` (the canonical list, for the filter chips), `rotation_count`,
-    and the active `muscle`/`q`/`rotation`/`archived` so the template can render the
-    current filter. Read-only; writes go through server.save_exercise /
-    server.set_rotation / server.set_archived."""
+    `hearted_count`, and the active `muscle`/`q`/`rotation`/`hearted`/`archived` so the
+    template can render the current filter. Read-only; writes go through
+    server.save_exercise / server.set_rotation / server.set_hearted / server.set_archived."""
     from urllib.parse import quote_plus
     muscle = (muscle or "").strip().lower() or None
     q = (q or "").strip() or None
@@ -397,14 +399,20 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             vol[vr["exercise_id"]] = {"sessions": vr["sessions"], "last_done": vr["last_done"]}
     out = []
     rotation_count = 0
+    hearted_count = 0
     for r in rows:
         in_rotation = bool(r["in_rotation"])
+        is_hearted = bool(r["hearted"])
         if in_rotation:
             rotation_count += 1
+        if is_hearted:
+            hearted_count += 1
         m = mmap.get(r["id"], {"primary": [], "secondary": [], "tertiary": []})
         all_m = m["primary"] + m["secondary"] + m["tertiary"]
         aka = akamap.get(r["id"], [])
         if rotation and not in_rotation:
+            continue
+        if hearted and not is_hearted:
             continue
         if muscle and muscle not in all_m:
             continue
@@ -415,6 +423,7 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
         out.append({
             "exercise_id": r["id"], "name": r["name"], "category": r["category"],
             "equipment": r["equipment"], "muscles": m, "aka": aka, "in_rotation": in_rotation,
+            "hearted": is_hearted,
             "level": r["level"], "mechanic": r["mechanic"], "force": r["force"],
             "technique_notes": r["technique_notes"],
             "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
@@ -425,11 +434,12 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             "has_notes": bool(r["technique_notes"] or r["common_mistakes"] or r["cautions"]),
             "sessions": v["sessions"], "last_done": v["last_done"],
         })
-    # rotation first, then most-trained, then alphabetical
-    out.sort(key=lambda e: (not e["in_rotation"], -e["sessions"], e["name"].lower()))
+    # rotation first, then the rest of the hearted superset, then most-trained, alphabetical
+    out.sort(key=lambda e: (not e["in_rotation"], not e["hearted"], -e["sessions"], e["name"].lower()))
     return {"exercises": out, "count": len(out), "muscles": server.MUSCLES,
-            "rotation_count": rotation_count, "muscle": muscle, "q": q or "",
-            "rotation": rotation, "archived": archived}
+            "rotation_count": rotation_count, "hearted_count": hearted_count,
+            "muscle": muscle, "q": q or "",
+            "rotation": rotation, "hearted": hearted, "archived": archived}
 
 
 def active_plan() -> dict:

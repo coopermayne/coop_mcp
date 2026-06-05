@@ -162,19 +162,27 @@ the user gets stronger. Log negatives as given, program the next target along th
 Don't lean on estimated-1RM for assisted (negative-weight) sets — it isn't physically
 meaningful below bodyweight; judge those by assistance level and RPE instead.
 
-The catalog has two layers — a LIBRARY and a ROTATION:
+The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROTATION
+(rotation ⊆ hearted ⊆ library):
   - LIBRARY: the whole catalog, PRE-LOADED with ~870 public-domain movements from
     free-exercise-db (via scripts/import_exercises.py), each carrying muscles, equipment,
     a demo image, and step-by-step technique. It's a reference the user searches/browses
     at /trainer/library. Almost any movement you mention is already here with full data —
     look it up with `exercises` rather than re-deriving it.
-  - ROTATION: the curated subset (in_rotation) the user actually trains. get_fitness_
-    briefing returns it as `rotation`, and it is the ONLY pool you PROGRAM ROUTINES FROM.
-    Build start_workout_plan / log_workout sessions out of rotation movements. If you want
-    something NOT in the rotation, don't silently slip it in — propose it to the user and,
-    if they agree, set_rotation to add it first (you can surface candidates from the wider
-    library with exercises(muscle=…)). Logging a movement the user actually did adds it to
-    the rotation automatically, so the rotation grows from real training.
+  - HEARTED SUPERSET (hearted): the user's bench of FAVORITE movements — a curated shortlist
+    bigger than the rotation. It's where the rotation is drawn from: every few months the
+    user swaps some of the rotation out for other hearted lifts. List it with
+    exercises(hearted_only=True); add/remove with set_hearted. Heart a movement the user
+    likes even when it's not currently programmed, so it's on the bench for the next swap.
+  - ROTATION: the small subset (in_rotation, the user keeps it to ~10-14) they're ACTIVELY
+    training, so progress on each lift is easy to track. get_fitness_briefing returns it as
+    `rotation`, and it is the ONLY pool you PROGRAM ROUTINES FROM. Build start_workout_plan /
+    log_workout sessions out of rotation movements. If you want something NOT in the rotation,
+    don't silently slip it in — propose it to the user and, if they agree, set_rotation to add
+    it first (prefer pulling from the hearted superset; surface candidates from the wider
+    library with exercises(muscle=…)). Adding to the rotation hearts it too. Logging a
+    movement the user actually did adds it to the rotation (and hearts it) automatically, so
+    the rotation grows from real training — when it drifts past ~14, help the user prune back.
 
 The catalog is CLOSED to you: you NEVER invent an exercise — the ~870-movement library
 plus anything the user adds is the whole world, so program only names it already holds.
@@ -192,7 +200,8 @@ yet". Use the canonical muscle labels (they mirror the library's vocabulary): ab
 abductors, adductors, biceps, calves, chest, forearms, glutes, hamstrings, lats, lower
 back, middle back, neck, quadriceps, shoulders, traps, triceps. The user can also just ask
 you to add a movement to their rotation ("add Bulgarian split squats"); that's set_rotation
-(plus save_exercise enrichment if the entry is bare).
+(plus save_exercise enrichment if the entry is bare). "Add it to my favorites" / "remember
+this one" without committing it to the active rotation is set_hearted.
 
 After a session is logged, nudge the user to weigh in and capture it with
 log_bodyweight — it's a standing habit on their weight-loss journey, and the trend is
@@ -310,8 +319,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
 -- dataset (slug/force/level/mechanic/equipment/category + primary/secondary
 -- muscles + instructions) so the public-domain LIBRARY imports 1:1; our own
 -- coaching layer (common_mistakes, cautions, video_link) sits on top. The
--- `in_rotation` flag marks the curated subset the trainer actually programs
--- from. `workouts`/`sets` are the two-level log (session + per-set
+-- `in_rotation` flag marks the small subset the trainer actually programs from;
+-- `hearted` is the wider favorites SUPERSET it's drawn from (rotation ⊆ hearted),
+-- so the user can swap the rotation every few months from a pool they curate.
+-- `workouts`/`sets` are the two-level log (session + per-set
 -- weight/reps/rpe), mirroring entries/mentions. The server stores and
 -- retrieves; progression judgment happens in conversation.
 -- ----------------------------------------------------------------------- --
@@ -332,6 +343,10 @@ CREATE TABLE IF NOT EXISTS exercises (
     image_link_end  TEXT,             -- finish frame; with image_link the UI alternates the two
                                       -- (~1s) to animate the rep — free-exercise-db ships both
     in_rotation     INTEGER NOT NULL DEFAULT 0,  -- 1 = in the user's curated programming pool
+    hearted         INTEGER NOT NULL DEFAULT 0,  -- 1 = in the user's favorites SUPERSET (the bench
+                                                 -- the rotation is drawn from). in_rotation IMPLIES
+                                                 -- hearted: every rotation lift is hearted, but a
+                                                 -- hearted lift need not be in the (small) rotation
     archived        INTEGER NOT NULL DEFAULT 0,  -- 1 = soft-deleted: hidden everywhere the
                                                  -- catalog is discovered, row kept so past
                                                  -- workouts that reference it stay intact
@@ -517,11 +532,17 @@ def init_db() -> None:
         for col, decl in (("slug", "TEXT"), ("force", "TEXT"), ("level", "TEXT"),
                           ("mechanic", "TEXT"),
                           ("in_rotation", "INTEGER NOT NULL DEFAULT 0"),
+                          ("hearted", "INTEGER NOT NULL DEFAULT 0"),
                           ("archived", "INTEGER NOT NULL DEFAULT 0")):
             if col not in xcols:
                 conn.execute(f"ALTER TABLE exercises ADD COLUMN {col} {decl}")
+                # in_rotation IMPLIES hearted, so backfill the superset from the rotation
+                # the first time the column appears — existing rotation lifts are favorites.
+                if col == "hearted":
+                    conn.execute("UPDATE exercises SET hearted=1 WHERE in_rotation=1")
         # Indexes live here (not in SCHEMA) so they're created only after their columns exist.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_exercises_rotation ON exercises(in_rotation)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_exercises_hearted ON exercises(hearted)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_exercises_archived ON exercises(archived)")
         # Muscle vocabulary now mirrors free-exercise-db (see MUSCLES); rename any rows
         # stored under the old labels so existing data still aggregates. OR IGNORE skips a
@@ -1739,7 +1760,7 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                      secondary_muscles, tertiary_muscles, technique_notes,
                      common_mistakes, cautions, video_link, image_link, image_link_end,
-                     slug, force, level, mechanic, in_rotation, aliases=None,
+                     slug, force, level, mechanic, in_rotation, hearted=None, aliases=None,
                      allow_create: bool) -> dict:
     """Shared worker behind save_exercise (enrich-only, allow_create=False) and
     create_exercise (the website's add form, allow_create=True). New rows are born ONLY
@@ -1747,6 +1768,11 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
     the catalog growable by the user's hand alone."""
     if in_rotation is not None:
         in_rotation = int(bool(in_rotation))
+    if hearted is not None:
+        hearted = int(bool(hearted))
+    # rotation ⊆ hearted: putting a lift in the rotation pulls it into the superset too.
+    if in_rotation:
+        hearted = 1
     with db() as conn:
         if exercise_id is not None:
             row = conn.execute("SELECT id FROM exercises WHERE id=?", (exercise_id,)).fetchone()
@@ -1763,7 +1789,8 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                   "mechanic": mechanic, "equipment": equipment,
                   "technique_notes": technique_notes, "common_mistakes": common_mistakes,
                   "cautions": cautions, "video_link": video_link, "image_link": image_link,
-                  "image_link_end": image_link_end, "in_rotation": in_rotation}
+                  "image_link_end": image_link_end, "in_rotation": in_rotation,
+                  "hearted": hearted}
         sets_ = {k: v for k, v in fields.items() if v is not None}
         if row:
             eid = row["id"]
@@ -1818,9 +1845,10 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   level: Optional[str] = None,
                   mechanic: Optional[str] = None,
                   aliases: Optional[list[str]] = None,
-                  in_rotation: Optional[bool] = None) -> dict:
+                  in_rotation: Optional[bool] = None,
+                  hearted: Optional[bool] = None) -> dict:
     """ENRICH an exercise already in the LIBRARY (browsable at /trainer/library), or set
-    its rotation flag. The catalog is CLOSED to you: you CANNOT create exercises — the
+    its rotation / hearted flag. The catalog is CLOSED to you: you CANNOT create exercises — the
     library is pre-loaded from free-exercise-db, and any new movement is added by the user
     on the website's add form, never the chat. A `name` that isn't on file comes back as
     an error with `candidates` (the closest real entries); program from those or ask the
@@ -1832,8 +1860,10 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     shoulder limits), `equipment`, `category`, the dataset descriptors `force`
     (push/pull/static), `level`, `mechanic` (compound/isolation), and the muscle tiers.
     Only non-null fields are written — this is how you keep /trainer from showing "No
-    saved technique notes yet". Pass `in_rotation=True` to add it to the programming pool
-    (or prefer the dedicated `set_rotation` tool; logging a movement adds it for you).
+    saved technique notes yet". Pass `in_rotation=True` to add it to the (small) programming
+    pool, or `hearted=True` to add it to the wider favorites SUPERSET the rotation is drawn
+    from — rotation IMPLIES hearted, so in_rotation=True hearts it too. Prefer the dedicated
+    `set_rotation` / `set_hearted` tools; logging a movement adds it to both for you.
 
     MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
     `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
@@ -1857,7 +1887,8 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
         technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
         video_link=video_link, image_link=image_link, image_link_end=image_link_end,
         slug=slug, force=force, level=level,
-        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=False)
+        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, hearted=hearted,
+        allow_create=False)
 
 
 def create_exercise(name: str, category: Optional[str] = None, equipment: Optional[str] = None,
@@ -1875,22 +1906,25 @@ def create_exercise(name: str, category: Optional[str] = None, equipment: Option
                     level: Optional[str] = None,
                     mechanic: Optional[str] = None,
                     aliases: Optional[list[str]] = None,
-                    in_rotation: Optional[bool] = None) -> dict:
+                    in_rotation: Optional[bool] = None,
+                    hearted: Optional[bool] = None) -> dict:
     """Add a new exercise to the library — the trusted, NON-tool write path: the website's
     manual add form and the bulk importer (scripts/import_exercises.py) are the only
     callers, so the assistant (whose save_exercise can't create) never grows the catalog.
     A name already on file is updated rather than duplicated. `aliases` sets its AKAs
-    (common alternative names — see save_exercise). `in_rotation` is left untouched by
-    default (None) — the import keeps new library entries out of the rotation, while the
-    add form passes in_rotation=True so a movement the user deliberately adds is ready to
-    program. Returns like save_exercise."""
+    (common alternative names — see save_exercise). `in_rotation`/`hearted` are left
+    untouched by default (None) — the import keeps new library entries out of both pools,
+    while the add panel passes hearted=True so a movement the user deliberately adds lands
+    in their favorites SUPERSET (ready to promote into the small rotation when they curate
+    it). rotation IMPLIES hearted. Returns like save_exercise."""
     return _upsert_exercise(
         name=name, exercise_id=None, category=category, equipment=equipment,
         muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
         technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
         video_link=video_link, image_link=image_link, image_link_end=image_link_end,
         slug=slug, force=force, level=level,
-        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, allow_create=True)
+        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, hearted=hearted,
+        allow_create=True)
 
 
 def set_archived(exercise_id: int, archived: bool = True) -> dict:
@@ -1901,7 +1935,8 @@ def set_archived(exercise_id: int, archived: bool = True) -> dict:
 
     Archiving HIDES the movement everywhere the catalog is DISCOVERED — the library page,
     name search, name-resolution (logging/enriching/swapping by name), swap suggestions,
-    and the trainer's rotation — and drops it from the rotation, all WITHOUT deleting the
+    and the trainer's rotation — and drops it from the rotation AND the hearted superset,
+    all WITHOUT deleting the
     row, so past workouts that reference it keep their links and history stays intact. It's
     a clean "acts deleted" without breaking the data. Pass archived=False to restore it to
     the library; re-adding a movement by the same name on the add form restores it too.
@@ -1914,10 +1949,11 @@ def set_archived(exercise_id: int, archived: bool = True) -> dict:
         if not row:
             return {"error": f"no exercise with id {exercise_id}"}
         if archived:
-            # Archiving also drops it from the rotation, so a hidden movement never lingers
-            # in the pool the trainer programs from.
+            # Archiving also drops it from the rotation AND the hearted superset, so a
+            # hidden movement never lingers in any pool the trainer draws from.
             conn.execute(
-                "UPDATE exercises SET archived=1, in_rotation=0 WHERE id=?", (exercise_id,)
+                "UPDATE exercises SET archived=1, in_rotation=0, hearted=0 WHERE id=?",
+                (exercise_id,)
             )
         else:
             conn.execute("UPDATE exercises SET archived=0 WHERE id=?", (exercise_id,))
@@ -1927,14 +1963,17 @@ def set_archived(exercise_id: int, archived: bool = True) -> dict:
 @trainer_mcp.tool()
 def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
                  in_rotation: bool = True) -> dict:
-    """Add an exercise to (or remove it from) the user's ROTATION — the curated pool of
-    movements they actually train. The rotation is the ONLY set you program routines from
-    (the wider catalog is a browsable reference library, ~870 movements, that the user
-    searches to decide what to add). Target by `exercise_id` or `name` (case-insensitive);
-    an unknown name is an error here (add it with save_exercise first). Pass
-    in_rotation=False to take it out. Logging a movement the user actually did already
-    flags it into rotation automatically, so reach for this when curating ahead of time —
-    e.g. the user says "add Bulgarian split squats to my rotation" — or pruning."""
+    """Add an exercise to (or remove it from) the user's ROTATION — the small curated pool
+    (the user keeps it to ~10-14) of movements they're actively training so progress on each
+    is easy to track. The rotation is the ONLY set you program routines from. It's drawn from
+    the wider HEARTED superset (see set_hearted) — a bench of favorites the user pulls from
+    when they swap the rotation every few months — which in turn sits inside the browsable
+    ~870-movement library. Target by `exercise_id` or `name` (case-insensitive); an unknown
+    name is an error here (add it via the library first). Pass in_rotation=False to take it
+    out (it STAYS hearted — pruning the rotation keeps it in the favorites bench). Adding to
+    the rotation also hearts it (rotation ⊆ hearted). Logging a movement the user actually
+    did already flags it into the rotation, so reach for this when curating ahead of time —
+    e.g. "add Bulgarian split squats to my rotation" — or pruning back toward ~14."""
     in_rotation = int(bool(in_rotation))
     with db() as conn:
         if exercise_id is not None:
@@ -1946,31 +1985,76 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
         if not row:
             return {"error": "no matching exercise (create it with save_exercise first)",
                     "candidates": _match_exercises(conn, name or "")}
-        conn.execute("UPDATE exercises SET in_rotation=? WHERE id=?", (in_rotation, row["id"]))
-    return {"exercise_id": row["id"], "name": row["name"], "in_rotation": bool(in_rotation)}
+        # rotation ⊆ hearted: joining the rotation also hearts it; leaving stays hearted.
+        if in_rotation:
+            conn.execute("UPDATE exercises SET in_rotation=1, hearted=1 WHERE id=?", (row["id"],))
+        else:
+            conn.execute("UPDATE exercises SET in_rotation=0 WHERE id=?", (row["id"],))
+        cur = conn.execute("SELECT in_rotation, hearted FROM exercises WHERE id=?",
+                           (row["id"],)).fetchone()
+    return {"exercise_id": row["id"], "name": row["name"],
+            "in_rotation": bool(cur["in_rotation"]), "hearted": bool(cur["hearted"])}
+
+
+@trainer_mcp.tool()
+def set_hearted(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                hearted: bool = True) -> dict:
+    """Add an exercise to (or remove it from) the user's HEARTED superset — their bench of
+    favorite movements. This is the wider pool the small ROTATION (see set_rotation) is
+    drawn from: the user keeps the rotation to ~10-14 they actively train, and every few
+    months swaps some out for others from this hearted bench, so it's worth hearting any
+    movement they like even when it's not currently programmed. Target by `exercise_id` or
+    `name` (case-insensitive); an unknown name is an error here (add it via the library
+    first). Pass hearted=False to un-heart it — which also removes it from the rotation,
+    since a rotation lift is always hearted (rotation ⊆ hearted). Logging a movement hearts
+    it automatically. Reach for this when the user says they like / want to remember a
+    movement without committing it to the active rotation yet."""
+    hearted = int(bool(hearted))
+    with db() as conn:
+        if exercise_id is not None:
+            row = conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+        elif name:
+            row = _resolve_exercise(conn, name)
+        else:
+            return {"error": "pass name or exercise_id"}
+        if not row:
+            return {"error": "no matching exercise (create it with save_exercise first)",
+                    "candidates": _match_exercises(conn, name or "")}
+        # rotation ⊆ hearted: un-hearting must drop it from the rotation too.
+        if hearted:
+            conn.execute("UPDATE exercises SET hearted=1 WHERE id=?", (row["id"],))
+        else:
+            conn.execute("UPDATE exercises SET hearted=0, in_rotation=0 WHERE id=?", (row["id"],))
+        cur = conn.execute("SELECT in_rotation, hearted FROM exercises WHERE id=?",
+                           (row["id"],)).fetchone()
+    return {"exercise_id": row["id"], "name": row["name"],
+            "in_rotation": bool(cur["in_rotation"]), "hearted": bool(cur["hearted"])}
 
 
 @trainer_mcp.tool()
 def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
               muscle: Optional[str] = None, equipment: Optional[str] = None,
               category: Optional[str] = None, rotation_only: bool = False,
+              hearted_only: bool = False,
               similar_to: Optional[str] = None) -> dict:
     """Read the exercise catalog — one full record, a filtered list, or swap peers.
 
     ONE record — pass `name` or `exercise_id` to get a movement in full: muscle emphasis
     tiers (primary/secondary/tertiary), `aka` (common alternative names it's known by),
-    `level` (difficulty), `mechanic` (compound vs isolation), `force`, in_rotation,
+    `level` (difficulty), `mechanic` (compound vs isolation), `force`, in_rotation, hearted,
     technique notes, common mistakes, cautions, and any video/image links, so you can
     coach proper form. `name` is resolved against the canonical name AND its AKAs (so
     "RDL" finds Romanian Deadlift); an unresolved `name` returns `candidates` (the closest
     real entries) — pick from those, don't guess.
 
     A LIST — narrow the registry with `muscle` (matches any emphasis tier), an `equipment`
-    fragment, `category`, or `rotation_only=True`. Rows are compact (name, category,
-    equipment, muscles, `level`, `mechanic`, in_rotation) — `level`/`mechanic` let you
-    weigh difficulty and pick compounds before isolation. The full catalog is large
-    (~870), so when picking exercises for a session prefer rotation_only=True — that's the
-    set the user actually trains from.
+    fragment, `category`, `rotation_only=True`, or `hearted_only=True`. Rows are compact
+    (name, category, equipment, muscles, `level`, `mechanic`, in_rotation, hearted) —
+    `level`/`mechanic` let you weigh difficulty and pick compounds before isolation. The
+    full catalog is large (~870), so when picking exercises for a session prefer
+    rotation_only=True — the small set the user actively trains from. Use hearted_only=True
+    to see the wider favorites SUPERSET the rotation is drawn from — the bench to pull from
+    when the user is swapping out their rotation.
 
     A SWAP — `similar_to=<exercise>` returns the closest like-for-like peers: shares a
     primary muscle, ranked by same `mechanic` (compound↔compound, isolation↔isolation),
@@ -1990,7 +2074,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
                     "equipment": r["equipment"], "muscles": m,
                     "aka": _aliases_for(conn, r["id"]),
                     "force": r["force"], "level": r["level"], "mechanic": r["mechanic"],
-                    "in_rotation": bool(r["in_rotation"]),
+                    "in_rotation": bool(r["in_rotation"]), "hearted": bool(r["hearted"]),
                     "technique_notes": r["technique_notes"],
                     "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
                     "video_link": r["video_link"], "image_link": r["image_link"],
@@ -2000,7 +2084,7 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
             return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
                     "equipment": r["equipment"], "muscles": _muscles_for(conn, r["id"]),
                     "level": r["level"], "mechanic": r["mechanic"],
-                    "in_rotation": bool(r["in_rotation"])}
+                    "in_rotation": bool(r["in_rotation"]), "hearted": bool(r["hearted"])}
 
         # Swap peers: shares a primary muscle, ranked by same mechanic / overlap / rotation.
         if similar_to is not None:
@@ -2026,6 +2110,8 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
         out = []
         for r in rows:
             if rotation_only and not r["in_rotation"]:
+                continue
+            if hearted_only and not r["hearted"]:
                 continue
             m = _muscles_for(conn, r["id"])
             if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"] + m["tertiary"]):
@@ -2131,8 +2217,8 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 continue
             eid = row["id"]
             # A logged movement is one they actually do → it joins the rotation (the pool
-            # the trainer programs from). Pruning stays manual via set_rotation.
-            conn.execute("UPDATE exercises SET in_rotation=1 WHERE id=?", (eid,))
+            # the trainer programs from) and the hearted superset. Pruning stays manual.
+            conn.execute("UPDATE exercises SET in_rotation=1, hearted=1 WHERE id=?", (eid,))
             # continue set numbering if this exercise already has sets in the session
             start = (conn.execute(
                 "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
@@ -2660,8 +2746,9 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
                status='done' WHERE id=?""",
             (w, rp, rpe, note, set_id),
         )
-        # Completing a set means the movement was actually trained → keep it in rotation.
-        conn.execute("UPDATE exercises SET in_rotation=1 WHERE id=?", (r["exercise_id"],))
+        # Completing a set means the movement was actually trained → keep it in rotation
+        # (and hearted).
+        conn.execute("UPDATE exercises SET in_rotation=1, hearted=1 WHERE id=?", (r["exercise_id"],))
         return _plan_payload(conn, r["workout_id"])
 
 
