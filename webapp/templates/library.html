@@ -12,18 +12,8 @@
 
 {% block content %}
 
-{# Crossfade the finish frame over the start frame and back, ~2s, forever — turns the two
-   static photos free-exercise-db ships into a sense of the movement. Pure CSS so it needs
-   no JS; honored only when the user hasn't asked for reduced motion (then it sits on the
-   finish frame as a plain still). #}
-<style>
-  @keyframes repLoopFade { 0%, 40% { opacity: 0; } 60%, 100% { opacity: 1; } }
-  .rep-loop-end { opacity: 0; animation: repLoopFade 2s ease-in-out infinite alternate; }
-  @media (prefers-reduced-motion: reduce) {
-    .rep-loop-end { animation: none; opacity: 1; }
-  }
-</style>
-
+{# The rep-loop crossfade (start ⇄ finish frame) is styled in base.html so the /trainer
+   plan card shares it; here we just emit the two-frame markup below. #}
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Exercise Library</h1>
   <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} shown · {{ rotation_count }} in rotation</span>
