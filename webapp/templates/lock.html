@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}Locked · Journal{% endblock %}
+{% block content %}
+
+{# The knock screen. No nav header (base only renders it when `active` is set), so
+   while locked the only way forward is the rhythm. `mode` is "unlock" (knock to
+   enter) or "setup" (record a new knock, confirmed twice). Tap timing is captured
+   client-side; the server compares tempo-independent ratios. #}
+<div id="lock"
+     data-base="{{ base }}"
+     data-next="{{ next }}"
+     data-mode="{{ mode }}"
+     data-tolerance="{{ tolerance }}"
+     class="max-w-sm mx-auto text-center py-16 select-none">
+
+  <h1 class="text-2xl font-bold tracking-tight">Journal</h1>
+  <p id="lock-prompt" class="text-sm text-gray-500 mt-2">
+    {% if mode == 'setup' %}Tap a secret knock to lock your journal.{% else %}Tap your secret knock to open.{% endif %}
+  </p>
+
+  {# The tap pad. The whole circle is the surface; taps anywhere on it count. #}
+  <button id="lock-pad" type="button" aria-label="Tap your knock"
+          class="mt-10 mx-auto w-40 h-40 rounded-full border-2 border-black flex items-center justify-center
+                 active:scale-95 transition-transform"
+          style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;">
+    <svg class="w-8 h-8 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+    </svg>
+  </button>
+
+  {# One dot per tap registered in the current knock. #}
+  <div id="lock-dots" class="mt-6 h-3 flex items-center justify-center gap-2"></div>
+
+  <p id="lock-status" class="mt-2 text-sm h-5 text-gray-500"></p>
+
+  <div class="mt-6 flex items-center justify-center gap-4 text-xs text-gray-400">
+    <button id="lock-reset" type="button" class="hover:text-black transition-colors">Start over</button>
+    {% if pin_enabled %}
+    <span aria-hidden="true">·</span>
+    <button id="lock-usecode" type="button" class="hover:text-black transition-colors">Use code</button>
+    {% endif %}
+  </div>
+
+  {% if pin_enabled %}
+  {# PIN fallback (only when JOURNAL_LOCK_PIN is set) so a fumbled rhythm never
+     locks you out. #}
+  <form id="lock-pin" hidden class="mt-6 flex items-center justify-center gap-2">
+    <input type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off"
+           placeholder="Code"
+           class="w-28 text-center border border-gray-200 rounded-[4px] px-3 py-2 text-sm" />
+    <button type="submit"
+            class="px-4 py-2 bg-black text-white text-sm font-medium hover:bg-gray-800 transition-colors">Enter</button>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('lock');
+  var BASE = root.dataset.base || '';
+  var NEXT = root.dataset.next || '/journal';
+  var MODE = root.dataset.mode;                 // 'unlock' | 'setup'
+  var TOL = parseFloat(root.dataset.tolerance) || 0.15;
+  var FINISH_MS = 1100;                          // pause after the last tap = knock done
+  var MIN_TAPS = 3;
+
+  var pad = document.getElementById('lock-pad');
+  var dots = document.getElementById('lock-dots');
+  var prompt = document.getElementById('lock-prompt');
+  var status = document.getElementById('lock-status');
+  var resetBtn = document.getElementById('lock-reset');
+
+  var taps = [];        // tap timestamps (ms) for the knock in progress
+  var timer = null;     // fires FINISH_MS after the last tap
+  var firstNorm = null; // setup: the first capture, awaiting confirmation
+  var busy = false;     // a request is in flight
+
+  function setStatus(msg, bad) {
+    status.textContent = msg || '';
+    status.className = 'mt-2 text-sm h-5 ' + (bad ? 'text-black font-medium' : 'text-gray-500');
+  }
+  function renderDots() {
+    dots.innerHTML = '';
+    for (var i = 0; i < taps.length; i++) {
+      var d = document.createElement('span');
+      d.className = 'w-2 h-2 rounded-full bg-black';
+      dots.appendChild(d);
+    }
+  }
+  function clearTaps() { taps = []; if (timer) { clearTimeout(timer); timer = null; } renderDots(); }
+  function gaps() {
+    var g = [];
+    for (var i = 1; i < taps.length; i++) g.push(taps[i] - taps[i - 1]);
+    return g;
+  }
+  function normalize(g) {
+    var total = g.reduce(function (a, b) { return a + b; }, 0);
+    if (!total) return null;
+    return g.map(function (x) { return x / total; });
+  }
+  function matches(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > TOL) return false;
+    return true;
+  }
+
+  function shake() {
+    pad.animate(
+      [{ transform: 'translateX(0)' }, { transform: 'translateX(-8px)' },
+       { transform: 'translateX(8px)' }, { transform: 'translateX(0)' }],
+      { duration: 220 }
+    );
+  }
+
+  function finish() {
+    timer = null;
+    if (taps.length < MIN_TAPS) {
+      setStatus('Tap at least three times.', true);
+      shake();
+      clearTaps();
+      return;
+    }
+    var raw = gaps();
+    if (MODE === 'setup') return finishSetup(raw);
+    return finishUnlock(raw);
+  }
+
+  function post(path, body) {
+    return fetch(BASE + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  }
+
+  function finishUnlock(raw) {
+    busy = true;
+    setStatus('Checking…');
+    post('/lock/verify', { gaps: raw })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        busy = false;
+        if (j && j.ok) { window.location.href = BASE + NEXT; }
+        else { setStatus('Not quite — try again.', true); shake(); clearTaps(); }
+      })
+      .catch(function () { busy = false; setStatus('Something went wrong.', true); clearTaps(); });
+  }
+
+  function finishSetup(raw) {
+    var norm = normalize(raw);
+    if (!firstNorm) {
+      firstNorm = norm;
+      clearTaps();
+      prompt.textContent = 'Now tap the same knock again to confirm.';
+      setStatus('');
+      return;
+    }
+    if (!matches(firstNorm, norm)) {
+      firstNorm = null;
+      clearTaps();
+      prompt.textContent = 'Tap a secret knock to lock your journal.';
+      setStatus("Those didn't match — start over.", true);
+      shake();
+      return;
+    }
+    busy = true;
+    setStatus('Saving…');
+    post('/lock/set', { gaps: raw })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        busy = false;
+        if (j && j.ok) { window.location.href = BASE + NEXT; }
+        else { setStatus((j && j.error) || 'Could not save.', true); firstNorm = null; clearTaps(); }
+      })
+      .catch(function () { busy = false; setStatus('Something went wrong.', true); firstNorm = null; clearTaps(); });
+  }
+
+  function tap() {
+    if (busy) return;
+    taps.push(performance.now());
+    renderDots();
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(finish, FINISH_MS);
+  }
+
+  pad.addEventListener('pointerdown', function (e) { e.preventDefault(); tap(); });
+  // Spacebar taps too, for a desktop keyboard.
+  document.addEventListener('keydown', function (e) {
+    if (e.code === 'Space' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); tap(); }
+  });
+
+  resetBtn.addEventListener('click', function () {
+    firstNorm = null;
+    clearTaps();
+    prompt.textContent = (MODE === 'setup')
+      ? 'Tap a secret knock to lock your journal.'
+      : 'Tap your secret knock to open.';
+    setStatus('');
+  });
+
+  // PIN fallback (present only when configured).
+  var pinForm = document.getElementById('lock-pin');
+  var useCode = document.getElementById('lock-usecode');
+  if (pinForm && useCode) {
+    useCode.addEventListener('click', function () {
+      pinForm.hidden = !pinForm.hidden;
+      if (!pinForm.hidden) pinForm.querySelector('input').focus();
+    });
+    pinForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var val = pinForm.querySelector('input').value.trim();
+      if (!val) return;
+      setStatus('Checking…');
+      post('/lock/verify', { pin: val })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j && j.ok) { window.location.href = BASE + NEXT; }
+          else { setStatus('Wrong code.', true); pinForm.querySelector('input').value = ''; }
+        })
+        .catch(function () { setStatus('Something went wrong.', true); });
+    });
+  }
+})();
+</script>
+
+{% endblock %}

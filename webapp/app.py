@@ -21,7 +21,9 @@ import os
 import re
 import secrets
 import sys
+import time
 from typing import Optional
+from urllib.parse import quote
 from datetime import datetime
 
 from markupsafe import Markup
@@ -90,6 +92,42 @@ ALLOWED_EMAILS = server.ALLOWED_EMAILS  # reuse the MCP server's allowlist
 # (the backup is then browser/session-only). Distinct from the session login so a
 # leaked cron token grants nothing but read-only backups.
 BACKUP_TOKEN = (os.environ.get("BACKUP_TOKEN") or "").strip()
+
+# --------------------------------------------------------------------------- #
+# Journal lock — a second, local gate on top of Google auth.
+#
+# Google auth keeps strangers OUT; this keeps someone who picks up the ALREADY
+# signed-in device (the classic "my wife grabs my phone") from scrolling the
+# journal. It guards ONLY the journal surface (entries / people / pending /
+# groups + the journal chat) — trainer and drinking stay open, they're not
+# private. It's deliberately low-security: the only person who can even reach
+# these routes is the authenticated owner, so the gate's job is to stop casual
+# reading, not a determined attacker.
+#
+# Unlock is a "secret knock": tap a rhythm on the lock screen. We compare the
+# *ratios* between taps (normalized so total tempo doesn't matter), so the same
+# pattern played fast or slow both pass. The reference pattern lives in the DB
+# `settings` table (key `journal_lock`), set once from the lock screen.
+#
+# Enabled when JOURNAL_LOCK is truthy OR a knock has already been recorded (so
+# it stays on across restarts without re-setting the env). Unset + no knock =
+# the whole feature is dormant. LOCK_PIN is an optional digit-code fallback so a
+# fumbled rhythm never locks you out; unset = knock only. LOCK_IDLE_SECONDS is
+# the auto-relock window (slides on activity; also re-locks on a fresh open).
+LOCK_ENABLED_ENV = (os.environ.get("JOURNAL_LOCK") or "").lower() in ("1", "true", "yes")
+LOCK_PIN = (os.environ.get("JOURNAL_LOCK_PIN") or "").strip()
+LOCK_IDLE_SECONDS = int(os.environ.get("JOURNAL_LOCK_IDLE", "300") or "300")
+# Per-interval tolerance for the knock match, as a fraction of the knock's total
+# duration (the gaps are normalized to sum to 1, so 0.15 ≈ each beat may land
+# 15% of the way off). Forgiving enough to reproduce by hand, tight enough that a
+# different rhythm fails.
+LOCK_TOLERANCE = float(os.environ.get("JOURNAL_LOCK_TOLERANCE", "0.15") or "0.15")
+
+# Journal-only paths the lock guards (relative to the mount prefix). Everything
+# else — trainer, drinking, library, auth, static, the lock screen itself —
+# passes straight through.
+LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
+LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/")
 
 app = FastAPI(title="Journal")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
@@ -217,11 +255,113 @@ def base_path(request: Request) -> str:
 
 
 def page(request: Request, template: str, active: str = "", status_code: int = 200, **ctx):
+    locked_here = _is_lock_path(_rel_path(request))
     ctx.update(active=active, auth_enabled=AUTH_ENABLED, show_logout=SHOW_LOGOUT,
                chat_enabled=chat.ENABLED,
+               # `lock_active` shows the lock controls in the nav; `lock_guard`
+               # arms the client idle-relock timer, but only on the journal pages
+               # the lock actually covers (never on trainer/drinking, never on the
+               # lock screen itself).
+               lock_active=_lock_active(), lock_guard=_lock_active() and locked_here,
+               lock_idle_ms=LOCK_IDLE_SECONDS * 1000,
                user=request.session.get("email"), base=base_path(request))
     return templates.TemplateResponse(request=request, name=template,
                                       context=ctx, status_code=status_code)
+
+
+# --------------------------------------------------------------------------- #
+# Journal lock helpers (see the config block up top for the why)
+# --------------------------------------------------------------------------- #
+
+def _rel_path(request: Request) -> str:
+    """Request path relative to the mount prefix ('/app' embedded, '' standalone),
+    so the lock path-set matches whether the app is mounted or standalone."""
+    root = request.scope.get("root_path", "") or ""
+    path = request.url.path
+    if root and path.startswith(root):
+        path = path[len(root):] or "/"
+    return path
+
+
+def _is_lock_path(path: str) -> bool:
+    """Whether `path` (mount-relative) is part of the journal surface the lock guards."""
+    return path in LOCK_PATHS_EXACT or path.startswith(LOCK_PATHS_PREFIX)
+
+
+def _get_lock() -> Optional[dict]:
+    """The stored knock reference ({"gaps": [...normalized...], "count": N}) or None
+    if no knock has been recorded. Reads the shared `settings` table directly — the
+    same generic JSON-KV the trainer profile lives in; no server.py tool needed for a
+    pure webapp-config value."""
+    try:
+        with server.db() as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key='journal_lock'").fetchone()
+        return json.loads(row["value"]) if row else None
+    except Exception:
+        return None
+
+
+def _set_lock(norm_gaps: list, count: int) -> None:
+    with server.db() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('journal_lock', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps({"gaps": norm_gaps, "count": count}),),
+        )
+
+
+def _lock_active() -> bool:
+    """The lock guards the journal when explicitly enabled OR once a knock exists."""
+    return LOCK_ENABLED_ENV or (_get_lock() is not None)
+
+
+def _normalize_gaps(gaps) -> Optional[list]:
+    """Turn raw inter-tap durations (ms) into tempo-independent ratios that sum to 1.
+    None if there aren't at least two gaps (i.e. fewer than three taps) — too little
+    to be a rhythm."""
+    try:
+        vals = [float(g) for g in gaps if g is not None and float(g) > 0]
+    except (TypeError, ValueError):
+        return None
+    total = sum(vals)
+    if len(vals) < 2 or total <= 0:
+        return None
+    return [g / total for g in vals]
+
+
+def _knock_matches(ref: Optional[list], attempt: Optional[list]) -> bool:
+    """Same number of beats, and every normalized interval within LOCK_TOLERANCE."""
+    if not ref or not attempt or len(ref) != len(attempt):
+        return False
+    return all(abs(r - a) <= LOCK_TOLERANCE for r, a in zip(ref, attempt))
+
+
+def _unlock_session(request: Request) -> None:
+    request.session["jrl_unlocked"] = True
+    request.session["jrl_unlocked_at"] = int(time.time())
+
+
+def _relock_session(request: Request) -> None:
+    request.session.pop("jrl_unlocked", None)
+    request.session.pop("jrl_unlocked_at", None)
+
+
+def _is_unlocked(request: Request) -> bool:
+    """Unlocked AND still within the idle window. The window slides on each guarded
+    request (see LockGate), so it's an inactivity timeout, not a fixed lease."""
+    if not request.session.get("jrl_unlocked"):
+        return False
+    ts = int(request.session.get("jrl_unlocked_at", 0) or 0)
+    return (int(time.time()) - ts) <= LOCK_IDLE_SECONDS
+
+
+def _safe_next(raw: Optional[str]) -> str:
+    """A caller-supplied post-unlock destination, sanitized to a same-app relative
+    path so it can't be turned into an open redirect. Falls back to /journal."""
+    if raw and raw.startswith("/") and not raw.startswith("//") and "://" not in raw:
+        return raw
+    return "/journal"
 
 
 # --------------------------------------------------------------------------- #
@@ -268,7 +408,29 @@ class RequireAuth(BaseHTTPMiddleware):
         return RedirectResponse(root + "/login")
 
 
-# SessionMiddleware must be outermost so request.session exists for RequireAuth.
+class LockGate(BaseHTTPMiddleware):
+    """Second gate (runs INSIDE RequireAuth, so login wins): when the journal lock
+    is active, redirect any guarded journal path to the knock screen unless this
+    session is unlocked and still inside the idle window. On a guarded, unlocked
+    request it slides the idle timer forward, so the lock is an inactivity timeout
+    — set the device down and it re-locks itself. Everything outside the journal
+    surface (trainer, drinking, the lock screen, static) passes straight through."""
+    async def dispatch(self, request: Request, call_next):
+        root = request.scope.get("root_path", "") or ""
+        path = _rel_path(request)
+        if not _is_lock_path(path) or not _lock_active():
+            return await call_next(request)
+        if _is_unlocked(request):
+            request.session["jrl_unlocked_at"] = int(time.time())  # slide the window
+            return await call_next(request)
+        dest = path + (("?" + request.url.query) if request.url.query else "")
+        return RedirectResponse(root + "/lock?next=" + quote(dest, safe=""))
+
+
+# Middleware execution is outermost-first = reverse of add order: Session →
+# RequireAuth → LockGate → route. Session must wrap both (they read request.session);
+# RequireAuth must wrap LockGate so an unauthenticated hit goes to /login, not /lock.
+app.add_middleware(LockGate)
 app.add_middleware(RequireAuth)
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax",
                    https_only=bool(WEB_BASE_URL.startswith("https")))
@@ -304,6 +466,75 @@ async def auth_callback(request: Request):
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse(base_path(request) + "/login")
+
+
+# --------------------------------------------------------------------------- #
+# Journal lock — the knock screen and its set/verify/relock endpoints. These
+# sit behind RequireAuth (only the owner reaches them) but OUTSIDE the LockGate's
+# guarded set, so the lock screen is always reachable. See the config block and
+# helpers up top.
+# --------------------------------------------------------------------------- #
+
+@app.get("/lock")
+async def lock_page(request: Request):
+    base = base_path(request)
+    if not _lock_active():
+        return RedirectResponse(base + "/journal")
+    nxt = _safe_next(request.query_params.get("next"))
+    configured = _get_lock() is not None
+    change = bool(request.query_params.get("change"))
+    if not configured:
+        mode = "setup"            # no knock yet → must record one to proceed
+    elif change and _is_unlocked(request):
+        mode = "setup"            # re-recording, allowed only from an unlocked session
+    elif _is_unlocked(request):
+        return RedirectResponse(base + nxt)   # already in; nothing to do here
+    else:
+        mode = "unlock"
+    return page(request, "lock.html", active="", next=nxt, mode=mode,
+                pin_enabled=bool(LOCK_PIN), tolerance=LOCK_TOLERANCE)
+
+
+@app.post("/lock/verify")
+async def lock_verify(request: Request):
+    """Check a knock (or the optional PIN fallback) and unlock the session. Body:
+    {gaps: [ms,...]} for a knock, or {pin: "1234"} when JOURNAL_LOCK_PIN is set."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    ok = False
+    pin = body.get("pin")
+    if pin is not None and LOCK_PIN:
+        ok = secrets.compare_digest(str(pin), LOCK_PIN)
+    else:
+        ref = _get_lock()
+        ok = bool(ref) and _knock_matches(ref.get("gaps"), _normalize_gaps(body.get("gaps")))
+    if ok:
+        _unlock_session(request)
+    return JSONResponse({"ok": ok})
+
+
+@app.post("/lock/set")
+async def lock_set(request: Request):
+    """Record (or change) the secret knock. Allowed when no knock exists yet, or
+    from an already-unlocked session (so you can't reset the knock without first
+    being inside). Body: {gaps: [ms,...]}. Recording unlocks the session too."""
+    from fastapi.responses import JSONResponse
+    if _get_lock() is not None and not _is_unlocked(request):
+        return JSONResponse({"error": "Unlock first to change the knock."}, status_code=403)
+    body = await request.json()
+    norm = _normalize_gaps(body.get("gaps"))
+    if norm is None:
+        return JSONResponse({"error": "Tap at least three times."}, status_code=400)
+    _set_lock(norm, len(norm) + 1)
+    _unlock_session(request)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/lock/relock")
+async def lock_relock(request: Request):
+    """Lock the journal now (the nav's 'Lock journal' control)."""
+    _relock_session(request)
+    return RedirectResponse(base_path(request) + "/lock")
 
 
 @app.get("/health")
