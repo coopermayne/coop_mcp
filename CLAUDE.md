@@ -225,10 +225,13 @@ working.
   superset — every few months the user swaps some of the rotation out for other hearted
   lifts. `set_rotation`/`set_hearted` curate the two pools (mirrored by the library page's
   ★/♥ toggles); the invariant `in_rotation ⇒ hearted` is enforced everywhere either flag is
-  written — adding to the rotation hearts it, un-hearting drops it from the rotation, logging
-  a movement flags it into BOTH, archiving clears BOTH, and the website's **+ Add an
-  exercise** panel lands new movements in the *hearted superset* (not the rotation, which
-  stays a deliberate hand-curated ~14). The
+  written — adding to the rotation hearts it, un-hearting drops it from the rotation, archiving
+  clears BOTH, and the website's **+ Add an exercise** panel lands new movements in the
+  *hearted superset* (not the rotation, which stays a deliberate hand-curated ~14). **Logging
+  a movement hearts it but NEVER adds it to the rotation** — the rotation is the user's
+  control over their progression, so it grows ONLY on an explicit `set_rotation` request (in
+  chat, after clear confirmation) or via the website's ★ toggle, never automatically from
+  training. The
   catalog is **CLOSED to the model**: the logging/planning tools resolve a name against it
   (fuzzily — exact, then spacing/punct-insensitive, then a high-confidence typo match;
   `EX_CONFIDENT` is high so Hack/Back Squat surfaces as a candidate, not a silent
