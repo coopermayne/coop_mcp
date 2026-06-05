@@ -3,7 +3,12 @@
 {% block title %}Trainer · Journal{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold tracking-tight mb-8">Trainer</h1>
+<div class="flex items-center justify-between mb-8">
+  <h1 class="text-2xl font-bold tracking-tight">Trainer</h1>
+  <a href="{{ base }}/trainer/library" aria-label="Exercise library" title="Exercise library" class="text-gray-400 hover:text-black transition-colors">
+    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
+  </a>
+</div>
 
 {# Plan card — rendered entirely by static/trainer.js from the bootstrapped JSON,
    so tap-driven and chat-driven changes share one render path. #}
