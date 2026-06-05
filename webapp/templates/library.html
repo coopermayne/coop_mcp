@@ -16,21 +16,24 @@
    plan card shares it; here we just emit the two-frame markup below. #}
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Exercise Library</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} shown · {{ rotation_count }} in rotation</span>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} shown · {{ rotation_count }} in rotation · {{ hearted_count }} hearted</span>
 </div>
 
 {% if error %}
 <div class="mb-5 px-4 py-3 border border-amber-200 bg-amber-50 text-sm text-amber-800 rounded-[4px]">{{ error }}</div>
 {% endif %}
 
-{# Rotation / All / Archived toggle, preserving the current name + muscle filters.
-   Archived is the soft-deleted view (each row offers Restore); rotation & All show live
-   movements only. #}
+{# Rotation / Hearted / All / Archived toggle, preserving the current name + muscle
+   filters. Rotation is the small programmed pool; Hearted is the wider favorites superset
+   it's drawn from (rotation ⊆ hearted). Archived is the soft-deleted view (each row offers
+   Restore); the first three show live movements only. #}
 <div class="mb-4 flex gap-2">
   <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}rotation=1"
      class="badge hover:border-black hover:text-black transition-colors {% if rotation and not archived %}badge-dark{% endif %}">★ In rotation</a>
+  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}hearted=1"
+     class="badge hover:border-black hover:text-black transition-colors {% if hearted and not archived %}badge-dark{% endif %}">♥ Hearted</a>
   <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}{% endif %}{% if q and muscle %}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}{% endif %}"
-     class="badge hover:border-black hover:text-black transition-colors {% if not rotation and not archived %}badge-dark{% endif %}">All</a>
+     class="badge hover:border-black hover:text-black transition-colors {% if not rotation and not hearted and not archived %}badge-dark{% endif %}">All</a>
   <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}archived=1"
      class="badge hover:border-black hover:text-black transition-colors {% if archived %}badge-dark{% endif %}">Archived</a>
 </div>
@@ -43,6 +46,7 @@
          class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
   {% if muscle %}<input type="hidden" name="muscle" value="{{ muscle }}" />{% endif %}
   {% if rotation %}<input type="hidden" name="rotation" value="1" />{% endif %}
+  {% if hearted %}<input type="hidden" name="hearted" value="1" />{% endif %}
   {% if chat_enabled %}
   <button type="button" data-add-open aria-label="Add an exercise" title="Add an exercise"
           class="shrink-0 w-10 flex items-center justify-center border border-gray-200 text-gray-500 hover:border-black hover:text-black transition-colors">
@@ -50,13 +54,13 @@
   </button>
   {% endif %}
   <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
-  {% if q or muscle %}<a href="{{ base }}/trainer/library{% if rotation %}?rotation=1{% endif %}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+  {% if q or muscle %}<a href="{{ base }}/trainer/library{% if rotation %}?rotation=1{% elif hearted %}?hearted=1{% endif %}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
-{# Muscle filter chips: each toggles ?muscle=, keeping any name query and rotation filter. #}
+{# Muscle filter chips: each toggles ?muscle=, keeping any name query and rotation/hearted filter. #}
 <div class="mb-8 flex flex-wrap gap-2">
   {% for mu in muscles %}
-  <a href="{{ base }}/trainer/library?muscle={{ mu | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if rotation %}&rotation=1{% endif %}"
+  <a href="{{ base }}/trainer/library?muscle={{ mu | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if rotation %}&rotation=1{% elif hearted %}&hearted=1{% endif %}"
      class="badge hover:border-black hover:text-black transition-colors {% if muscle == mu %}badge-dark{% endif %}">{{ mu }}</a>
   {% endfor %}
 </div>
@@ -71,13 +75,19 @@
     <summary class="cursor-pointer list-none flex items-baseline justify-between gap-3">
       <div class="min-w-0">
         <div class="flex items-baseline gap-2 flex-wrap">
-          {# Star toggles rotation membership; click is intercepted so the row doesn't
-             expand. Hidden in the Archived view — an archived movement isn't programmable. #}
+          {# Star toggles rotation membership, heart toggles the wider favorites superset
+             (rotation ⊆ hearted — starring hearts it too; un-hearting un-stars it). Clicks
+             are intercepted so the row doesn't expand. Both hidden in the Archived view —
+             an archived movement is in neither pool. #}
           {% if not archived %}
           <button type="button" class="rotation-toggle shrink-0 text-base leading-none {% if ex.in_rotation %}text-amber-500{% else %}text-gray-300 hover:text-amber-400{% endif %}"
                   data-id="{{ ex.exercise_id }}" data-in="{{ '1' if ex.in_rotation else '0' }}"
                   aria-pressed="{{ 'true' if ex.in_rotation else 'false' }}"
                   title="{{ 'In your rotation — click to remove' if ex.in_rotation else 'Add to your rotation' }}">{{ '★' if ex.in_rotation else '☆' }}</button>
+          <button type="button" class="heart-toggle shrink-0 text-sm leading-none {% if ex.hearted %}text-rose-500{% else %}text-gray-300 hover:text-rose-400{% endif %}"
+                  data-id="{{ ex.exercise_id }}" data-hearted="{{ '1' if ex.hearted else '0' }}"
+                  aria-pressed="{{ 'true' if ex.hearted else 'false' }}"
+                  title="{{ 'In your favorites — click to remove' if ex.hearted else 'Add to your favorites' }}">{{ '♥' if ex.hearted else '♡' }}</button>
           {% endif %}
           <span class="text-sm font-medium">{{ ex.name }}</span>
           {% if ex.category %}<span class="badge">{{ ex.category }}</span>{% endif %}
@@ -163,36 +173,69 @@
 </div>
 {% else %}
 <p class="text-sm text-gray-400">
-  {% if archived %}Nothing archived{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} — archived movements show up here, where you can restore them.{% elif rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the AI panel above.{% endif %}
+  {% if archived %}Nothing archived{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} — archived movements show up here, where you can restore them.{% elif rotation %}Nothing in your rotation{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — star movements to add them.{% elif hearted %}Nothing hearted{% if muscle %} for <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} matching "{{ q }}"{% endif %} yet — heart movements you like to build your favorites superset.{% elif q or muscle %}No exercises matched{% if muscle %} <span class="text-gray-600">{{ muscle }}</span>{% endif %}{% if q %} "{{ q }}"{% endif %}.{% else %}No exercises in the library yet — run the importer, or add one with the AI panel above.{% endif %}
 </p>
 {% endif %}
 
 <script>
-// Star button: POST the new rotation state, then reflect it in place (no reload).
-document.querySelectorAll(".rotation-toggle").forEach(function (btn) {
-  btn.addEventListener("click", function (e) {
-    e.preventDefault();           // don't toggle the <details>
-    e.stopPropagation();
-    var on = btn.dataset.in === "1";
-    var want = !on;
-    btn.disabled = true;
-    fetch("{{ base }}/trainer/exercise/" + btn.dataset.id + "/rotation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ in_rotation: want }),
-    }).then(function (r) {
-      if (!r.ok) throw new Error("failed");
-      btn.dataset.in = want ? "1" : "0";
-      btn.textContent = want ? "★" : "☆";
-      btn.setAttribute("aria-pressed", want ? "true" : "false");
-      btn.title = want ? "In your rotation — click to remove" : "Add to your rotation";
-      btn.classList.toggle("text-amber-500", want);
-      btn.classList.toggle("text-gray-300", !want);
-    }).catch(function () {
-      btn.textContent = "!";
-    }).finally(function () { btn.disabled = false; });
-  });
-});
+// Star (rotation) + heart (favorites superset) buttons. rotation ⊆ hearted, so a single
+// toggle can change BOTH flags server-side (starring hearts it; un-hearting un-stars it).
+// Each endpoint returns the resulting {in_rotation, hearted}; we sync both buttons in the
+// row from that single source of truth, no reload.
+(function () {
+  function paintStar(btn, on) {
+    if (!btn) return;
+    btn.dataset.in = on ? "1" : "0";
+    btn.textContent = on ? "★" : "☆";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = on ? "In your rotation — click to remove" : "Add to your rotation";
+    btn.classList.toggle("text-amber-500", on);
+    btn.classList.toggle("text-gray-300", !on);
+  }
+  function paintHeart(btn, on) {
+    if (!btn) return;
+    btn.dataset.hearted = on ? "1" : "0";
+    btn.textContent = on ? "♥" : "♡";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = on ? "In your favorites — click to remove" : "Add to your favorites";
+    btn.classList.toggle("text-rose-500", on);
+    btn.classList.toggle("text-gray-300", !on);
+  }
+  function sync(row, state) {
+    paintStar(row.querySelector(".rotation-toggle"), !!state.in_rotation);
+    paintHeart(row.querySelector(".heart-toggle"), !!state.hearted);
+  }
+  function wire(sel, path, payload) {
+    document.querySelectorAll(sel).forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();           // don't toggle the <details>
+        e.stopPropagation();
+        var row = btn.closest("details");
+        var on = btn.dataset[payload.flag] === "1";
+        var want = !on;
+        var both = row.querySelectorAll(".rotation-toggle, .heart-toggle");
+        both.forEach(function (b) { b.disabled = true; });
+        var body = {}; body[payload.key] = want;
+        fetch("{{ base }}/trainer/exercise/" + btn.dataset.id + "/" + path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) throw new Error("failed");
+          return r.json();
+        }).then(function (state) {
+          sync(row, state);
+        }).catch(function () {
+          btn.textContent = "!";
+        }).finally(function () {
+          both.forEach(function (b) { b.disabled = false; });
+        });
+      });
+    });
+  }
+  wire(".rotation-toggle", "rotation", { flag: "in", key: "in_rotation" });
+  wire(".heart-toggle", "hearted", { flag: "hearted", key: "hearted" });
+})();
 
 // Archive / Restore: soft-delete a movement (or bring it back). On success the row no
 // longer belongs in the current view, so drop it from the DOM.

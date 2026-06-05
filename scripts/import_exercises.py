@@ -7,9 +7,10 @@ with this dataset, so the fields map 1:1. Each record is written through
 `server.save_exercise` (the one catalog write path), so muscle tiers, the /trainer/library
 page, and per-muscle recency all line up exactly as if the trainer had entered them.
 
-This populates the searchable LIBRARY only; everything lands with in_rotation=0. The
-ROTATION (the curated pool the trainer programs from) is built afterwards — by logging
-workouts, by set_rotation, or by toggling rows on the library page.
+This populates the searchable LIBRARY only; everything lands with in_rotation=0 AND
+hearted=0. The HEARTED superset (favorites bench) and the ROTATION (the small pool the
+trainer programs from, drawn from the superset) are built afterwards — by logging workouts,
+by set_rotation / set_hearted, or by toggling the ★/♥ rows on the library page.
 
 Run it against your LIVE DB (the throwaway dev DB here won't reach production):
 
@@ -171,8 +172,9 @@ def main():
         image_link_end = (None if (args.no_images or len(images) < 2)
                           else IMAGE_BASE + images[1])
 
-        # in_rotation is left at its default (0): the import builds the LIBRARY; the
-        # rotation is curated afterwards (set_rotation / logging / the library page).
+        # in_rotation and hearted are left at their default (0): the import builds the
+        # LIBRARY; the hearted superset + rotation are curated afterwards (set_hearted /
+        # set_rotation / logging / the library page).
         kwargs = dict(
             name=name,
             slug=ex.get("id"),
