@@ -87,10 +87,14 @@
        Overlay the two (the finish absolutely on top of the start) and crossfade back and
        forth (~2s) so the rep reads as a movement instead of one frozen still. Shared by
        the library cards and the /trainer plan card; a lone frame (or a self-looping gif)
-       just renders as a still through the non-.rep-loop path. */
-    @keyframes repLoopFade { 0%, 40% { opacity: 0; } 60%, 100% { opacity: 1; } }
-    .rep-loop-end { opacity: 0; animation: repLoopFade 2s ease-in-out infinite alternate; }
-    @media (prefers-reduced-motion: reduce) { .rep-loop-end { animation: none; opacity: 1; } }
+       just renders as a still through the non-.rep-loop path.
+       The crossfade is driven by JS (the rep-loop script near the end of <body>), NOT a
+       CSS `animation`: iOS Safari PAUSES CSS animations (and animated GIFs) in Low Power
+       Mode, which froze the crossfade on phones while it ran fine on desktop.
+       requestAnimationFrame keeps ticking in Low Power Mode, so the rep animates
+       everywhere. This resting rule (finish frame hidden) is the no-JS / reduced-motion
+       fallback — the start frame just shows as a still. */
+    .rep-loop-end { opacity: 0; }
 
     /* Theme-toggle icon: the moon shows in light mode (tap → dark), the sun in
        dark mode (tap → light). Driven by the same data-theme attribute. */
@@ -403,6 +407,31 @@
       });
     };
     window.renderJournalMd();
+  </script>
+  {# Rep-loop crossfade. We drive the finish-frame opacity in JS rather than a CSS
+     `animation` because iOS Safari pauses CSS animations (and GIFs) in Low Power Mode —
+     the crossfade then froze on phones while it worked on desktop. One shared
+     requestAnimationFrame loop (which keeps ticking in Low Power Mode) fades every
+     .rep-loop-end on the page; it re-scans periodically so cards the trainer page builds
+     after load are picked up too. Honors prefers-reduced-motion by not animating (the CSS
+     resting rule leaves the start frame as a still). #}
+  <script>
+    (function () {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var PERIOD = 2000;            // ms for a full start → finish → start cycle
+      var els = [], lastScan = -Infinity;
+      function frame(t) {
+        if (t - lastScan > 500) { els = document.querySelectorAll('.rep-loop-end'); lastScan = t; }
+        if (els.length) {
+          var phase = (t % PERIOD) / PERIOD;                 // 0..1
+          var tri = phase < 0.5 ? phase * 2 : 2 - phase * 2; // triangle 0 → 1 → 0
+          var o = tri * tri * (3 - 2 * tri);                 // smoothstep for a soft fade
+          for (var i = 0; i < els.length; i++) els[i].style.opacity = o;
+        }
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    })();
   </script>
 </body>
 </html>
