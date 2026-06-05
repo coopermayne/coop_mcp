@@ -821,15 +821,16 @@ async def entry(request: Request, entry_id: int):
 
 
 @app.get("/workouts")
-async def workouts(request: Request):
+async def workouts(request: Request, error: str = ""):
     sessions = data.workouts_full(limit=20)
     brief = server.get_fitness_briefing(recent_workouts=1)
     months = data.calendar_months([s["date"] for s in sessions], today=server.today())
     return page(request, "workouts.html", active="workouts",
                 sessions=sessions,
+                weights=data.bodyweight_readings(),
                 muscles=data.muscle_breakdown(),
                 profile=brief.get("profile", {}),
-                months=months)
+                months=months, error=error)
 
 
 @app.get("/trainer")
@@ -941,6 +942,54 @@ async def trainer_log_bodyweight(request: Request):
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(_with_bodyweight(data.active_plan()))
+
+
+@app.post("/trainer/bodyweight/edit")
+async def trainer_edit_bodyweight(request: Request):
+    """Correct one past weigh-in in place — overwrites its weight/date/note with absolute
+    values via server.update_bodyweight, then PRG back to the /workouts Bodyweight history.
+    Blank fields are left unchanged (update_bodyweight only writes non-null args); to remove
+    a reading entirely, delete it."""
+    from urllib.parse import quote_plus
+    form = await request.form()
+    base = base_path(request)
+    try:
+        bodyweight_id = int((form.get("bodyweight_id") or "").strip())
+    except ValueError:
+        return RedirectResponse(base + "/workouts", status_code=303)
+    raw = (form.get("weight_lbs") or "").strip()
+    weight = None
+    if raw:
+        try:
+            weight = float(raw)
+        except ValueError:
+            return RedirectResponse(base + "/workouts?error=Enter+a+weight+in+pounds.",
+                                    status_code=303)
+    res = server.update_bodyweight(
+        bodyweight_id=bodyweight_id,
+        weight_lbs=weight,
+        weigh_date=(form.get("weigh_date") or "").strip() or None,
+        note=(form.get("note") or "").strip() or None,
+    )
+    if isinstance(res, dict) and res.get("error"):
+        return RedirectResponse(base + "/workouts?error=" + quote_plus(res["error"]),
+                                status_code=303)
+    return RedirectResponse(base + "/workouts", status_code=303)
+
+
+@app.post("/trainer/bodyweight/delete")
+async def trainer_delete_bodyweight(request: Request):
+    """Remove one logged weigh-in entirely (the trainer server's delete_record,
+    kind='weight'); the day reverts to whatever earlier reading it has, or to un-weighed.
+    PRG back to /workouts."""
+    form = await request.form()
+    base = base_path(request)
+    try:
+        bodyweight_id = int((form.get("bodyweight_id") or "").strip())
+    except ValueError:
+        return RedirectResponse(base + "/workouts", status_code=303)
+    server.delete_training_record(kind="weight", id=bodyweight_id)
+    return RedirectResponse(base + "/workouts", status_code=303)
 
 
 @app.post("/trainer/set/{set_id}/complete")

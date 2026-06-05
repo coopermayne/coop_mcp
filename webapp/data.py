@@ -461,6 +461,27 @@ def bodyweight_on(d: str):
     return r["weight_lbs"] if r else None
 
 
+def bodyweight_readings(limit: int = 60):
+    """Recent bodyweight readings, newest first — backs the /workouts page's editable
+    Bodyweight history (every weigh-in, including rest-day ones, with a `change_lbs`
+    versus the chronologically prior reading so the trend is visible inline). The list is
+    edited/removed through server.update_bodyweight / server.delete_record(kind='weight').
+    Read-only here; writes go through server.py."""
+    with server.db() as conn:
+        rows = conn.execute(
+            """SELECT id, weigh_date, weight_lbs, note FROM body_weight
+               ORDER BY weigh_date DESC, id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    out = [dict(r) for r in rows]
+    # change_lbs vs the chronologically previous reading (the row after it in this
+    # newest-first list, since they're date-ordered). Negative = down.
+    for i, r in enumerate(out):
+        prev = out[i + 1] if i + 1 < len(out) else None
+        r["change_lbs"] = round(r["weight_lbs"] - prev["weight_lbs"], 1) if prev else None
+    return out
+
+
 def muscle_breakdown() -> dict:
     """Per-muscle training breakdown for the /workouts body heatmap.
 

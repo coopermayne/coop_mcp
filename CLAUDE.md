@@ -301,8 +301,12 @@ working.
   one (returning `change_lbs` vs the prior weigh-in) and `get_fitness_briefing` surfaces
   the latest reading + 30-day change; the longer trend lives in the webapp (which joins
   the reading onto each session by date, shown inline, and as a header trend), not a
-  dedicated server tool. There is NO weight-goal/target logic in the server — the
-  coaching is the model's, as everywhere else.
+  dedicated server tool. The `/workouts` page also lists every weigh-in with inline
+  edit/delete (to fix a mistyped weight or date) — the edit goes through
+  `update_bodyweight`, a website-only helper kept OFF the MCP tool surface (like
+  `create_exercise`/`set_archived`), so the model's documented fix path stays
+  delete-and-re-log via `delete_record(kind="weight")`. There is NO weight-goal/target
+  logic in the server — the coaching is the model's, as everywhere else.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
   `update_profile` and surfaced by `get_fitness_briefing`.
 

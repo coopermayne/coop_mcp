@@ -2955,6 +2955,35 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
     return out
 
 
+def update_bodyweight(bodyweight_id: int, weight_lbs: Optional[float] = None,
+                      weigh_date: Optional[str] = None, note: Optional[str] = None) -> dict:
+    """Correct one logged bodyweight reading in place (set absolutes; only non-null args
+    are written). The website's bodyweight-history edit form is the one caller — kept OFF
+    the MCP tool surface (no `@trainer_mcp.tool()`) so the model's fix path stays the
+    documented delete-and-re-log via delete_record(kind="weight"), exactly like
+    create_exercise/set_archived are website-only. Unlike drinks, the body_weight table
+    allows several readings per day (the latest is the day's weight), so moving onto an
+    occupied date needs no clash check."""
+    if err := _bad_date(weigh_date, "weigh_date"):
+        return err
+    if weight_lbs is not None and weight_lbs <= 0:
+        return {"error": f"weight_lbs must be positive, got {weight_lbs}"}
+    fields = {"weight_lbs": weight_lbs, "weigh_date": weigh_date, "note": note}
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return {"bodyweight_id": bodyweight_id, "updated": []}
+    with db() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM body_weight WHERE id=?", (bodyweight_id,)
+        ).fetchone()
+        if not exists:
+            return {"error": f"no bodyweight reading with id {bodyweight_id}"}
+        cols = ", ".join(f"{k}=?" for k in sets)
+        conn.execute(f"UPDATE body_weight SET {cols} WHERE id=?",
+                     (*sets.values(), bodyweight_id))
+    return {"bodyweight_id": bodyweight_id, "updated": list(sets)}
+
+
 @trainer_mcp.tool()
 def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),

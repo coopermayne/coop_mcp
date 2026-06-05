@@ -300,6 +300,90 @@
 })();
 </script>
 
+{# ── Bodyweight history ───────────────────────────────────────────────────────
+   Every weigh-in (rest-day ones too, not just the per-session reading shown below),
+   newest first. Each row reads as a clean summary; a subtle pencil reveals the inline
+   edit form (Save overwrites the weight/date/note via /trainer/bodyweight/edit; Delete
+   removes the reading). Mistakes get fixed here. Same no-framework data-* toggle as the
+   drinking page's Recent Days. #}
+{% if error %}
+<div class="border border-red-300 text-red-600 rounded-[4px] px-4 py-2.5 mb-6 text-sm">{{ error }}</div>
+{% endif %}
+{% if weights %}
+<div class="mb-12" data-weight-log>
+  {{ m.section_label("Bodyweight") }}
+  <p class="text-[11px] text-gray-400 mb-3 mt-1">Every weigh-in — click the pencil to fix a mistyped weight or date, or remove the reading.</p>
+  <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+    {% for w in weights %}
+    <div class="px-4 sm:px-5 py-3" data-weight-row>
+      {# Read-only summary #}
+      <div class="flex items-center gap-3 text-sm" data-weight-view>
+        <span class="w-24 shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ w.weigh_date | short_date }}</span>
+        <span class="tabular-nums font-medium">{{ w.weight_lbs | num }}</span>
+        <span class="text-[10px] uppercase tracking-widest text-gray-400 -ml-1.5">lbs</span>
+        {% if w.change_lbs is not none and w.change_lbs != 0 %}
+        <span class="tabular-nums text-xs {{ 'text-gray-400' if w.change_lbs < 0 else 'text-gray-500' }}">{{ '+' if w.change_lbs > 0 else '' }}{{ w.change_lbs | num }}</span>
+        {% endif %}
+        {% if w.note %}<span class="text-gray-400 truncate min-w-0">· {{ w.note }}</span>{% endif %}
+        <button type="button" data-weight-edit
+                class="ml-auto shrink-0 text-gray-300 hover:text-black transition-colors p-1 -mr-1"
+                title="Edit" aria-label="Edit this weigh-in">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+      </div>
+      {# Inline edit form — hidden until the pencil is clicked #}
+      <div class="flex flex-wrap items-end gap-2" data-weight-edit-form hidden>
+        <form method="post" action="{{ base }}/trainer/bodyweight/edit" class="flex flex-wrap items-end gap-2 grow">
+          <input type="hidden" name="bodyweight_id" value="{{ w.id }}" />
+          <label class="block">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Date</span>
+            <input type="date" name="weigh_date" value="{{ w.weigh_date }}"
+                   class="px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+          </label>
+          <label class="block w-24">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Lbs</span>
+            <input type="number" name="weight_lbs" step="0.1" min="0" value="{{ w.weight_lbs }}"
+                   class="w-full px-2 py-1.5 border border-gray-200 text-sm tabular-nums focus:outline-none focus:border-black" />
+          </label>
+          <label class="block grow min-w-[8rem]">
+            <span class="block text-[10px] uppercase tracking-widest text-gray-400 mb-1">Note</span>
+            <input type="text" name="note" value="{{ w.note or '' }}" placeholder="morning, before coffee…"
+                   class="w-full px-2 py-1.5 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+          </label>
+          <button type="submit"
+                  class="px-3 py-1.5 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">
+            Save
+          </button>
+        </form>
+        <button type="button" data-weight-cancel
+                class="px-3 py-1.5 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">
+          Cancel
+        </button>
+        <form method="post" action="{{ base }}/trainer/bodyweight/delete"
+              onsubmit="return confirm('Delete this weigh-in?');">
+          <input type="hidden" name="bodyweight_id" value="{{ w.id }}" />
+          <button type="submit"
+                  class="px-3 py-1.5 border border-gray-200 text-gray-500 text-xs hover:border-red-400 hover:text-red-600 transition-colors">
+            Delete
+          </button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+<script>
+  // Per-row view ⇄ edit toggle. No framework — mirrors the drinking page's Recent Days.
+  document.querySelectorAll('[data-weight-log] [data-weight-row]').forEach(function (row) {
+    var view = row.querySelector('[data-weight-view]');
+    var form = row.querySelector('[data-weight-edit-form]');
+    function show(editing) { view.hidden = editing; form.hidden = !editing; }
+    row.querySelector('[data-weight-edit]').addEventListener('click', function () { show(true); });
+    row.querySelector('[data-weight-cancel]').addEventListener('click', function () { show(false); });
+  });
+</script>
+{% endif %}
+
 {% if sessions %}
   {% for s in sessions %}
   <article id="day-{{ s.date }}" class="scroll-mt-20 border border-gray-200 rounded-[4px] mb-8">
