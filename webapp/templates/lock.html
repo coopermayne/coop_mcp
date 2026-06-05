@@ -15,11 +15,12 @@
 
   <h1 class="text-2xl font-bold tracking-tight">Journal</h1>
   <p id="lock-prompt" class="text-sm text-gray-500 mt-2">
-    {% if mode == 'setup' %}Tap a secret knock to lock your journal.{% else %}Tap your secret knock to open.{% endif %}
+    {% if mode == 'setup' %}Tap a secret knock to lock your journal.{% endif %}
   </p>
 
-  {# The tap pad. The whole circle is the surface; taps anywhere on it count. #}
-  <button id="lock-pad" type="button" aria-label="Tap your knock"
+  {# The tap pad. The whole circle is the surface; taps anywhere on it count.
+     In unlock mode it carries no hint — the rhythm is the secret. #}
+  <button id="lock-pad" type="button" aria-label="{% if mode == 'setup' %}Tap your knock{% else %}Journal{% endif %}"
           class="mt-10 mx-auto w-40 h-40 rounded-full border-2 border-black flex items-center justify-center
                  active:scale-95 transition-transform"
           style="touch-action: manipulation; -webkit-tap-highlight-color: transparent;">
@@ -29,18 +30,13 @@
     </svg>
   </button>
 
-  {# One dot per tap registered in the current knock. #}
-  <div id="lock-dots" class="mt-6 h-3 flex items-center justify-center gap-2"></div>
+  <p id="lock-status" class="mt-6 text-sm h-5 text-gray-500"></p>
 
-  <p id="lock-status" class="mt-2 text-sm h-5 text-gray-500"></p>
-
+  {% if pin_enabled %}
   <div class="mt-6 flex items-center justify-center gap-4 text-xs text-gray-400">
-    <button id="lock-reset" type="button" class="hover:text-black transition-colors">Start over</button>
-    {% if pin_enabled %}
-    <span aria-hidden="true">·</span>
     <button id="lock-usecode" type="button" class="hover:text-black transition-colors">Use code</button>
-    {% endif %}
   </div>
+  {% endif %}
 
   {% if pin_enabled %}
   {# PIN fallback (only when JOURNAL_LOCK_PIN is set) so a fumbled rhythm never
@@ -66,10 +62,8 @@
   var MIN_TAPS = 3;
 
   var pad = document.getElementById('lock-pad');
-  var dots = document.getElementById('lock-dots');
   var prompt = document.getElementById('lock-prompt');
   var status = document.getElementById('lock-status');
-  var resetBtn = document.getElementById('lock-reset');
 
   var taps = [];        // tap timestamps (ms) for the knock in progress
   var timer = null;     // fires FINISH_MS after the last tap
@@ -78,17 +72,9 @@
 
   function setStatus(msg, bad) {
     status.textContent = msg || '';
-    status.className = 'mt-2 text-sm h-5 ' + (bad ? 'text-black font-medium' : 'text-gray-500');
+    status.className = 'mt-6 text-sm h-5 ' + (bad ? 'text-black font-medium' : 'text-gray-500');
   }
-  function renderDots() {
-    dots.innerHTML = '';
-    for (var i = 0; i < taps.length; i++) {
-      var d = document.createElement('span');
-      d.className = 'w-2 h-2 rounded-full bg-black';
-      dots.appendChild(d);
-    }
-  }
-  function clearTaps() { taps = []; if (timer) { clearTimeout(timer); timer = null; } renderDots(); }
+  function clearTaps() { taps = []; if (timer) { clearTimeout(timer); timer = null; } }
   function gaps() {
     var g = [];
     for (var i = 1; i < taps.length; i++) g.push(taps[i] - taps[i - 1]);
@@ -178,7 +164,6 @@
   function tap() {
     if (busy) return;
     taps.push(performance.now());
-    renderDots();
     if (timer) clearTimeout(timer);
     timer = setTimeout(finish, FINISH_MS);
   }
@@ -187,15 +172,6 @@
   // Spacebar taps too, for a desktop keyboard.
   document.addEventListener('keydown', function (e) {
     if (e.code === 'Space' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); tap(); }
-  });
-
-  resetBtn.addEventListener('click', function () {
-    firstNorm = null;
-    clearTaps();
-    prompt.textContent = (MODE === 'setup')
-      ? 'Tap a secret knock to lock your journal.'
-      : 'Tap your secret knock to open.';
-    setStatus('');
   });
 
   // PIN fallback (present only when configured).
