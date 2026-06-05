@@ -12,7 +12,7 @@
 
 <article class="border border-gray-200 rounded-[4px]">
   <div class="px-5 sm:px-6 py-5">
-    <p class="text-[15px] text-gray-800 leading-relaxed whitespace-pre-line">{{ e.body }}</p>
+    <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed">{{ e.body_md }}</div>
   </div>
 
   {% set resolved = e.mentions | selectattr('person_id') | list %}
