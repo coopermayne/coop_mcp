@@ -116,7 +116,7 @@ BACKUP_TOKEN = (os.environ.get("BACKUP_TOKEN") or "").strip()
 # the auto-relock window (slides on activity; also re-locks on a fresh open).
 LOCK_ENABLED_ENV = (os.environ.get("JOURNAL_LOCK") or "").lower() in ("1", "true", "yes")
 LOCK_PIN = (os.environ.get("JOURNAL_LOCK_PIN") or "").strip()
-LOCK_IDLE_SECONDS = int(os.environ.get("JOURNAL_LOCK_IDLE", "300") or "300")
+LOCK_IDLE_SECONDS = int(os.environ.get("JOURNAL_LOCK_IDLE", "60") or "60")
 # Per-interval tolerance for the knock match, as a fraction of the knock's total
 # duration (the gaps are normalized to sum to 1, so 0.15 ≈ each beat may land
 # 15% of the way off). Forgiving enough to reproduce by hand, tight enough that a
