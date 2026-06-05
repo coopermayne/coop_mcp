@@ -175,14 +175,20 @@ The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROT
     exercises(hearted_only=True); add/remove with set_hearted. Heart a movement the user
     likes even when it's not currently programmed, so it's on the bench for the next swap.
   - ROTATION: the small subset (in_rotation, the user keeps it to ~10-14) they're ACTIVELY
-    training, so progress on each lift is easy to track. get_fitness_briefing returns it as
+    training, so progress on each lift is easy to track. The rotation is DELIBERATELY small and
+    hand-curated — keeping it tight is how the user controls their progression, so treat it as
+    fixed unless the user explicitly says to change it. get_fitness_briefing returns it as
     `rotation`, and it is the ONLY pool you PROGRAM ROUTINES FROM. Build start_workout_plan /
-    log_workout sessions out of rotation movements. If you want something NOT in the rotation,
-    don't silently slip it in — propose it to the user and, if they agree, set_rotation to add
-    it first (prefer pulling from the hearted superset; surface candidates from the wider
-    library with exercises(muscle=…)). Adding to the rotation hearts it too. Logging a
-    movement the user actually did adds it to the rotation (and hearts it) automatically, so
-    the rotation grows from real training — when it drifts past ~14, help the user prune back.
+    log_workout sessions out of rotation movements. NEVER add a movement to the rotation on
+    your own initiative. If a session seems to call for something NOT in the rotation, don't
+    slip it in and don't quietly set_rotation — name the gap to the user, suggest the movement,
+    and only call set_rotation AFTER they explicitly confirm they want it in the rotation (a
+    vague "sounds good" about the workout is NOT permission to grow the rotation — ask
+    plainly). Prefer working with what's already there; if you must propose an addition, pull
+    from the hearted superset first (surface candidates from the wider library with
+    exercises(muscle=…)). Adding to the rotation hearts it too. Logging a movement the user
+    actually did adds it to the rotation (and hearts it) automatically — that's real training,
+    not you editing the pool — so when the rotation drifts past ~14, help the user prune back.
 
 The catalog is CLOSED to you: you NEVER invent an exercise — the ~870-movement library
 plus anything the user adds is the whole world, so program only names it already holds.
@@ -1862,8 +1868,11 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     Only non-null fields are written — this is how you keep /trainer from showing "No
     saved technique notes yet". Pass `in_rotation=True` to add it to the (small) programming
     pool, or `hearted=True` to add it to the wider favorites SUPERSET the rotation is drawn
-    from — rotation IMPLIES hearted, so in_rotation=True hearts it too. Prefer the dedicated
-    `set_rotation` / `set_hearted` tools; logging a movement adds it to both for you.
+    from — rotation IMPLIES hearted, so in_rotation=True hearts it too. Only set
+    `in_rotation=True` on the user's EXPLICIT request to grow their rotation — never bundle it
+    into a routine enrichment, since the user keeps that pool small to control progression.
+    Prefer the dedicated `set_rotation` / `set_hearted` tools; logging a movement adds it to
+    both for you.
 
     MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
     `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
@@ -1971,9 +1980,12 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
     ~870-movement library. Target by `exercise_id` or `name` (case-insensitive); an unknown
     name is an error here (add it via the library first). Pass in_rotation=False to take it
     out (it STAYS hearted — pruning the rotation keeps it in the favorites bench). Adding to
-    the rotation also hearts it (rotation ⊆ hearted). Logging a movement the user actually
-    did already flags it into the rotation, so reach for this when curating ahead of time —
-    e.g. "add Bulgarian split squats to my rotation" — or pruning back toward ~14."""
+    the rotation also hearts it (rotation ⊆ hearted). The rotation is deliberately small so the
+    user can control their progression, so ONLY add to it on the user's EXPLICIT instruction —
+    never on your own judgement while programming a session, and never read approval of a
+    workout as approval to grow the pool. Logging a movement the user actually did already
+    flags it into the rotation, so reach for this when curating ahead of time on a clear
+    request — e.g. "add Bulgarian split squats to my rotation" — or pruning back toward ~14."""
     in_rotation = int(bool(in_rotation))
     with db() as conn:
         if exercise_id is not None:
