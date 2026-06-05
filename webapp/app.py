@@ -761,6 +761,18 @@ async def trainer_reorder(request: Request):
     return JSONResponse(_with_bodyweight(res))
 
 
+@app.post("/trainer/plan/discard")
+async def trainer_discard_plan(request: Request):
+    """Delete the active plan outright (the /trainer card's plan-level "..." menu →
+    Delete plan). Drops the session and all its sets through server.discard_plan and
+    returns the empty-plan state so the card re-renders to its no-active-plan view."""
+    from fastapi.responses import JSONResponse
+    res = server.discard_plan()
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse(_with_bodyweight(res))
+
+
 @app.get("/trainer/exercise/{exercise_id}/info.json")
 async def trainer_exercise_info(request: Request, exercise_id: int):
     """Technique for the plan card's "i" button: the catalog's saved technique notes,
