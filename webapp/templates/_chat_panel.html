@@ -76,7 +76,6 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script src="{{ base }}/static/chat.js"></script>
 <script>
 (function () {
@@ -132,6 +131,8 @@
       });
       var nc = doc.querySelector('[data-entry-count]'), cc = document.querySelector('[data-entry-count]');
       if (nc && cc) cc.textContent = nc.textContent;
+      // The swapped-in feed carries raw [data-md] Markdown — render it like the rest.
+      if (window.renderJournalMd) window.renderJournalMd();
     } catch (e) {}
   }
 

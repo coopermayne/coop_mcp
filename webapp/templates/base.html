@@ -365,5 +365,42 @@
     })();
   </script>
   {% endif %}
+  {# Journal prose is stored as Markdown (the model writes bold/lists/etc.). Render
+     any [data-md] block client-side with `marked` into the .chat-md scope — the same
+     pipeline the AI chat transcript uses, so captured notes read identically. Person
+     names arrive as Markdown links to /person/…; we tag those with .person-link after
+     render (quiet inline underline) and send any other link out in a new tab. Exposed
+     as window.renderJournalMd so the chat panel can re-render the feed it swaps in
+     after a write. Falls back to plain wrapped text if `marked` hasn't loaded. #}
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script>
+    window.renderJournalMd = function (scope) {
+      var nodes = (scope || document).querySelectorAll('[data-md]:not([data-md-done])');
+      var ok = window.marked && window.marked.parse;
+      nodes.forEach(function (el) {
+        if (ok) {
+          // If this block is itself inside a link (the person page's entry_card),
+          // demote any rendered links to spans — a nested <a> is invalid HTML.
+          var inLink = !!el.closest('a');
+          el.innerHTML = window.marked.parse(el.textContent, { breaks: true });
+          el.querySelectorAll('a').forEach(function (a) {
+            if (inLink) {
+              var span = document.createElement('span');
+              span.textContent = a.textContent;
+              a.replaceWith(span);
+              return;
+            }
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/person/') !== -1) { a.classList.add('person-link'); }
+            else { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+          });
+        } else {
+          el.style.whiteSpace = 'pre-line';  // readable even without the markdown lib
+        }
+        el.setAttribute('data-md-done', '1');
+      });
+    };
+    window.renderJournalMd();
+  </script>
 </body>
 </html>
