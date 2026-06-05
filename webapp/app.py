@@ -258,11 +258,15 @@ def page(request: Request, template: str, active: str = "", status_code: int = 2
     locked_here = _is_lock_path(_rel_path(request))
     ctx.update(active=active, auth_enabled=AUTH_ENABLED, show_logout=SHOW_LOGOUT,
                chat_enabled=chat.ENABLED,
-               # `lock_active` shows the lock controls in the nav; `lock_guard`
-               # arms the client idle-relock timer, but only on the journal pages
-               # the lock actually covers (never on trainer/drinking, never on the
-               # lock screen itself).
-               lock_active=_lock_active(), lock_guard=_lock_active() and locked_here,
+               # `lock_guard` arms the client idle-relock timer, on the guarded
+               # journal pages only (never on trainer/drinking, never on the lock
+               # screen itself). `lock_in_journal` gates the nav's lock controls
+               # (Lock journal / Change knock): shown ONLY while you're actually
+               # inside the unlocked journal — so they're never reachable from the
+               # lock screen or the open trainer/drinking pages (otherwise the knock
+               # could be changed without first proving you're in).
+               lock_guard=_lock_active() and locked_here,
+               lock_in_journal=_lock_active() and locked_here and _is_unlocked(request),
                lock_idle_ms=LOCK_IDLE_SECONDS * 1000,
                user=request.session.get("email"), base=base_path(request))
     return templates.TemplateResponse(request=request, name=template,
@@ -491,7 +495,10 @@ async def lock_page(request: Request):
         return RedirectResponse(base + nxt)   # already in; nothing to do here
     else:
         mode = "unlock"
-    return page(request, "lock.html", active="", next=nxt, mode=mode,
+    # active="journal" so base.html renders the nav: the lock only covers the journal,
+    # so the rest of the app (trainer, training, drinking, library) stays reachable
+    # from the lock screen without unlocking.
+    return page(request, "lock.html", active="journal", next=nxt, mode=mode,
                 pin_enabled=bool(LOCK_PIN), tolerance=LOCK_TOLERANCE)
 
 
