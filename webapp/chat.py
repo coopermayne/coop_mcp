@@ -142,12 +142,14 @@ _EXERCISE_INSTRUCTIONS = (
     "found and why this is distinct. Then ask the user to confirm — save it as shown, or "
     "tell you what to change.\n"
     "5. SAVE ONLY ON CONFIRMATION. When the user approves, call create_exercise with "
-    "exactly the previewed values; it's added to the library and their rotation "
-    "automatically. If they ask for changes, revise the preview and ask again — re-preview "
-    "and re-confirm each round until they approve. Never save a version the user hasn't "
-    "signed off on.\n"
+    "exactly the previewed values; it's added to the library and their hearted FAVORITES "
+    "(the superset their rotation is drawn from) automatically — not the small active "
+    "rotation, which they curate deliberately. If they ask for changes, revise the preview "
+    "and ask again — re-preview and re-confirm each round until they approve. Never save a "
+    "version the user hasn't signed off on.\n"
     "6. After saving, confirm briefly what landed — the name, the primary muscle emphasis, "
-    "and that it's in their rotation now. Keep it to a couple of lines.\n\n"
+    "and that it's in their favorites now (they can star it into the active rotation on the "
+    "library page). Keep it to a couple of lines.\n\n"
     "Add ONE exercise per request unless the user clearly lists several. Be concise and "
     "practical — they're on their phone."
 )
@@ -164,7 +166,8 @@ def _exercise_check(name: str) -> dict:
             match = {"exercise_id": row["id"], "name": row["name"],
                      "category": row["category"], "equipment": row["equipment"],
                      "muscles": server._muscles_for(conn, row["id"]),
-                     "in_rotation": bool(row["in_rotation"])}
+                     "in_rotation": bool(row["in_rotation"]),
+                     "hearted": bool(row["hearted"])}
         candidates = server._match_exercises(conn, name)
     return {"query": name, "exact_match": match, "candidates": candidates}
 
@@ -175,10 +178,11 @@ def _exercise_create(name: str, category=None, equipment=None, muscles=None,
                      force=None, level=None, mechanic=None, aliases=None,
                      video_link=None) -> dict:
     """Create the exercise through the website's trusted path (server.create_exercise),
-    defaulting it into the user's rotation just as the old manual add form did. Image
-    links are intentionally omitted — this surface doesn't handle images."""
+    landing it in the user's HEARTED superset (favorites bench) — not the small rotation,
+    which they curate deliberately to ~10-14 so progress on each lift is easy to track.
+    Image links are intentionally omitted — this surface doesn't handle images."""
     return server.create_exercise(
-        name=name, in_rotation=True, category=category, equipment=equipment,
+        name=name, hearted=True, category=category, equipment=equipment,
         muscles=muscles, secondary_muscles=secondary_muscles,
         tertiary_muscles=tertiary_muscles, technique_notes=technique_notes,
         common_mistakes=common_mistakes, cautions=cautions, force=force, level=level,
@@ -208,9 +212,10 @@ def _exercise_tools():
         {
             "name": "create_exercise",
             "description": (
-                "Add one new exercise to the library (and the user's rotation). Fill every "
-                "field you reasonably can. Only call this after check_library shows it's "
-                "not already on file."),
+                "Add one new exercise to the library (and the user's hearted favorites — "
+                "the superset their rotation is drawn from, not the active rotation itself). "
+                "Fill every field you reasonably can. Only call this after check_library "
+                "shows it's not already on file."),
             "input_schema": {
                 "type": "object",
                 "properties": {

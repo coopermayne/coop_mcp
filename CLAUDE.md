@@ -214,12 +214,21 @@ working.
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's
   start and finish frames — the library crossfades the two into a looping rep animation
-  rather than showing one frozen still), `in_rotation`, and
+  rather than showing one frozen still), `in_rotation`, `hearted`, and
   `archived`. PRE-LOADED
   with ~870 movements from free-exercise-db (`scripts/import_exercises.py`); the schema
-  mirrors that dataset. Two layers: the whole catalog is the **LIBRARY** (browsable at
-  `/trainer/library`); `in_rotation=1` marks the curated **ROTATION**, the only pool the
-  trainer programs from (`set_rotation` curates it; logging a movement flags it in). The
+  mirrors that dataset. **Three nested layers** (`rotation ⊆ hearted ⊆ library`): the whole
+  catalog is the **LIBRARY** (browsable at `/trainer/library`); `hearted=1` marks the
+  **SUPERSET**, the user's bench of favorite movements; `in_rotation=1` marks the small
+  curated **ROTATION** (the user keeps it to ~10–14 so progress on each lift is easy to
+  track), the only pool the trainer programs from. The rotation is drawn from the hearted
+  superset — every few months the user swaps some of the rotation out for other hearted
+  lifts. `set_rotation`/`set_hearted` curate the two pools (mirrored by the library page's
+  ★/♥ toggles); the invariant `in_rotation ⇒ hearted` is enforced everywhere either flag is
+  written — adding to the rotation hearts it, un-hearting drops it from the rotation, logging
+  a movement flags it into BOTH, archiving clears BOTH, and the website's **+ Add an
+  exercise** panel lands new movements in the *hearted superset* (not the rotation, which
+  stays a deliberate hand-curated ~14). The
   catalog is **CLOSED to the model**: the logging/planning tools resolve a name against it
   (fuzzily — exact, then spacing/punct-insensitive, then a high-confidence typo match;
   `EX_CONFIDENT` is high so Hack/Back Squat surfaces as a candidate, not a silent
