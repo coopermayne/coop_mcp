@@ -187,8 +187,10 @@ The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROT
     plainly). Prefer working with what's already there; if you must propose an addition, pull
     from the hearted superset first (surface candidates from the wider library with
     exercises(muscle=…)). Adding to the rotation hearts it too. Logging a movement the user
-    actually did adds it to the rotation (and hearts it) automatically — that's real training,
-    not you editing the pool — so when the rotation drifts past ~14, help the user prune back.
+    actually did hearts it automatically (onto the favorites bench) but does NOT add it to the
+    rotation — the rotation only ever grows on an explicit set_rotation request or via the
+    website, so it stays exactly the size the user chose; when it does drift past ~14 (e.g.
+    after a curation), help the user prune back.
 
 The catalog is CLOSED to you: you NEVER invent an exercise — the ~870-movement library
 plus anything the user adds is the whole world, so program only names it already holds.
@@ -1871,8 +1873,8 @@ def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
     from — rotation IMPLIES hearted, so in_rotation=True hearts it too. Only set
     `in_rotation=True` on the user's EXPLICIT request to grow their rotation — never bundle it
     into a routine enrichment, since the user keeps that pool small to control progression.
-    Prefer the dedicated `set_rotation` / `set_hearted` tools; logging a movement adds it to
-    both for you.
+    Prefer the dedicated `set_rotation` / `set_hearted` tools; logging a movement hearts it
+    for you (onto the favorites bench) but never adds it to the rotation.
 
     MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
     `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
@@ -1983,9 +1985,10 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
     the rotation also hearts it (rotation ⊆ hearted). The rotation is deliberately small so the
     user can control their progression, so ONLY add to it on the user's EXPLICIT instruction —
     never on your own judgement while programming a session, and never read approval of a
-    workout as approval to grow the pool. Logging a movement the user actually did already
-    flags it into the rotation, so reach for this when curating ahead of time on a clear
-    request — e.g. "add Bulgarian split squats to my rotation" — or pruning back toward ~14."""
+    workout as approval to grow the pool. Logging a movement only hearts it (onto the favorites
+    bench), never adds it to the rotation — this tool is the ONLY in-chat way the rotation
+    grows, so reach for it on a clear request — e.g. "add Bulgarian split squats to my
+    rotation" — and to prune back toward ~14."""
     in_rotation = int(bool(in_rotation))
     with db() as conn:
         if exercise_id is not None:
@@ -2168,8 +2171,9 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     right lift). The model never invents an exercise: a name that doesn't match an
     existing one is SKIPPED and returned under `unmatched` with its closest `candidates`
     — re-log it under one of those, or have the user add the movement on the library page
-    (the only way the catalog grows). The matched exercises still log (and join the
-    rotation), so capture isn't lost. weight_lbs is null for cardio. For lifts it is
+    (the only way the catalog grows). The matched exercises still log (and get hearted onto
+    the favorites bench — but are NOT added to the rotation, which grows only on an explicit
+    set_rotation request), so capture isn't lost. weight_lbs is null for cardio. For lifts it is
     SIGNED added/removed load, not total: 0 (or null) = plain bodyweight, a positive
     number = weight added (a +25 weighted pull-up, a dumbbell), and a NEGATIVE number =
     assistance, the load a band/machine took OFF (an assisted pull-up at -20). So an
@@ -2228,9 +2232,11 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
                 unmatched.append({"name": name, "candidates": _match_exercises(conn, name)})
                 continue
             eid = row["id"]
-            # A logged movement is one they actually do → it joins the rotation (the pool
-            # the trainer programs from) and the hearted superset. Pruning stays manual.
-            conn.execute("UPDATE exercises SET in_rotation=1, hearted=1 WHERE id=?", (eid,))
+            # A logged movement is one they actually do → it joins the hearted superset (the
+            # bench of favorites). It does NOT auto-join the rotation: that small pool is
+            # hand-curated so the user can control progression, and only grows on an explicit
+            # set_rotation request or via the website. hearted is left untouched if already 0→1.
+            conn.execute("UPDATE exercises SET hearted=1 WHERE id=?", (eid,))
             # continue set numbering if this exercise already has sets in the session
             start = (conn.execute(
                 "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
@@ -2758,9 +2764,10 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
                status='done' WHERE id=?""",
             (w, rp, rpe, note, set_id),
         )
-        # Completing a set means the movement was actually trained → keep it in rotation
-        # (and hearted).
-        conn.execute("UPDATE exercises SET in_rotation=1, hearted=1 WHERE id=?", (r["exercise_id"],))
+        # Completing a set means the movement was actually trained → keep it in the hearted
+        # superset. It does NOT auto-join the rotation (that pool stays hand-curated — grown
+        # only by an explicit set_rotation request or via the website).
+        conn.execute("UPDATE exercises SET hearted=1 WHERE id=?", (r["exercise_id"],))
         return _plan_payload(conn, r["workout_id"])
 
 
