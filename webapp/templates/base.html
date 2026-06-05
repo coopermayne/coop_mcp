@@ -83,6 +83,15 @@
     .cal-zoom { animation: calZoom 520ms cubic-bezier(.2,.8,.2,1); transform-origin: 0 0; }
     @media (prefers-reduced-motion: reduce) { .cal-zoom { animation: none; } }
 
+    /* Exercise form photos: free-exercise-db ships a start + finish frame per movement.
+       Overlay the two (the finish absolutely on top of the start) and crossfade back and
+       forth (~2s) so the rep reads as a movement instead of one frozen still. Shared by
+       the library cards and the /trainer plan card; a lone frame (or a self-looping gif)
+       just renders as a still through the non-.rep-loop path. */
+    @keyframes repLoopFade { 0%, 40% { opacity: 0; } 60%, 100% { opacity: 1; } }
+    .rep-loop-end { opacity: 0; animation: repLoopFade 2s ease-in-out infinite alternate; }
+    @media (prefers-reduced-motion: reduce) { .rep-loop-end { animation: none; opacity: 1; } }
+
     /* Theme-toggle icon: the moon shows in light mode (tap → dark), the sun in
        dark mode (tap → light). Driven by the same data-theme attribute. */
     .theme-icon-sun  { display: none; }
