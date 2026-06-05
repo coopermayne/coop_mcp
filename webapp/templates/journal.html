@@ -46,7 +46,7 @@
            title="Open entry" aria-label="Open this entry">›</a>
         <div class="flex-1">
           <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | short_date }}</p>
-          <p class="text-[15px] text-gray-800 leading-relaxed whitespace-pre-line mt-1">{{ e.body_html }}</p>
+          <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed mt-1">{{ e.body_md }}</div>
         </div>
       </div>
       {% endfor %}
