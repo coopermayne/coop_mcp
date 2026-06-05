@@ -15,7 +15,6 @@ Env: PORT, WEB_HOST, WEB_BASE_URL (public origin, for the OAuth redirect),
      SESSION_SECRET, GOOGLE_CLIENT_ID/SECRET, JOURNAL_ALLOWED_EMAILS, JOURNAL_DB.
 """
 
-import html
 import json
 import os
 import re
@@ -25,8 +24,6 @@ import time
 from typing import Optional
 from urllib.parse import quote
 from datetime import datetime
-
-from markupsafe import Markup
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -210,14 +207,16 @@ for _name, _fn in [
     templates.env.filters[_name] = _fn
 
 
-def linkify_people(body: str, people: list[dict], base: str) -> Markup:
-    """Return the entry body as safe HTML with each resolved person's name linked
-    inline to their page — quiet underlines that don't break the prose. Names are
-    matched on word boundaries, case-insensitively, longest form first (so "Tom
-    Brady" wins over "Tom"); every occurrence is linked. Text is HTML-escaped; only
-    the anchors we build are markup."""
+def link_people_md(body: str, people: list[dict], base: str) -> str:
+    """Return the entry body as Markdown with each resolved person's name turned into
+    a Markdown link to their page (link title = "Name · role"). The body is already
+    Markdown — the model writes bold/lists/etc. — so the browser renders it client-side
+    with `marked` + the `.chat-md` styles (the same pipeline the AI chat uses) and tags
+    the person links with `.person-link` afterwards. Names match on word boundaries,
+    case-insensitively, longest form first (so "Tom Brady" wins over "Tom"); every
+    occurrence is linked. Non-name text passes through untouched as Markdown source."""
     if not body:
-        return Markup("")
+        return ""
     form_to_person: dict[str, dict] = {}
     for p in people:
         for f in p.get("forms", []):
@@ -226,26 +225,43 @@ def linkify_people(body: str, people: list[dict], base: str) -> Markup:
                 continue
             form_to_person.setdefault(f.lower(), p)
     if not form_to_person:
-        return Markup(html.escape(body))
-    forms = sorted({fp for fp in form_to_person}, key=len, reverse=True)
+        return body
+    forms = sorted(form_to_person, key=len, reverse=True)
     pattern = re.compile(r"\b(" + "|".join(re.escape(f) for f in forms) + r")\b",
                          re.IGNORECASE)
     out, last = [], 0
     for mobj in pattern.finditer(body):
-        out.append(html.escape(body[last:mobj.start()]))
+        out.append(body[last:mobj.start()])
         word = mobj.group(0)
         person = form_to_person.get(word.lower())
         if person:
             label = person["name"] + (f" · {person['role']}" if person.get("role") else "")
-            out.append(
-                f'<a href="{base}/person/{person["person_id"]}" class="person-link" '
-                f'title="{html.escape(label)}">{html.escape(word)}</a>'
-            )
+            # Keep the link's [text] and "title" from breaking Markdown link syntax.
+            text = word.replace("[", r"\[").replace("]", r"\]")
+            title = label.replace('"', "'")
+            out.append(f'[{text}]({base}/person/{person["person_id"]} "{title}")')
         else:
-            out.append(html.escape(word))
+            out.append(word)
         last = mobj.end()
-    out.append(html.escape(body[last:]))
-    return Markup("".join(out))
+    out.append(body[last:])
+    return "".join(out)
+
+
+def people_from_mentions(mentions: list[dict]) -> list[dict]:
+    """Shape a `mentions` list (entry-detail) into the {person_id, name, role, forms}
+    dicts link_people_md wants, so the single entry page links names inline too. Only
+    resolved mentions contribute; the surface form and canonical name are both forms."""
+    by_id: dict[int, dict] = {}
+    for mn in mentions:
+        pid = mn.get("person_id")
+        if not pid:
+            continue
+        p = by_id.setdefault(pid, {"person_id": pid, "name": mn.get("name"),
+                                   "role": mn.get("role"), "forms": set()})
+        for f in (mn.get("surface_form"), mn.get("name")):
+            if f:
+                p["forms"].add(f)
+    return list(by_id.values())
 
 
 def base_path(request: Request) -> str:
@@ -765,14 +781,14 @@ async def journal(request: Request, q: str = ""):
         res = server.search_entries(q, limit=40)
         entries = data.attach_people(res["results"])
         for e in entries:
-            e["body_html"] = linkify_people(e["body"], e["people"], base)
+            e["body_md"] = link_people_md(e["body"], e["people"], base)
         return page(request, "journal.html", active="journal",
                     q=q, entries=entries, count=res["count"], searching=True,
                     pending_count=pending_n)
     res = data.list_days(limit_entries=120)
     for day in res["days"]:
         for e in day["entries"]:
-            e["body_html"] = linkify_people(e["body"], e["people"], base)
+            e["body_md"] = link_people_md(e["body"], e["people"], base)
     months = data.calendar_months([d["date"] for d in res["days"]], today=server.today())
     return page(request, "journal.html", active="journal",
                 q="", days=res["days"], count=res["total"], searching=False,
@@ -792,6 +808,8 @@ async def entry(request: Request, entry_id: int):
     if e is None:
         return page(request, "notfound.html", active="journal",
                     status_code=404, what="entry")
+    e["body_md"] = link_people_md(e["body"], people_from_mentions(e["mentions"]),
+                                  base_path(request))
     return page(request, "entry.html", active="journal", e=e)
 
 

@@ -8,22 +8,25 @@
 {% endmacro %}
 
 {% macro entry_card(e) %}
+{# The whole card is a link to the entry, so the body Markdown is rendered WITHOUT
+   inline person links (no nested <a>) — just bold/lists/etc. via the client .chat-md
+   pass (see base.html). #}
 <a href="{{ base }}/entry/{{ e.entry_id }}"
    class="block border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-4 hover:border-black transition-colors">
   <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | short_date }}</p>
-  <p class="text-sm text-gray-700 mt-1.5 leading-relaxed whitespace-pre-line">{{ e.body }}</p>
+  <div data-md class="chat-md text-sm text-gray-700 mt-1.5 leading-relaxed">{{ e.body }}</div>
 </a>
 {% endmacro %}
 
 {% macro entry_paragraph(e) %}
-{# One per-topic note as a paragraph in the day's block. People are linked inline
-   (person-link, built server-side as e.body_html); a faint hanging marker opens
-   the full entry without turning the whole paragraph into a link (which can't wrap
-   the inner name links). #}
+{# One per-topic note in the day's block. The body is Markdown (e.body_md, names
+   turned into person links server-side); the client renders it with `marked` into
+   the .chat-md scope (see base.html). A faint hanging marker opens the full entry
+   without turning the whole note into a link (which can't wrap the inner name links). #}
 <div class="group flex gap-2 sm:-ml-5 sm:gap-3">
   <a href="{{ base }}/entry/{{ e.entry_id }}" class="entry-open shrink-0 pt-0.5 text-sm leading-relaxed"
      title="Open entry" aria-label="Open this entry">›</a>
-  <p class="flex-1 text-[15px] text-gray-800 leading-relaxed whitespace-pre-line">{{ e.body_html }}</p>
+  <div data-md class="flex-1 chat-md text-[15px] text-gray-800 leading-relaxed">{{ e.body_md }}</div>
 </div>
 {% endmacro %}
 
