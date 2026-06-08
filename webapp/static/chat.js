@@ -93,6 +93,9 @@
     function renderMd(el) {
       var raw = el._raw || '';
       if (window.marked && window.marked.parse) {
+        // Turn any over-escaped literal "\n" (backslash-n) back into real newlines
+        // so a paragraph break renders as a break, not visible escape text.
+        raw = raw.replace(/\\r\\n|\\n|\\r/g, '\n');
         el.innerHTML = window.marked.parse(raw, { breaks: true });
         el.querySelectorAll('a').forEach(function (a) {
           a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -112,7 +115,8 @@
     async function send(text) {
       if (busy) return; // ignore re-entrant sends (e.g. a programmatic send mid-turn)
       if (seed) { seed.remove(); seed = null; }
-      bubble('user').textContent = text;
+      var userBubble = bubble('user');
+      userBubble.textContent = text;
       scrollDown();
       var container = bubble('assistant');
       setBusy(true);
@@ -127,6 +131,22 @@
       } catch (e) {
         assistantText(container).textContent = 'Network error: ' + e.message;
         setBusy(false); return;
+      }
+      // If the session timed out while composing (the journal idle-relock, or the
+      // Google login expiring), the guarded /send is bounced to /lock or /login —
+      // fetch follows the redirect and hands back HTML, not our event stream.
+      // `res.redirected` flags exactly that. Recover instead of dropping the message:
+      // pull the two optimistic bubbles back, restore the text so nothing is lost,
+      // and tell the user. (The keepalive ping normally prevents this entirely.)
+      if (res.redirected) {
+        if (userBubble.parentNode) userBubble.parentNode.remove();
+        container.remove();
+        input.value = text;
+        autosize();
+        setBusy(false);
+        input.focus();
+        alert('Your session timed out while you were typing. The message was kept in the box — unlock the journal (or sign back in), then send it again.');
+        return;
       }
       if (!res.ok || !res.body) {
         assistantText(container).textContent = 'Error: ' + res.status;

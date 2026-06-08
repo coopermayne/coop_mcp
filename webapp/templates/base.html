@@ -352,9 +352,27 @@
     (function () {
       var IDLE = {{ lock_idle_ms }};
       var LOCK = '{{ base }}/lock';
+      var KEEP = '{{ base }}/lock/keepalive';
       var timer, hiddenAt = null;
       function go() { window.location.href = LOCK; }
-      function arm() { clearTimeout(timer); timer = setTimeout(go, IDLE); }
+      // The server's idle window only slides on guarded REQUESTS, but an active user
+      // who's typing (e.g. a long chat message) makes none for minutes — so the
+      // window would lapse and the eventual send would bounce to the lock screen.
+      // On real interaction, ping the server (throttled well under IDLE) to keep its
+      // window in lockstep with this page's activity. The ping never unlocks; if it
+      // reports the window already lapsed, relock here too.
+      var PING_MIN = Math.min(60000, Math.floor(IDLE / 2)), lastPing = 0;
+      function keepalive() {
+        var now = Date.now();
+        if (now - lastPing < PING_MIN) return;
+        lastPing = now;
+        fetch(KEEP, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: '{}', keepalive: true })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { if (d && d.active && !d.unlocked) go(); })
+          .catch(function () {});
+      }
+      function arm() { clearTimeout(timer); timer = setTimeout(go, IDLE); keepalive(); }
       ['pointerdown', 'keydown', 'scroll', 'touchstart', 'mousemove'].forEach(function (ev) {
         document.addEventListener(ev, arm, { passive: true });
       });
@@ -384,7 +402,12 @@
           // If this block is itself inside a link (the person page's entry_card),
           // demote any rendered links to spans — a nested <a> is invalid HTML.
           var inLink = !!el.closest('a');
-          el.innerHTML = window.marked.parse(el.textContent, { breaks: true });
+          // Defensive: if the model ever emitted a paragraph break as the LITERAL
+          // two characters backslash-n (over-escaped) instead of a real newline,
+          // marked would render it as visible "\n" text. Turn those back into real
+          // newlines so the entry reads as paragraphs, not escape codes.
+          var src = el.textContent.replace(/\\r\\n|\\n|\\r/g, '\n');
+          el.innerHTML = window.marked.parse(src, { breaks: true });
           el.querySelectorAll('a').forEach(function (a) {
             if (inLink) {
               var span = document.createElement('span');

@@ -560,6 +560,27 @@ async def lock_relock(request: Request):
     return RedirectResponse(base_path(request) + "/lock")
 
 
+@app.post("/lock/keepalive")
+async def lock_keepalive(request: Request):
+    """Slide the idle-relock window forward while the user is ACTIVELY on a guarded
+    journal page but not making requests — the classic "composing a long chat
+    message" case, where no navigation happens for minutes so the server-side window
+    would otherwise lapse and bounce the eventual send to the lock screen. The client
+    pings this (throttled) on real interaction; it only ever refreshes an
+    already-unlocked session — it NEVER unlocks one — so it can't be used to defeat
+    the lock. Reports back whether the session is still unlocked so the client can
+    relock itself if the window already lapsed. Lives OUTSIDE the LockGate's guarded
+    set (it's under /lock) so it must slide the window itself rather than relying on
+    the gate. Returns {active, unlocked}; active=False means the lock is dormant."""
+    from fastapi.responses import JSONResponse
+    if not _lock_active():
+        return JSONResponse({"active": False})
+    if _is_unlocked(request):
+        request.session["jrl_unlocked_at"] = int(time.time())  # slide the window
+        return JSONResponse({"active": True, "unlocked": True})
+    return JSONResponse({"active": True, "unlocked": False})
+
+
 @app.get("/health")
 async def health():
     from fastapi.responses import JSONResponse
