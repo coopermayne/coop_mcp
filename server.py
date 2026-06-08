@@ -741,12 +741,18 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     split only genuinely separate events/threads. The entries are independent —
     there is no shared conversation id and they aren't cross-linked.
 
-    Write `body` as a clean, structured, concise journal entry: organize the
-    free-association into readable prose, keep the substance and the user's voice,
-    drop filler. Pass the user's original words verbatim as `raw_body` so a faithful
-    record is retained underneath (retrievable via get_entry; not shown in normal
-    search or history). When you split a conversation into several notes, each
-    note's `raw_body` is the slice of the verbatim words about THAT topic — not
+    Write `body` as a clean, structured, concise journal entry in MARKDOWN:
+    organize the free-association into readable prose, keep the substance and the
+    user's voice, drop filler. Format it for readability — separate distinct
+    paragraphs with a BLANK LINE (a real line break in the string, NOT the literal
+    two characters backslash-n), and use Markdown **bold**, *italics*, and `-`/`1.`
+    lists where they genuinely help scanning (a run of names/places, a set of
+    to-dos, distinct sub-topics within one event). Don't over-format a short note —
+    plain prose is fine; reach for structure only when it earns its keep. Pass the
+    user's original words verbatim as `raw_body` so a faithful record is retained
+    underneath (retrievable via get_entry; not shown in normal search or history).
+    When you split a conversation into several notes, each note's `raw_body` is the
+    slice of the verbatim words about THAT topic — not
     the whole transcript repeated on every entry. Extract the people referenced
     and pass each as a short surface form — what was actually SAID ("Tom", "Dad",
     a garbled transcription), taken from the raw words, not the cleaned-up name.
@@ -773,7 +779,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
         later.
 
     Args:
-        body: The cleaned, structured journal entry.
+        body: The cleaned journal entry, written as Markdown (paragraphs split by
+            blank lines; bold/italics/lists where they aid readability).
         raw_body: The user's verbatim input. Optional but recommended.
         mentions: Surface forms of people referenced, e.g. ["Tom", "Robin"].
             Expand a plural/collective ("my parents") into one form per person
@@ -1125,7 +1132,8 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
     e.g. the user said "that was actually yesterday". Dates are Pacific time; resolve
     relative phrases ("yesterday") against the current Pacific date (see get_briefing's
     `now`) before passing a concrete date here. `body` replaces the cleaned journal
-    text; `raw_body` replaces the verbatim original.
+    text (Markdown — paragraphs split by blank lines, bold/italics/lists where
+    useful, as in add_journal_entry); `raw_body` replaces the verbatim original.
 
     `mentions` reconciles WHO the entry references when you change the text. As in
     add_journal_entry, the server does NOT read the text — YOU pass the full new list
