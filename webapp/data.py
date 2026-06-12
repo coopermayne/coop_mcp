@@ -195,7 +195,7 @@ def pending_mentions(limit: int = 200) -> list:
     """The resolution queue, enriched for the web view: each pending mention with
     its surface form, context snippet, entry_date, entry_id (so you can jump to
     the entry), and the same candidate matches `list_pending_mentions` returns.
-    The page's inline resolver can pin these to people (link/new/expand/dismiss)
+    The page's inline resolver can pin these to people (link/new/dismiss)
     via the /mention/* endpoints; chat with Claude still resolves them too.
     """
     out = server.list_pending_mentions(limit=limit)["pending"]

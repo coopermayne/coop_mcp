@@ -94,12 +94,12 @@ entities, not name strings) plus a drinking tracker. The server only stores and
 matches — the judgment (which person a mention means) is yours.
 
 Three rules: capture never blocks — always save, leave ambiguous mentions pending
-for later; resolve mentions to person entities, don't normalize names in text (and
-expand a plural like "my parents" into one mention per person — never a single one,
-and never ALSO keep the collective word "parents" itself as a mention: emit only the
-per-person forms); and one note per topic — split unrelated threads from the same
-conversation into separate entries so their people don't cross-contaminate later
-lookups.
+for later; resolve mentions to person entities, don't normalize names in text (for a
+group reference like "my parents" or "the kids", just link the specific people you can
+identify — leaning on their relationships in the briefing — and don't capture the bare
+group word itself as a mention); and one note per topic — split unrelated threads from
+the same conversation into separate entries so their people don't cross-contaminate
+later lookups.
 
 Each person's `summary` is their rolling profile — the durable KEY FACTS about them:
 relationships (parents, partner/spouse, kids, siblings, BY NAME — there is no
@@ -108,9 +108,9 @@ birthday/fixed dates, where they live, major life events. Keep it current AT LIN
 TIME: whenever you link a mention to a person, check whether the entry revealed a
 new key fact and, if so, fold it in (read-before-write via get_person_history, then
 save_person) — nothing updates summaries automatically. Lean on these summaries
-(get_briefing surfaces them) to resolve relational/collective references like "her
-parents" or "his brother" before expanding them into the right people. Keep them a
-compact profile of stable facts, not a diary.
+(get_briefing surfaces them) to resolve relational references like "her parents" or
+"his brother" to the right people. Keep them a compact profile of stable facts, not a
+diary.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
 on Pacific time. get_briefing returns `now` (current Pacific date/time); anchor
@@ -770,21 +770,18 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     and pass each as a short surface form — what was actually SAID ("Tom", "Dad",
     a garbled transcription), taken from the raw words, not the cleaned-up name.
 
-    COLLECTIVES / PLURALS. A plural reference names MORE THAN ONE person — "my
-    parents", "the kids", "the in-laws", "Robin's folks" — so EXPAND it into one
-    surface form per person it covers, using who you know from get_briefing /
-    context (e.g. "my parents" -> ["Mom", "Dad"], which then link to both people).
-    Never collapse a group down to a single person. Emit ONLY the per-person surface
-    forms — do NOT also include the collective word itself ("parents", "the kids") as
-    its own mention: a plural word can't resolve to a single person, so it would sit
-    pending forever as dead weight. If you only know some of the members, pass the
-    ones you know and ask about the rest rather than dropping them — capture still
-    never blocks. The reference is relative to the speaker, so use the snippet to tell
-    whose: "my parents" and "Robin's parents" are different pairs; expand each to the
-    right people.
+    GROUP REFERENCES. When the user names a group rather than a person — "my
+    parents", "the kids", "the in-laws" — don't pass the bare group word as a
+    mention (it can't resolve to one person and would sit pending as dead weight).
+    Instead pass the specific people you can identify by name, using who you know
+    from get_briefing / their relationships in the summaries (e.g. you know Robin's
+    parents are Karl and Nina -> pass ["Karl", "Nina"]). The reference is relative to
+    the speaker, so use the snippet to tell whose ("my parents" vs "Robin's parents").
+    If you can't tell who the group is, just leave them out and ask — capture never
+    blocks.
 
-    Resolution guidance for the model after this returns (each expanded surface
-    form resolves independently):
+    Resolution guidance for the model after this returns (each surface form resolves
+    independently):
       - One candidate with score >= 0.85 and no other within 0.15: link it
         silently via link_mentions (set learn_alias=True if the surface form
         wasn't already an exact alias).
@@ -804,8 +801,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
             blank lines; bold/italics/lists where they aid readability).
         raw_body: The user's verbatim input. Optional but recommended.
         mentions: Surface forms of people referenced, e.g. ["Tom", "Robin"].
-            Expand a plural/collective ("my parents") into one form per person
-            (see COLLECTIVES) — never a single form for the whole group.
+            For a group reference ("my parents"), pass the specific people you can
+            identify by name, not the group word (see GROUP REFERENCES).
         entry_date: Day the entry is ABOUT as YYYY-MM-DD. Defaults to today.
     """
     if err := _bad_date(entry_date, "entry_date"):
@@ -891,77 +888,42 @@ def link_mentions(links: list[dict]) -> dict:
 # user can also pin people straight from the pending queue or an entry.
 # --------------------------------------------------------------------------- #
 
-def resolve_mention_web(mention_id: int, person_ids: list[int],
+def resolve_mention_web(mention_id: int, person_id: int,
                         learn_alias: bool = False) -> dict:
-    """Resolve a pending mention to ONE person, or EXPAND a collective into SEVERAL.
+    """Pin a pending mention to a person — the inline resolver's link control.
 
-    One id: pin this mention row to that person (status='resolved'); learn_alias
-    stores the surface form as an alias so it auto-matches next time. Several ids
-    (a collective like "parents" the model left whole): for each person not already
-    mentioned on the entry, create a resolved mention row, then DELETE the original
-    collective row — turning it into the per-person mentions it always should have
-    been. Aliases are never learned on an expansion (the collective word isn't any
-    one person's name). Website-only; the catalog of who exists stays the model's to
-    grow via save_person."""
-    person_ids = [int(p) for p in (person_ids or [])]
-    if not person_ids:
+    Sets the mention row to that person (status='resolved'); learn_alias stores the
+    surface form as an alias so it auto-matches next time. Website-only; the catalog
+    of who exists stays the model's to grow via save_person."""
+    if not person_id:
         return {"error": "no person selected"}
+    pid = int(person_id)
     with db() as conn:
         m = conn.execute(
-            "SELECT id, entry_id, surface_form, context_snippet FROM mentions WHERE id=?",
+            "SELECT id, entry_id, surface_form FROM mentions WHERE id=?",
             (mention_id,),
         ).fetchone()
         if not m:
             return {"error": "no such mention"}
-        for pid in person_ids:
-            if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
-                return {"error": f"no person with id {pid}"}
-
-        if len(person_ids) == 1:
-            pid = person_ids[0]
+        if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
+            return {"error": f"no person with id {pid}"}
+        conn.execute(
+            "UPDATE mentions SET person_id=?, status='resolved' WHERE id=?",
+            (pid, mention_id),
+        )
+        if learn_alias:
             conn.execute(
-                "UPDATE mentions SET person_id=?, status='resolved' WHERE id=?",
-                (pid, mention_id),
+                """INSERT OR IGNORE INTO aliases(person_id, surface_form,
+                   phonetic_key, source) VALUES (?,?,?, 'learned')""",
+                (pid, m["surface_form"], phonetic(m["surface_form"])),
             )
-            if learn_alias:
-                conn.execute(
-                    """INSERT OR IGNORE INTO aliases(person_id, surface_form,
-                       phonetic_key, source) VALUES (?,?,?, 'learned')""",
-                    (pid, m["surface_form"], phonetic(m["surface_form"])),
-                )
-            return {"ok": True, "entry_id": m["entry_id"], "person_ids": person_ids}
-
-        # Collective expansion: one resolved mention per member, skipping people
-        # already mentioned on this entry (e.g. Karl/Nina already captured), then
-        # drop the leftover collective row.
-        already = {
-            r["person_id"] for r in conn.execute(
-                "SELECT person_id FROM mentions WHERE entry_id=? AND person_id IS NOT NULL",
-                (m["entry_id"],),
-            )
-        }
-        created = []
-        for pid in person_ids:
-            if pid in already:
-                continue
-            name = conn.execute(
-                "SELECT canonical_name FROM people WHERE id=?", (pid,)
-            ).fetchone()["canonical_name"]
-            conn.execute(
-                """INSERT INTO mentions(entry_id, surface_form, context_snippet,
-                   person_id, status, created_at) VALUES (?,?,?,?, 'resolved', ?)""",
-                (m["entry_id"], name, m["context_snippet"], pid, now()),
-            )
-            created.append(pid)
-        conn.execute("DELETE FROM mentions WHERE id=?", (mention_id,))
-        return {"ok": True, "entry_id": m["entry_id"], "person_ids": person_ids,
-                "created": created}
+        return {"ok": True, "entry_id": m["entry_id"], "person_id": pid}
 
 
 def dismiss_mention_web(mention_id: int) -> dict:
-    """Delete a stray mention — the inline resolver's Dismiss control. The usual case
-    is a leftover collective word ("parents") whose members are already captured as
-    their own mentions, so the row is pure noise. Website-only; not an MCP tool."""
+    """Delete a stray mention — the inline resolver's Dismiss control. Use it for a
+    mention that shouldn't resolve to anyone (a group word, or noise). Website-only;
+    not an MCP tool."""
     with db() as conn:
         if not conn.execute("SELECT 1 FROM mentions WHERE id=?", (mention_id,)).fetchone():
             return {"error": "no such mention"}
@@ -984,9 +946,9 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
     immediate relationships. Record their parents, partner/spouse, children and
     siblings BY NAME as you learn them (e.g. "Parents: Karl (father), Nina (mother).
     Brother: Theo."). The server has NO relationship graph, so this profile is the only
-    place that knowledge lives — and it's what lets you later read a relational or
-    collective reference ("her parents", "his brother", "my partner") and expand it
-    to the right people. Keep it current as relationships change.
+    place that knowledge lives — and it's what lets you later read a relational
+    reference ("her parents", "his brother", "my partner") and link the right people.
+    Keep it current as relationships change.
 
     `aliases` are surface forms (incl. recurring transcription errors): on create they
     seed the person, on update they are ADDED — so this is also how you attach a new

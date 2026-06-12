@@ -1,8 +1,7 @@
 // Inline mention resolver — shared by the pending queue and the entry page.
 // Any element with a `data-mention` attribute (JSON: {id, surface, candidates})
 // becomes a trigger that opens a small modal to pin that mention to a person:
-//   - click a candidate / searched person to LINK it (single), or
-//   - flip "multiple people" to EXPAND a collective ("parents") into several, or
+//   - click a candidate / searched person to LINK it, or
 //   - create a brand-new person and link, or
 //   - dismiss a stray mention (delete the row).
 // All write-through to /mention/* (server.py's website-only helpers). On success
@@ -38,11 +37,10 @@
   }
 
   // ---- the modal (built once, reused) ------------------------------------ //
-  var overlay, box, selected = new Set(), state = null;
+  var overlay, box, state = null;
 
   function close() {
     if (overlay) overlay.style.display = "none";
-    selected.clear();
     state = null;
   }
 
@@ -72,44 +70,16 @@
     var b = el("button", "set-pill hover:border-black transition-colors", label);
     b.type = "button";
     b.dataset.pid = p.person_id;
-    b.addEventListener("click", function () {
-      if (state.multi) {
-        var id = String(p.person_id);
-        if (selected.has(id)) { selected.delete(id); b.classList.remove("mention-on"); }
-        else { selected.add(id); b.classList.add("mention-on"); }
-        syncMultiBtn();
-      } else {
-        linkOne(p.person_id);
-      }
-    });
+    b.addEventListener("click", function () { linkOne(p.person_id); });
     return b;
-  }
-
-  function syncMultiBtn() {
-    var btn = box.querySelector("[data-link-selected]");
-    if (btn) {
-      btn.textContent = "Link " + selected.size + " selected";
-      btn.disabled = selected.size === 0;
-      btn.style.opacity = selected.size === 0 ? ".4" : "1";
-    }
   }
 
   async function linkOne(pid) {
     try {
       err("");
       await post(BASE + "/mention/" + state.id + "/resolve", {
-        person_ids: [pid],
+        person_id: pid,
         learn_alias: box.querySelector("[data-learn]").checked,
-      });
-      location.reload();
-    } catch (e) { err(e.message); }
-  }
-
-  async function linkSelected() {
-    try {
-      err("");
-      await post(BASE + "/mention/" + state.id + "/resolve", {
-        person_ids: Array.from(selected).map(Number),
       });
       location.reload();
     } catch (e) { err(e.message); }
@@ -133,8 +103,7 @@
 
   function open(trigger) {
     var data = JSON.parse(trigger.getAttribute("data-mention"));
-    state = { id: data.id, multi: false };
-    selected.clear();
+    state = { id: data.id };
     box.innerHTML = "";
 
     var head = el("div", "px-5 py-4 border-b border-gray-100");
@@ -144,13 +113,6 @@
 
     var body = el("div", "px-5 py-4 space-y-4");
     box.appendChild(body);
-
-    // multi-person toggle
-    var multiWrap = el("label", "flex items-center gap-2 text-sm text-gray-600 cursor-pointer");
-    var multiCb = el("input"); multiCb.type = "checkbox";
-    multiWrap.appendChild(multiCb);
-    multiWrap.appendChild(el("span", null, "These are multiple people (a collective like “parents”)"));
-    body.appendChild(multiWrap);
 
     // candidates + search results share one container
     var lblPeople = el("p", "text-[10px] uppercase tracking-widest text-gray-400 mb-2", "People");
@@ -169,24 +131,6 @@
     var results = el("div", "flex flex-wrap gap-2");
     body.appendChild(results);
     search.addEventListener("input", function () { onSearch(search, results); });
-
-    // "link N selected" (multi only)
-    var linkSel = el("button", "set-pill hover:border-black transition-colors", "Link 0 selected");
-    linkSel.type = "button";
-    linkSel.setAttribute("data-link-selected", "");
-    linkSel.style.display = "none";
-    linkSel.style.opacity = ".4";
-    linkSel.disabled = true;
-    linkSel.addEventListener("click", linkSelected);
-    body.appendChild(linkSel);
-
-    multiCb.addEventListener("change", function () {
-      state.multi = multiCb.checked;
-      selected.clear();
-      box.querySelectorAll(".mention-on").forEach(function (n) { n.classList.remove("mention-on"); });
-      linkSel.style.display = state.multi ? "inline-flex" : "none";
-      syncMultiBtn();
-    });
 
     // new person
     var newWrap = el("div", "pt-3 border-t border-gray-100 space-y-2");
@@ -220,7 +164,7 @@
     var learnCb = el("input"); learnCb.type = "checkbox"; learnCb.checked = true;
     learnCb.setAttribute("data-learn", "");
     learnWrap.appendChild(learnCb);
-    learnWrap.appendChild(el("span", null, "Remember “" + data.surface + "” as a name for this person (single link only)"));
+    learnWrap.appendChild(el("span", null, "Remember “" + data.surface + "” as a name for this person"));
     body.appendChild(learnWrap);
 
     // error line
