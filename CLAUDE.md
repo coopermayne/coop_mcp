@@ -188,14 +188,23 @@ working.
 ## Data model (tables)
 
 - `people` — entities. `canonical_name`, `role` (the human disambiguator), `notes`,
-  `summary` (rolling profile for context), `contact` — a free-form JSON blob holding
+  `summary` (rolling profile for context — the durable KEY FACTS about a person:
+  relationships (parents/partner/kids/siblings, recorded BY NAME, since there is no
+  relationship graph — so this is the only place they live, letting the model resolve
+  "her parents" / "his brother" and expand it to the right people), employment,
+  school, birthday, where they live, major life events. The model keeps it current
+  AT LINK TIME — whenever it links a mention it folds in any new key fact the entry
+  revealed (read-before-write); nothing regenerates summaries automatically.
+  `get_briefing` surfaces a short preview; `get_person_history` returns the FULL
+  summary for read-before-write, same as `contact`), `contact` — a free-form JSON blob holding
   multi-valued contact info (emails, phones, addresses, websites, …), written via
   `update_contact` with a shallow per-top-level-key merge (so adding phones never touches
   addresses; lists are replaced wholesale, so the model READS via `get_person_history`
   then writes the full list back; a key set to `null` is dropped). The legacy single-
   valued `email`/`phone`/`address` columns are folded into `contact` once on migration
-  and are otherwise dormant. `get_person_history` returns the blob so the model can
-  read-before-write; there is NO LLM in this path — the server just merges JSON.
+  and are otherwise dormant. `get_person_history` returns the blob (and the full
+  `summary`) so the model can read-before-write; there is NO LLM in this path — the
+  server just merges JSON.
 - `aliases` — surface forms per person; `phonetic_key` (metaphone), `source`
   (`manual`|`learned`).
 - `entries` — `body` (clean), `raw_body` (verbatim), `entry_date` (day it's *about*,
@@ -360,7 +369,10 @@ origin — fine when there's no OAuth, so the collision is moot.
 
 ## Things deliberately NOT built (don't assume they exist)
 
-Typed person-to-person relationship graph; vCard import/export (would map onto the
+Typed person-to-person relationship graph (relationships are kept as free text in a
+person's `summary` instead — see the `people` row above; the model reads them from
+the briefing/`get_person_history` to expand relational/collective references, with no
+structured edges to traverse or keep in sync); vCard import/export (would map onto the
 `contact` blob); Google Contacts sync; automated `summary` regeneration. See README
 "Notes / next steps". (Contact info IS multi-valued now — the free-form `contact` JSON
 blob, edited via `update_contact`.)

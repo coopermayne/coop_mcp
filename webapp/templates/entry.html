@@ -26,7 +26,8 @@
           {{ mn.name }}{% if mn.role %} · {{ mn.role }}{% endif %}
         </a>
         {% else %}
-        <span class="badge" title="Unresolved mention">{{ mn.surface_form }} · ?</span>
+        <button type="button" class="badge" title="Unresolved — click to resolve"
+                data-mention='{{ {"id": mn.mention_id, "surface": mn.surface_form, "candidates": mn.candidates} | tojson }}'>{{ mn.surface_form }} · ?</button>
         {% endif %}
       {% endfor %}
     </div>
@@ -34,4 +35,8 @@
   {% endif %}
 </article>
 
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ base }}/static/mentions.js" defer></script>
 {% endblock %}

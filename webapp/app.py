@@ -124,7 +124,7 @@ LOCK_TOLERANCE = float(os.environ.get("JOURNAL_LOCK_TOLERANCE", "0.15") or "0.15
 # else — trainer, drinking, library, auth, static, the lock screen itself —
 # passes straight through.
 LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
-LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/")
+LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/")
 
 app = FastAPI(title="Journal")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
@@ -828,6 +828,65 @@ async def pending(request: Request):
     items = data.pending_mentions()
     return page(request, "pending.html", active="journal",
                 items=items, count=len(items))
+
+
+# --------------------------------------------------------------------------- #
+# Inline mention resolver (the pending queue + entry page can pin a mention to a
+# person without leaving for chat). All write-through to server.py's website-only
+# helpers; JSON fetch pattern like the trainer toggles. Lock-guarded via the
+# /mention/ prefix above.
+# --------------------------------------------------------------------------- #
+
+@app.get("/mention/people-search")
+async def mention_people_search(request: Request, q: str = ""):
+    """People picker for the resolver — link to / expand into someone who isn't a
+    candidate. Returns a compact [{person_id, name, role}] list (most-recent first)."""
+    from fastapi.responses import JSONResponse
+    res = server.list_people(query=q.strip() or None)
+    people = [{"person_id": p["person_id"], "name": p["name"], "role": p["role"]}
+              for p in res["people"][:20]]
+    return JSONResponse({"people": people})
+
+
+@app.post("/mention/{mention_id}/resolve")
+async def mention_resolve(request: Request, mention_id: int):
+    """Pin a pending mention to one person, or expand a collective into several. Body:
+    {person_ids: [int, ...], learn_alias?: bool}. Writes through resolve_mention_web."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    ids = body.get("person_ids") or []
+    res = server.resolve_mention_web(mention_id, ids, learn_alias=bool(body.get("learn_alias")))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
+
+
+@app.post("/mention/{mention_id}/new-person")
+async def mention_new_person(request: Request, mention_id: int):
+    """Create a new person and pin this mention to them in one step. Body:
+    {canonical_name, role?, learn_alias?}. save_person then resolve_mention_web."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    name = (body.get("canonical_name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "canonical_name is required"}, status_code=400)
+    created = server.save_person(canonical_name=name,
+                                 role=(body.get("role") or "").strip() or None)
+    if isinstance(created, dict) and created.get("error"):
+        return JSONResponse(created, status_code=400)
+    res = server.resolve_mention_web(mention_id, [created["person_id"]],
+                                     learn_alias=bool(body.get("learn_alias")))
+    if isinstance(res, dict) and res.get("error"):
+        return JSONResponse(res, status_code=400)
+    return JSONResponse({"ok": True, "person_id": created["person_id"]})
+
+
+@app.post("/mention/{mention_id}/dismiss")
+async def mention_dismiss(request: Request, mention_id: int):
+    """Delete a stray mention (a leftover collective word, noise). dismiss_mention_web."""
+    from fastapi.responses import JSONResponse
+    res = server.dismiss_mention_web(mention_id)
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
 
 
 @app.get("/entry/{entry_id}")
