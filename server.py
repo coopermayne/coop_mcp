@@ -101,6 +101,12 @@ per-person forms); and one note per topic — split unrelated threads from the s
 conversation into separate entries so their people don't cross-contaminate later
 lookups.
 
+Relationships have no graph — they live in each person's `summary`. Record a
+person's parents, partner/spouse, kids and siblings BY NAME there (via save_person)
+as you learn them, and lean on those summaries (get_briefing surfaces them) to
+resolve relational or collective references like "her parents", "his brother" or
+"my partner" before expanding them into the right people.
+
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
 on Pacific time. get_briefing returns `now` (current Pacific date/time); anchor
 "today"/"yesterday" to it before defaulting or computing any date.
@@ -946,7 +952,13 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
     Omit `person_id` to CREATE (then `canonical_name` is required); pass `person_id`
     to UPDATE an existing person (only the non-null fields you pass are written). `role`
     is the disambiguator the user relies on later, e.g. "father", "law school friend";
-    `summary` is a short rolling profile for context.
+    `summary` is a short rolling profile for context — and the home for this person's
+    immediate relationships. Record their parents, partner/spouse, children and
+    siblings BY NAME as you learn them (e.g. "Parents: Jeff (father), Jody (mother).
+    Brother: Ry."). The server has NO relationship graph, so this profile is the only
+    place that knowledge lives — and it's what lets you later read a relational or
+    collective reference ("her parents", "his brother", "my partner") and expand it
+    to the right people. Keep it current as relationships change.
 
     `aliases` are surface forms (incl. recurring transcription errors): on create they
     seed the person, on update they are ADDED — so this is also how you attach a new
@@ -1089,7 +1101,10 @@ def get_person_history(person_id: int, limit: int = 50,
     """Every entry that mentions this person, newest first — the payoff query.
     This is an indexed lookup on the entity, so 'everything about Tom my father'
     never pulls in the other Tom. Bodies are truncated to max_chars. Also returns the
-    person's `contact` blob — read it here before editing it with update_contact."""
+    person's full `summary` (the rolling profile, incl. their relationships) and
+    `contact` blob — read them here before editing them with save_person /
+    update_contact, so you append rather than overwrite (the briefing only shows a
+    short summary preview)."""
     if err := _bad_date(since, "since"):
         return err
     sql = """SELECT DISTINCT e.id, e.entry_date, e.body
@@ -1103,7 +1118,7 @@ def get_person_history(person_id: int, limit: int = 50,
     params.append(limit)
     with db() as conn:
         person = conn.execute(
-            "SELECT canonical_name, role FROM people WHERE id=?", (person_id,)
+            "SELECT canonical_name, role, summary FROM people WHERE id=?", (person_id,)
         ).fetchone()
         if not person:
             return {"error": f"no person with id {person_id}"}
@@ -1115,7 +1130,7 @@ def get_person_history(person_id: int, limit: int = 50,
         for r in rows
     ]
     return {"person_id": person_id, "name": person["canonical_name"],
-            "role": person["role"], "contact": contact,
+            "role": person["role"], "summary": person["summary"], "contact": contact,
             "entries": entries, "count": len(entries)}
 
 
