@@ -101,11 +101,16 @@ per-person forms); and one note per topic — split unrelated threads from the s
 conversation into separate entries so their people don't cross-contaminate later
 lookups.
 
-Relationships have no graph — they live in each person's `summary`. Record a
-person's parents, partner/spouse, kids and siblings BY NAME there (via save_person)
-as you learn them, and lean on those summaries (get_briefing surfaces them) to
-resolve relational or collective references like "her parents", "his brother" or
-"my partner" before expanding them into the right people.
+Each person's `summary` is their rolling profile — the durable KEY FACTS about them:
+relationships (parents, partner/spouse, kids, siblings, BY NAME — there is no
+relationship graph, so this is the only place they live), employment, school,
+birthday/fixed dates, where they live, major life events. Keep it current AT LINK
+TIME: whenever you link a mention to a person, check whether the entry revealed a
+new key fact and, if so, fold it in (read-before-write via get_person_history, then
+save_person) — nothing updates summaries automatically. Lean on these summaries
+(get_briefing surfaces them) to resolve relational/collective references like "her
+parents" or "his brother" before expanding them into the right people. Keep them a
+compact profile of stable facts, not a diary.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
 on Pacific time. get_briefing returns `now` (current Pacific date/time); anchor
@@ -782,6 +787,11 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
       - No candidate >= 0.6: likely a new person. Ask, then save_person (no
         person_id) and link — or leave it pending if the user says they'll explain
         later.
+    Whenever you link, also keep that person's profile current: if the entry
+    revealed a durable KEY FACT about them (a relationship, employment, school,
+    birthday, where they live, a major life event), fold it into their summary
+    (read-before-write via get_person_history) — see link_mentions. Skip transient
+    details; the summary is a profile, not a log.
 
     Args:
         body: The cleaned, structured journal entry.
@@ -820,6 +830,17 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
 @mcp.tool()
 def link_mentions(links: list[dict]) -> dict:
     """Resolve pending mentions to people.
+
+    KEEP THE PROFILE CURRENT. Whenever you link a mention, glance at that person's
+    summary and decide whether this entry revealed a durable KEY FACT about them
+    worth recording — a key relationship (partner/spouse, parents, kids, siblings,
+    by name), employment/role, school, birthday or other fixed date, where they
+    live, a major life event. If so and the summary doesn't already capture it, read
+    the full summary with get_person_history (read-before-write) and fold it in via
+    save_person. Skip passing or transient details (a mood, a one-off plan) — the
+    summary is a compact profile of stable facts, not a diary. This is the only way
+    the profiles (and the relationships other lookups rely on) stay fresh — nothing
+    updates them automatically.
 
     Args:
         links: list of {"mention_id": int, "person_id": int, "learn_alias": bool}.
