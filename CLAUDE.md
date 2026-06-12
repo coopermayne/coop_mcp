@@ -188,12 +188,15 @@ working.
 ## Data model (tables)
 
 - `people` — entities. `canonical_name`, `role` (the human disambiguator), `notes`,
-  `summary` (rolling profile for context — and, since there is no relationship graph,
-  the home for a person's immediate relationships: their parents/partner/kids/siblings
-  recorded BY NAME, so the model can later resolve a relational or collective reference
-  like "her parents" / "his brother" and expand it to the right people. `get_briefing`
-  surfaces a short preview; `get_person_history` returns the FULL summary for
-  read-before-write, same as `contact`), `contact` — a free-form JSON blob holding
+  `summary` (rolling profile for context — the durable KEY FACTS about a person:
+  relationships (parents/partner/kids/siblings, recorded BY NAME, since there is no
+  relationship graph — so this is the only place they live, letting the model resolve
+  "her parents" / "his brother" and expand it to the right people), employment,
+  school, birthday, where they live, major life events. The model keeps it current
+  AT LINK TIME — whenever it links a mention it folds in any new key fact the entry
+  revealed (read-before-write); nothing regenerates summaries automatically.
+  `get_briefing` surfaces a short preview; `get_person_history` returns the FULL
+  summary for read-before-write, same as `contact`), `contact` — a free-form JSON blob holding
   multi-valued contact info (emails, phones, addresses, websites, …), written via
   `update_contact` with a shallow per-top-level-key merge (so adding phones never touches
   addresses; lists are replaced wholesale, so the model READS via `get_person_history`
