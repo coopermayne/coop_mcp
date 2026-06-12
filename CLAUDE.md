@@ -46,12 +46,14 @@ There is no exercise-selection or progression logic in the server either.
 
 - **People, not names.** A reference resolves to a person *entity* (`people`), not a
   string. One person has many surface forms (`aliases`); one string can mean several
-  people. Never normalize names in text — resolve mentions to entities. A *collective*
-  ("my parents", "the kids") is several entities, not one: the model expands it into one
-  mention per person at capture, so each links independently and `get_person_history`
-  stays exact for each member. This is a pure contract decision (docstring + server
-  `instructions`) — no multi-person mention row, no relationship graph; the `mentions`
-  table stays one-row-one-person.
+  people. Never normalize names in text — resolve mentions to entities. A *group*
+  reference ("my parents", "the kids") is NOT its own mention: the bare group word can't
+  resolve to one person, so at capture the model passes the specific people it can
+  identify by name instead (leaning on each person's relationships in their `summary` —
+  e.g. it knows Robin's parents are Karl and Nina), and just omits/asks when it can't
+  tell who they are. This is a pure contract decision (docstring + server
+  `instructions`) — no multi-person mention row, no relationship graph, no collective-
+  expansion machinery; the `mentions` table stays one-row-one-person.
 - **Capture never blocks.** `add_journal_entry` always saves, even if every mention is
   ambiguous. Unresolved mentions sit in the queue (`status='pending'`) for later.
 - **One note per topic.** A single conversation often spans several unrelated threads
@@ -191,7 +193,7 @@ working.
   `summary` (rolling profile for context — the durable KEY FACTS about a person:
   relationships (parents/partner/kids/siblings, recorded BY NAME, since there is no
   relationship graph — so this is the only place they live, letting the model resolve
-  "her parents" / "his brother" and expand it to the right people), employment,
+  "her parents" / "his brother" to the right people), employment,
   school, birthday, where they live, major life events. The model keeps it current
   AT LINK TIME — whenever it links a mention it folds in any new key fact the entry
   revealed (read-before-write); nothing regenerates summaries automatically.
@@ -371,8 +373,8 @@ origin — fine when there's no OAuth, so the collision is moot.
 
 Typed person-to-person relationship graph (relationships are kept as free text in a
 person's `summary` instead — see the `people` row above; the model reads them from
-the briefing/`get_person_history` to expand relational/collective references, with no
-structured edges to traverse or keep in sync); vCard import/export (would map onto the
+the briefing/`get_person_history` to resolve relational references like "her parents"
+to the right people, with no structured edges to traverse or keep in sync); vCard import/export (would map onto the
 `contact` blob); Google Contacts sync; automated `summary` regeneration. See README
 "Notes / next steps". (Contact info IS multi-valued now — the free-form `contact` JSON
 blob, edited via `update_contact`.)
