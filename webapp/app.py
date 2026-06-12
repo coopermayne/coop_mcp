@@ -839,8 +839,8 @@ async def pending(request: Request):
 
 @app.get("/mention/people-search")
 async def mention_people_search(request: Request, q: str = ""):
-    """People picker for the resolver — link to / expand into someone who isn't a
-    candidate. Returns a compact [{person_id, name, role}] list (most-recent first)."""
+    """People picker for the resolver — link to someone who isn't a candidate.
+    Returns a compact [{person_id, name, role}] list (most-recent first)."""
     from fastapi.responses import JSONResponse
     res = server.list_people(query=q.strip() or None)
     people = [{"person_id": p["person_id"], "name": p["name"], "role": p["role"]}
@@ -850,12 +850,12 @@ async def mention_people_search(request: Request, q: str = ""):
 
 @app.post("/mention/{mention_id}/resolve")
 async def mention_resolve(request: Request, mention_id: int):
-    """Pin a pending mention to one person, or expand a collective into several. Body:
-    {person_ids: [int, ...], learn_alias?: bool}. Writes through resolve_mention_web."""
+    """Pin a pending mention to one person. Body: {person_id: int, learn_alias?: bool}.
+    Writes through resolve_mention_web."""
     from fastapi.responses import JSONResponse
     body = await request.json()
-    ids = body.get("person_ids") or []
-    res = server.resolve_mention_web(mention_id, ids, learn_alias=bool(body.get("learn_alias")))
+    pid = body.get("person_id")
+    res = server.resolve_mention_web(mention_id, pid, learn_alias=bool(body.get("learn_alias")))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 
@@ -873,7 +873,7 @@ async def mention_new_person(request: Request, mention_id: int):
                                  role=(body.get("role") or "").strip() or None)
     if isinstance(created, dict) and created.get("error"):
         return JSONResponse(created, status_code=400)
-    res = server.resolve_mention_web(mention_id, [created["person_id"]],
+    res = server.resolve_mention_web(mention_id, created["person_id"],
                                      learn_alias=bool(body.get("learn_alias")))
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
@@ -882,7 +882,7 @@ async def mention_new_person(request: Request, mention_id: int):
 
 @app.post("/mention/{mention_id}/dismiss")
 async def mention_dismiss(request: Request, mention_id: int):
-    """Delete a stray mention (a leftover collective word, noise). dismiss_mention_web."""
+    """Delete a stray mention (a group word, or noise). dismiss_mention_web."""
     from fastapi.responses import JSONResponse
     res = server.dismiss_mention_web(mention_id)
     code = 400 if isinstance(res, dict) and res.get("error") else 200
