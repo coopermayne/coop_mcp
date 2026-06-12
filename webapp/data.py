@@ -169,29 +169,34 @@ def entry_with_people(entry_id: int):
         return None
     with server.db() as conn:
         rows = conn.execute(
-            """SELECT m.surface_form, m.status, p.id AS pid, p.canonical_name, p.role
+            """SELECT m.id, m.surface_form, m.status, p.id AS pid, p.canonical_name, p.role
                FROM mentions m LEFT JOIN people p ON p.id = m.person_id
                WHERE m.entry_id = ? ORDER BY m.id""",
             (entry_id,),
         ).fetchall()
-    e["mentions"] = [
-        {
-            "surface_form": r["surface_form"],
-            "status": r["status"],
-            "person_id": r["pid"],
-            "name": r["canonical_name"],
-            "role": r["role"],
-        }
-        for r in rows
-    ]
+        e["mentions"] = [
+            {
+                "mention_id": r["id"],
+                "surface_form": r["surface_form"],
+                "status": r["status"],
+                "person_id": r["pid"],
+                "name": r["canonical_name"],
+                "role": r["role"],
+                # Candidate matches so the inline resolver can offer them (pending only).
+                "candidates": (server.find_candidates(conn, r["surface_form"])
+                               if r["pid"] is None else []),
+            }
+            for r in rows
+        ]
     return e
 
 
 def pending_mentions(limit: int = 200) -> list:
     """The resolution queue, enriched for the web view: each pending mention with
     its surface form, context snippet, entry_date, entry_id (so you can jump to
-    the entry), and the same candidate matches `list_pending_mentions` returns —
-    this UI is read-only, so resolution still happens in conversation with Claude.
+    the entry), and the same candidate matches `list_pending_mentions` returns.
+    The page's inline resolver can pin these to people (link/new/expand/dismiss)
+    via the /mention/* endpoints; chat with Claude still resolves them too.
     """
     out = server.list_pending_mentions(limit=limit)["pending"]
     with server.db() as conn:
