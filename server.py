@@ -95,9 +95,11 @@ matches — the judgment (which person a mention means) is yours.
 
 Three rules: capture never blocks — always save, leave ambiguous mentions pending
 for later; resolve mentions to person entities, don't normalize names in text (and
-expand a plural like "my parents" into one mention per person — never a single one);
-and one note per topic — split unrelated threads from the same conversation into
-separate entries so their people don't cross-contaminate later lookups.
+expand a plural like "my parents" into one mention per person — never a single one,
+and never ALSO keep the collective word "parents" itself as a mention: emit only the
+per-person forms); and one note per topic — split unrelated threads from the same
+conversation into separate entries so their people don't cross-contaminate later
+lookups.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
 on Pacific time. get_briefing returns `now` (current Pacific date/time); anchor
@@ -755,11 +757,14 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     parents", "the kids", "the in-laws", "Hallie's folks" — so EXPAND it into one
     surface form per person it covers, using who you know from get_briefing /
     context (e.g. "my parents" -> ["Mom", "Dad"], which then link to both people).
-    Never collapse a group down to a single person. If you only know some of the
-    members, pass the ones you know and ask about the rest rather than dropping
-    them — capture still never blocks. The reference is relative to the speaker, so
-    use the snippet to tell whose: "my parents" and "Hallie's parents" are
-    different pairs; expand each to the right people.
+    Never collapse a group down to a single person. Emit ONLY the per-person surface
+    forms — do NOT also include the collective word itself ("parents", "the kids") as
+    its own mention: a plural word can't resolve to a single person, so it would sit
+    pending forever as dead weight. If you only know some of the members, pass the
+    ones you know and ask about the rest rather than dropping them — capture still
+    never blocks. The reference is relative to the speaker, so use the snippet to tell
+    whose: "my parents" and "Hallie's parents" are different pairs; expand each to the
+    right people.
 
     Resolution guidance for the model after this returns (each expanded surface
     form resolves independently):
@@ -842,6 +847,92 @@ def link_mentions(links: list[dict]) -> dict:
     if skipped:
         out["skipped"] = skipped
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Website-only mention resolution (NOT MCP tools — like create_exercise /
+# set_archived, these are reachable only by the authenticated user through the
+# webapp, never by the journal connector). Claude resolves mentions in chat via
+# link_mentions / save_person; these back the browse pages' inline resolver so the
+# user can also pin people straight from the pending queue or an entry.
+# --------------------------------------------------------------------------- #
+
+def resolve_mention_web(mention_id: int, person_ids: list[int],
+                        learn_alias: bool = False) -> dict:
+    """Resolve a pending mention to ONE person, or EXPAND a collective into SEVERAL.
+
+    One id: pin this mention row to that person (status='resolved'); learn_alias
+    stores the surface form as an alias so it auto-matches next time. Several ids
+    (a collective like "parents" the model left whole): for each person not already
+    mentioned on the entry, create a resolved mention row, then DELETE the original
+    collective row — turning it into the per-person mentions it always should have
+    been. Aliases are never learned on an expansion (the collective word isn't any
+    one person's name). Website-only; the catalog of who exists stays the model's to
+    grow via save_person."""
+    person_ids = [int(p) for p in (person_ids or [])]
+    if not person_ids:
+        return {"error": "no person selected"}
+    with db() as conn:
+        m = conn.execute(
+            "SELECT id, entry_id, surface_form, context_snippet FROM mentions WHERE id=?",
+            (mention_id,),
+        ).fetchone()
+        if not m:
+            return {"error": "no such mention"}
+        for pid in person_ids:
+            if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
+                return {"error": f"no person with id {pid}"}
+
+        if len(person_ids) == 1:
+            pid = person_ids[0]
+            conn.execute(
+                "UPDATE mentions SET person_id=?, status='resolved' WHERE id=?",
+                (pid, mention_id),
+            )
+            if learn_alias:
+                conn.execute(
+                    """INSERT OR IGNORE INTO aliases(person_id, surface_form,
+                       phonetic_key, source) VALUES (?,?,?, 'learned')""",
+                    (pid, m["surface_form"], phonetic(m["surface_form"])),
+                )
+            return {"ok": True, "entry_id": m["entry_id"], "person_ids": person_ids}
+
+        # Collective expansion: one resolved mention per member, skipping people
+        # already mentioned on this entry (e.g. Jeff/Jody already captured), then
+        # drop the leftover collective row.
+        already = {
+            r["person_id"] for r in conn.execute(
+                "SELECT person_id FROM mentions WHERE entry_id=? AND person_id IS NOT NULL",
+                (m["entry_id"],),
+            )
+        }
+        created = []
+        for pid in person_ids:
+            if pid in already:
+                continue
+            name = conn.execute(
+                "SELECT canonical_name FROM people WHERE id=?", (pid,)
+            ).fetchone()["canonical_name"]
+            conn.execute(
+                """INSERT INTO mentions(entry_id, surface_form, context_snippet,
+                   person_id, status, created_at) VALUES (?,?,?,?, 'resolved', ?)""",
+                (m["entry_id"], name, m["context_snippet"], pid, now()),
+            )
+            created.append(pid)
+        conn.execute("DELETE FROM mentions WHERE id=?", (mention_id,))
+        return {"ok": True, "entry_id": m["entry_id"], "person_ids": person_ids,
+                "created": created}
+
+
+def dismiss_mention_web(mention_id: int) -> dict:
+    """Delete a stray mention — the inline resolver's Dismiss control. The usual case
+    is a leftover collective word ("parents") whose members are already captured as
+    their own mentions, so the row is pure noise. Website-only; not an MCP tool."""
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM mentions WHERE id=?", (mention_id,)).fetchone():
+            return {"error": "no such mention"}
+        conn.execute("DELETE FROM mentions WHERE id=?", (mention_id,))
+    return {"ok": True}
 
 
 @mcp.tool()

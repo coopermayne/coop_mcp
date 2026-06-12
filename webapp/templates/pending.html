@@ -11,8 +11,9 @@
 </div>
 
 <p class="text-sm text-gray-500 mb-8 leading-relaxed">
-  Mentions captured but not yet pinned to a person. Resolution happens in conversation
-  with Claude — this page just makes the queue visible so you know what's waiting.
+  Mentions captured but not yet pinned to a person. Hit <span class="font-medium">Resolve</span>
+  to link one to a person, add a new person, expand a collective ("parents") into the people
+  it means, or dismiss a stray — or just resolve it in conversation with Claude.
 </p>
 
 {% if items %}
@@ -24,9 +25,13 @@
         <span class="text-sm font-medium">{{ p.surface_form }}</span>
         {% if p.entry_date %}<span class="text-[10px] uppercase tracking-widest text-gray-400 ml-2 tabular-nums">{{ p.entry_date | short_date }}</span>{% endif %}
       </div>
-      {% if p.entry_id %}
-      <a href="{{ base }}/entry/{{ p.entry_id }}" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors shrink-0">Entry ›</a>
-      {% endif %}
+      <div class="flex items-baseline gap-3 shrink-0">
+        <button type="button" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors"
+                data-mention='{{ {"id": p.mention_id, "surface": p.surface_form, "candidates": p.candidates} | tojson }}'>Resolve</button>
+        {% if p.entry_id %}
+        <a href="{{ base }}/entry/{{ p.entry_id }}" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Entry ›</a>
+        {% endif %}
+      </div>
     </div>
     {% if p.context %}
     <p class="text-sm text-gray-600 leading-relaxed italic mb-3">"{{ p.context }}"</p>
@@ -52,4 +57,8 @@
 <p class="text-sm text-gray-400">Nothing pending. Queue's clean.</p>
 {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ base }}/static/mentions.js" defer></script>
 {% endblock %}
