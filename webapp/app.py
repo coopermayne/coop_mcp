@@ -1298,6 +1298,26 @@ async def chat_reset(request: Request, agent: str):
     return JSONResponse({"status": "ok"})
 
 
+@app.post("/chat/{agent}/history")
+async def chat_history(request: Request, agent: str):
+    """Replay the still-active server-side thread so a reload shows it's a
+    continuing conversation (the transcript isn't kept in the browser)."""
+    from fastapi.responses import JSONResponse
+    if not chat.ENABLED or not chat.is_agent(agent):
+        return JSONResponse({"turns": []})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    turns = chat.history(agent, _chat_id(request), context=_chat_context(body))
+    base = base_path(request)
+    for t in turns:  # prefix tool-chip links with the mount path, like /send does
+        for c in t.get("chips", []):
+            if c.get("href"):
+                c["href"] = base + c["href"]
+    return JSONResponse({"turns": turns})
+
+
 def _chat_context(body: dict):
     """Optional per-page chat context from the request body. The profile-page panel
     sends `person_id`; we resolve it server-side to a person-pinned context (None if

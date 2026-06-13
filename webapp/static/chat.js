@@ -223,6 +223,47 @@
       });
     }
 
+    // Replay any still-active server-side thread for this session so a reload shows
+    // a continuing conversation instead of a blank panel (the transcript lives on
+    // the server, keyed by the session cookie — not in the browser). Runs once on
+    // init; a new Pacific day returns an empty thread (the server rolls it over).
+    function renderTurn(turn) {
+      if (turn.role === 'user') {
+        bubble('user').textContent = turn.text || '';
+        return;
+      }
+      var container = bubble('assistant');
+      (turn.chips || []).forEach(function (ch) { container.appendChild(chip(ch)); });
+      if (turn.text) {
+        var p = assistantText(container);
+        p._raw = turn.text;
+        renderMd(p);
+      }
+    }
+
+    async function loadHistory() {
+      var data;
+      try {
+        var res = await fetch(endpoint + '/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(extra),
+        });
+        if (!res.ok) return;
+        data = await res.json();
+      } catch (e) { return; }
+      var turns = (data && data.turns) || [];
+      if (!turns.length) return;
+      if (seed) { seed.remove(); seed = null; }
+      var note = document.createElement('p');
+      note.className = 'text-[11px] uppercase tracking-widest text-gray-400 text-center';
+      note.textContent = 'Continuing your conversation — “New” to start fresh';
+      log.appendChild(note);
+      turns.forEach(renderTurn);
+      scrollDown();
+    }
+    loadHistory();
+
     // Expose a small handle so the host page can drive the chat (e.g. the trainer
     // plan card's "Replace" action sends a prefilled request to the AI).
     return { send: send };
