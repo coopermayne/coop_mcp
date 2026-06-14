@@ -310,6 +310,40 @@ _client = None
 # In-memory conversation store, keyed by (agent, session chat id). Each value is
 # the Anthropic `messages` list (incl. tool_use/tool_result blocks).
 _CONVERSATIONS: dict[tuple, list] = {}
+# The Pacific date each conversation was last active on. A session id lives in the
+# (long-lived) signed cookie, so a thread accumulates across days; when a new day's
+# turn arrives we drop the stale transcript so day-old dates baked into the history
+# can't pull "today" back to the previous day. See `_maybe_rollover`.
+_CONV_DATE: dict[tuple, str] = {}
+
+
+def _convo_key(agent: str, session_id: str, context: dict | None) -> tuple:
+    return (agent, session_id, context["key"]) if context else (agent, session_id)
+
+
+def _stamped(messages: list) -> list:
+    """The transcript as sent to the model, with the latest user turn prefixed by
+    today's Pacific date. The stored history stays clean (no prefix) — this only
+    pins the freshest concrete date right next to the user's words, a cheap hedge
+    against the model anchoring to an older date elsewhere in the context. Belt to
+    the system anchor's suspenders."""
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        m = out[i]
+        if m["role"] == "user" and isinstance(m["content"], str):
+            out[i] = {**m, "content": f"[Sent on {server.today()} (Pacific)] {m['content']}"}
+            break
+    return out
+
+
+def _maybe_rollover(key: tuple) -> None:
+    """Start a fresh thread when the Pacific date has advanced since this
+    conversation was last touched, so a new day never inherits the old day's dates
+    from the transcript. Same-day reloads keep the thread intact."""
+    cur = server.today()
+    if _CONV_DATE.get(key) not in (None, cur):
+        _CONVERSATIONS.pop(key, None)
+    _CONV_DATE[key] = cur
 
 # Write tools mutate the DB; everything else is read-only retrieval. Used only to
 # label the tool chips the UI shows, never to gate execution.
@@ -379,9 +413,14 @@ def _system_blocks(agent: str, context: dict | None = None) -> list[dict]:
         {
             "type": "text",
             "text": (
-                f"Current moment — date {clock['date']} ({clock['weekday']}), "
-                f"time {clock['time']} {clock['timezone']}. Anchor 'today'/"
-                "'yesterday' to this before defaulting or computing any date."
+                f"Current moment — {clock['weekday']} {clock['date']}, "
+                f"time {clock['time']} {clock['timezone']}. For dates use these EXACT "
+                f"strings: today={clock['date']}, yesterday={clock['yesterday']}, "
+                f"tomorrow={clock['tomorrow']}. Do NOT compute or shift dates yourself; "
+                "resolve 'today'/'yesterday'/'tomorrow' and any bare day reference "
+                "against these before defaulting or saving. This conversation may span "
+                "several days — trust this line for the current date, not dates that "
+                "appear earlier in the transcript."
             ),
         },
     ]
@@ -507,7 +546,8 @@ async def run_turn(agent: str, session_id: str, user_text: str, context: dict | 
         return
 
     tools, dispatch = _TOOLS[agent], _DISPATCH[agent]
-    convo_key = (agent, session_id, context["key"]) if context else (agent, session_id)
+    convo_key = _convo_key(agent, session_id, context)
+    _maybe_rollover(convo_key)  # new Pacific day → drop the stale transcript
     messages = _CONVERSATIONS.setdefault(convo_key, [])
     messages.append({"role": "user", "content": user_text})
 
@@ -518,7 +558,7 @@ async def run_turn(agent: str, session_id: str, user_text: str, context: dict | 
                 max_tokens=MAX_TOKENS,
                 system=_system_blocks(agent, context),
                 tools=tools,
-                messages=messages,
+                messages=_stamped(messages),
             ) as stream:
                 async for event in stream:
                     if (event.type == "content_block_delta"
@@ -563,5 +603,55 @@ async def run_turn(agent: str, session_id: str, user_text: str, context: dict | 
 
 
 def reset(agent: str, session_id: str, context: dict | None = None) -> None:
-    key = (agent, session_id, context["key"]) if context else (agent, session_id)
+    key = _convo_key(agent, session_id, context)
     _CONVERSATIONS.pop(key, None)
+    _CONV_DATE.pop(key, None)
+
+
+def _bget(blk, k, default=None):
+    """Read a field off a content block that may be an SDK object (assistant blocks
+    from `final.content`) or a plain dict (the tool_result blocks we build)."""
+    return blk.get(k, default) if isinstance(blk, dict) else getattr(blk, k, default)
+
+
+def history(agent: str, session_id: str, context: dict | None = None) -> list[dict]:
+    """The stored transcript for a session, rendered into UI-ready turns so a page
+    reload can replay the still-active thread (the history lives server-side in
+    `_CONVERSATIONS`, not in the browser). Applies the same new-day rollover as a
+    send, so a stale day-old thread comes back empty rather than flashing up only to
+    be cleared on the next message. Each turn is:
+      {"role": "user", "text": ...}
+      {"role": "assistant", "text": ..., "chips": [{summary, kind, href}, ...]}
+    Tool chips are reconstructed by pairing each tool_use with its tool_result."""
+    key = _convo_key(agent, session_id, context)
+    _maybe_rollover(key)
+    msgs = _CONVERSATIONS.get(key, [])
+
+    # Index every tool_result by the tool_use id it answers, so a chip can carry the
+    # same link/label it had live (e.g. add_journal_entry → /entry/<id>).
+    results: dict[str, dict] = {}
+    for m in msgs:
+        if m["role"] == "user" and isinstance(m["content"], list):
+            for blk in m["content"]:
+                if _bget(blk, "type") == "tool_result":
+                    try:
+                        results[_bget(blk, "tool_use_id")] = json.loads(_bget(blk, "content") or "{}")
+                    except Exception:
+                        results[_bget(blk, "tool_use_id")] = {}
+
+    turns: list[dict] = []
+    for m in msgs:
+        if m["role"] == "user" and isinstance(m["content"], str):
+            turns.append({"role": "user", "text": m["content"]})
+        elif m["role"] == "assistant":
+            text_parts, chips = [], []
+            for blk in m["content"]:
+                t = _bget(blk, "type")
+                if t == "text":
+                    text_parts.append(_bget(blk, "text", ""))
+                elif t == "tool_use":
+                    c = _tool_chip(_bget(blk, "name"), _bget(blk, "input") or {},
+                                   results.get(_bget(blk, "id"), {}))
+                    chips.append({"summary": c["summary"], "kind": c["kind"], "href": c["href"]})
+            turns.append({"role": "assistant", "text": "".join(text_parts), "chips": chips})
+    return turns
