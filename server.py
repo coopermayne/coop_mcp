@@ -855,18 +855,32 @@ def link_mentions(links: list[dict]) -> dict:
     updates them automatically.
 
     Args:
-        links: list of {"mention_id": int, "person_id": int, "learn_alias": bool}.
+        links: list of {"mention_id": int, "person_id": int, "learn_alias": bool,
+            "dismiss": bool}.
             Set learn_alias True to store the mention's surface form as an alias on
             that person, so the same word (including a recurring transcription
             error) auto-matches next time.
+            Set "dismiss": True (instead of a person_id) to DROP a mention that
+            shouldn't resolve to anyone — a bare group word that slipped in, or
+            transcription noise. The mention leaves the pending queue for good;
+            the entry itself is untouched.
     """
-    linked, skipped = [], []
+    linked, dismissed, skipped = [], [], []
     with db() as conn:
         for ln in links:
-            mid, pid = ln["mention_id"], ln["person_id"]
+            mid = ln["mention_id"]
             m = conn.execute("SELECT surface_form FROM mentions WHERE id=?", (mid,)).fetchone()
             if not m:
                 skipped.append({"mention_id": mid, "reason": "no such mention"})
+                continue
+            if ln.get("dismiss"):
+                conn.execute("DELETE FROM mentions WHERE id=?", (mid,))
+                dismissed.append(mid)
+                continue
+            pid = ln.get("person_id")
+            if pid is None:
+                skipped.append({"mention_id": mid,
+                                "reason": "pass a person_id to link, or dismiss=True to drop"})
                 continue
             if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
                 skipped.append({"mention_id": mid, "reason": f"no person with id {pid}"})
@@ -883,6 +897,8 @@ def link_mentions(links: list[dict]) -> dict:
                 )
             linked.append(mid)
     out = {"linked": linked}
+    if dismissed:
+        out["dismissed"] = dismissed
     if skipped:
         out["skipped"] = skipped
     return out
@@ -944,6 +960,7 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
                 role: Optional[str] = None, notes: Optional[str] = None,
                 summary: Optional[str] = None,
                 aliases: Optional[list[str]] = None,
+                remove_aliases: Optional[list[str]] = None,
                 groups: Optional[list[str]] = None) -> dict:
     """Create or update a person (an entity) — the one write tool for people.
 
@@ -960,9 +977,13 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
 
     `aliases` are surface forms (incl. recurring transcription errors): on create they
     seed the person, on update they are ADDED — so this is also how you attach a new
-    alias to someone later. `groups` are circle names like ["family"], created if new;
-    passing `groups` REPLACES the person's circle membership. Returns the person_id and
-    whether it was newly created.
+    alias to someone later. `remove_aliases` is the inverse — pass surface forms to
+    DETACH them from this person (case-insensitive match), e.g. to undo an alias that
+    was learned or attached by mistake so it no longer auto-resolves to them. (The
+    canonical_name itself isn't an alias row and can't be removed this way — change it
+    by passing a new `canonical_name`.) `groups` are circle names like ["family"],
+    created if new; passing `groups` REPLACES the person's circle membership. Returns
+    the person_id and whether it was newly created.
 
     Contact details (emails, phones, addresses, websites, …) live in a separate
     multi-valued blob — write them with `update_contact`, not here."""
@@ -993,14 +1014,26 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
                    source) VALUES (?,?,?, 'manual')""",
                 (person_id, a, phonetic(a)),
             )
+        removed_aliases = []
+        for a in (remove_aliases or []):
+            cur = conn.execute(
+                """DELETE FROM aliases
+                   WHERE person_id=? AND lower(surface_form)=lower(?)""",
+                (person_id, a),
+            )
+            if cur.rowcount:
+                removed_aliases.append(a)
         if groups is not None:
             conn.execute("DELETE FROM person_groups WHERE person_id=?", (person_id,))
             _set_groups(conn, person_id, groups)
     if created:
         return {"person_id": person_id, "created": True}
-    return {"person_id": person_id, "created": False,
-            "updated": updated + (["aliases"] if aliases else [])
-                       + (["groups"] if groups is not None else [])}
+    out = {"person_id": person_id, "created": False,
+           "updated": updated + (["aliases"] if aliases else [])
+                      + (["groups"] if groups is not None else [])}
+    if removed_aliases:
+        out["removed_aliases"] = removed_aliases
+    return out
 
 
 @mcp.tool()
