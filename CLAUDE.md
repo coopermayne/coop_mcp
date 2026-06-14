@@ -78,9 +78,16 @@ There is no exercise-selection or progression logic in the server either.
   and every date default (`entry_date`, `drink_date`, `workout_date`) plus streak/recency
   math roll over at Pacific midnight, via `PACIFIC = ZoneInfo("America/Los_Angeles")` —
   never the server's UTC midnight. `created_at` stays UTC (an unambiguous storage
-  timestamp, not a user date). Both briefings return `now` (`current_clock()`) so the
-  model can anchor "today"/"yesterday" before defaulting or back-dating. `tzdata` is a
-  dependency so `zoneinfo` resolves on the slim Docker image.
+  timestamp, not a user date). Both briefings return `now` (`current_clock()`) — which
+  precomputes `date`/`yesterday`/`tomorrow` so the model uses those exact strings rather
+  than doing its own +/-1 arithmetic (an off-by-one source) — so it can anchor
+  "today"/"yesterday"/"tomorrow" before defaulting or back-dating. The webapp `/chat`
+  reinforces this: each turn carries a live Pacific anchor (same precomputed dates) as an
+  uncached system block, stamps the current user turn with today's date, and rolls a
+  thread over to a fresh transcript when the Pacific day advances (a chat session id lives
+  in the long-lived cookie, so a thread spans days — stale dates in the history must not
+  pull "today" back). `tzdata` is a dependency so `zoneinfo` resolves on the slim Docker
+  image.
 - **Tool docstrings are the model-facing contract.** Claude reads them to decide when to
   ask vs. link vs. queue (e.g. the score thresholds). If you change a tool's behavior,
   update its docstring in the same edit — it's not just documentation.

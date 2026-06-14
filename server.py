@@ -23,7 +23,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -113,8 +113,10 @@ save_person) — nothing updates summaries automatically. Lean on these summarie
 diary.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
-on Pacific time. get_briefing returns `now` (current Pacific date/time); anchor
-"today"/"yesterday" to it before defaulting or computing any date.
+on Pacific time. get_briefing returns `now` (current Pacific date/time) with
+`date`/`yesterday`/`tomorrow` precomputed: use those EXACT strings for "today"/
+"yesterday"/"tomorrow" rather than computing or shifting dates yourself, and resolve
+any bare day reference against them before defaulting or saving.
 
 Start a session with get_briefing to load people/journal context before acting.
 (Workouts/training live on a separate `trainer` MCP server.)""")
@@ -137,8 +139,10 @@ coaching judgment (next weight, what to program, what to rest, how to cue form) 
 yours.
 
 All dates here are Pacific (America/Los_Angeles). get_fitness_briefing returns `now`
-(current Pacific date/time); anchor "today"/"yesterday" to it before defaulting or
-computing any date.
+(current Pacific date/time) with `date`/`yesterday`/`tomorrow` precomputed: use those
+EXACT strings for "today"/"yesterday"/"tomorrow" rather than computing or shifting
+dates yourself, and resolve any bare day reference against them before defaulting or
+saving.
 
 Start a training session with get_fitness_briefing to load the profile (injuries,
 split, goals), per-muscle recency, recent sessions (with their notes), and the latest
@@ -626,10 +630,14 @@ def today() -> str:
 
 def current_clock() -> dict:
     """Current Pacific date/time, broken out for surfacing to the model so it
-    always knows what 'today'/'now' means before it defaults or computes dates."""
+    always knows what 'today'/'now' means before it defaults or computes dates.
+    `yesterday`/`tomorrow` are precomputed (the model should use these exact strings
+    rather than doing its own +/-1 day arithmetic, which is an off-by-one source)."""
     dt = datetime.now(PACIFIC)
     return {
         "date": dt.strftime("%Y-%m-%d"),
+        "yesterday": (dt - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "tomorrow": (dt + timedelta(days=1)).strftime("%Y-%m-%d"),
         "time": dt.strftime("%H:%M"),
         "weekday": dt.strftime("%A"),
         "timezone": "America/Los_Angeles (Pacific)",
