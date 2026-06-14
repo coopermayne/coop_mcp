@@ -45,6 +45,24 @@
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
     });
 
+    // Keep the panel within the on-screen (visual) viewport when the mobile
+    // software keyboard opens. The panel is `position: fixed` to the LAYOUT
+    // viewport (full height, anchored bottom), so without this, focusing the
+    // composer makes the browser scroll the header + transcript up behind the
+    // keyboard — only the input stays visible. We lift the panel's bottom edge
+    // to sit just above the keyboard so the whole panel stays in view, then
+    // clear it again when the keyboard closes (CSS `bottom-0` takes back over).
+    var vv = window.visualViewport;
+    if (vv) {
+      var fitToViewport = function () {
+        var kb = window.innerHeight - vv.height - vv.offsetTop;
+        root.style.bottom = kb > 0 ? kb + 'px' : '';
+        if (kb > 0) scrollDown();
+      };
+      vv.addEventListener('resize', fitToViewport);
+      vv.addEventListener('scroll', fitToViewport);
+    }
+
     function scrollDown() { log.scrollTop = log.scrollHeight; }
 
     function bubble(role) {
