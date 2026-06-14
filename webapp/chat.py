@@ -456,7 +456,10 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
         summary = f"Saved {nm}" if nm else "Saved a person"
     elif name == "link_mentions":
         href = "/journal"
-        summary = "Linked a mention to a person"
+        if r.get("dismissed") and not r.get("linked"):
+            summary = "Dismissed a mention"
+        else:
+            summary = "Linked a mention to a person"
     elif name == "merge_people":
         href = "/people"
         summary = "Merged two people"
