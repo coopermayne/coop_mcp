@@ -26,6 +26,20 @@
     return (+x).toString();
   }
 
+  // Difficulty is entered as Easy/Med/Hard but stored as RPE (1-10), the server's field.
+  // These are the canonical mappings; rpeToLabel buckets any RPE (e.g. one set via chat)
+  // to its nearest word for display + prefilling the buttons.
+  var DIFFICULTY = [{ key: 'Easy', rpe: 5 }, { key: 'Med', rpe: 7 }, { key: 'Hard', rpe: 9 }];
+  function rpeToLabel(rpe) {
+    if (rpe === null || rpe === undefined) return null;
+    var best = null, bestDist = Infinity;
+    DIFFICULTY.forEach(function (d) {
+      var dist = Math.abs(d.rpe - rpe);
+      if (dist < bestDist) { bestDist = dist; best = d.key; }
+    });
+    return best;
+  }
+
   function el(tag, cls, text) {
     var n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -60,7 +74,7 @@
       parts = cardio.join(' · ');
     }
     else parts = '—';
-    if (done && s.rpe != null) parts += '  @' + num(s.rpe);
+    if (done && s.rpe != null) parts += '  · ' + rpeToLabel(s.rpe);
     return parts;
   }
 
@@ -445,6 +459,95 @@
 
   // ── Set editor (log a pending set, or correct a done one) ───────────────────
 
+  // A plain labelled number field (reps).
+  function numField(label, value, step, min) {
+    var w = el('label', 'flex flex-col gap-1');
+    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', label));
+    var inp = el('input', 'w-20 border border-gray-200 rounded-[4px] px-2.5 py-1.5 text-sm focus:outline-none focus:border-black transition-colors');
+    inp.type = 'number'; inp.inputMode = 'decimal';
+    if (step != null) inp.step = step;
+    if (min != null) inp.min = min;
+    if (value != null) inp.value = num(value);
+    w.appendChild(inp);
+    return { wrap: w, input: inp };
+  }
+
+  // Nudge the weight input by a signed delta (weight itself can be negative, for assisted
+  // work). Rounds to kill float drift; an empty field counts as 0.
+  function nudgeWeight(inp, delta) {
+    var cur = parseFloat(inp.value);
+    if (isNaN(cur)) cur = 0;
+    inp.value = num(Math.round((cur + delta) * 100) / 100);
+    inp.focus();
+  }
+
+  function stepBtn(label, delta, inp) {
+    var b = el('button', 'shrink-0 w-9 h-9 flex items-center justify-center rounded-[4px] ' +
+      'border border-gray-200 text-xs text-gray-600 hover:border-black hover:text-black transition-colors',
+      label);
+    b.type = 'button';
+    b.addEventListener('click', function () { nudgeWeight(inp, delta); });
+    return b;
+  }
+
+  // Weight as a centered editable number flanked by graduated steppers — −5/−1/−.5 on the
+  // left, +.5/+1/+5 on the right — so a working weight is a few taps, not a keyboard entry,
+  // while the field itself stays editable for anything the buttons don't cover.
+  function weightField(value) {
+    var w = el('div', 'flex flex-col gap-1');
+    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'Weight'));
+    var row = el('div', 'flex items-center gap-1.5');
+    var inp = el('input', 'flex-1 min-w-0 text-center border border-gray-200 rounded-[4px] ' +
+      'px-2 py-1.5 text-sm focus:outline-none focus:border-black transition-colors');
+    inp.type = 'number'; inp.inputMode = 'decimal'; inp.step = 'any';
+    if (value != null) inp.value = num(value);
+    [['−5', -5], ['−1', -1], ['−.5', -0.5]].forEach(function (st) {
+      row.appendChild(stepBtn(st[0], st[1], inp));
+    });
+    row.appendChild(inp);
+    [['+.5', 0.5], ['+1', 1], ['+5', 5]].forEach(function (st) {
+      row.appendChild(stepBtn(st[0], st[1], inp));
+    });
+    w.appendChild(row);
+    return { wrap: w, input: inp };
+  }
+
+  // Difficulty as an Easy/Med/Hard toggle, mapped to RPE behind the scenes. Prefilled from
+  // the set's RPE (done) or the trainer's planned target_rpe (pending); tapping the active
+  // choice again clears it. getRpe() yields the stored number, or null when none is picked.
+  function difficultyField(initialRpe) {
+    var w = el('div', 'flex flex-col gap-1');
+    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'Difficulty'));
+    var row = el('div', 'flex gap-2');
+    var selected = rpeToLabel(initialRpe);
+    var BASE = 'flex-1 h-9 rounded-[4px] text-sm transition-colors ';
+    var ON = 'bg-black text-white';
+    var OFF = 'border border-gray-200 text-gray-500 hover:border-black hover:text-black';
+    var btns = [];
+    function paint() {
+      btns.forEach(function (o) { o.btn.className = BASE + (o.d.key === selected ? ON : OFF); });
+    }
+    DIFFICULTY.forEach(function (d) {
+      var b = el('button', '', d.key);
+      b.type = 'button';
+      b.addEventListener('click', function () {
+        selected = (selected === d.key) ? null : d.key;
+        paint();
+      });
+      btns.push({ btn: b, d: d });
+      row.appendChild(b);
+    });
+    paint();
+    w.appendChild(row);
+    return {
+      wrap: w,
+      getRpe: function () {
+        var hit = DIFFICULTY.filter(function (d) { return d.key === selected; })[0];
+        return hit ? hit.rpe : null;
+      },
+    };
+  }
+
   function openEditor(ex, s) {
     closePanels();
     var slot = root.querySelector('[data-editor-slot="' + ex.exercise_id + '"]');
@@ -458,38 +561,31 @@
     slot.innerHTML = '';
     var done = s.status === 'done';
 
-    var form = el('div', 'flex flex-wrap items-end gap-3 border-t border-gray-100 pt-3');
-    function field(label, value, step, min, max) {
-      var w = el('label', 'flex flex-col gap-1');
-      w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', label));
-      var inp = el('input', 'w-20 border border-gray-200 rounded-[4px] px-2.5 py-1.5 text-sm focus:outline-none focus:border-black transition-colors');
-      inp.type = 'number'; inp.inputMode = 'decimal';
-      if (step != null) inp.step = step;
-      if (min != null) inp.min = min;
-      if (max != null) inp.max = max;
-      if (value != null) inp.value = num(value);
-      w.appendChild(inp);
-      return { wrap: w, input: inp };
-    }
-    // Done sets prefill their actuals (you're correcting them); pending prefill targets.
-    // Weight is signed: negative = assistance (band/machine), 0 = bodyweight, positive = added.
-    var weight = field('Weight', done ? s.weight_lbs : s.target_weight_lbs, 'any', null, null);
-    var reps = field('Reps', done ? s.reps : s.target_reps, '1', 0, null);
-    var rpe = field('RPE', done ? s.rpe : null, '0.5', 1, 10);
-    rpe.input.placeholder = '1–10';
+    var form = el('div', 'flex flex-col gap-3 border-t border-gray-100 pt-3');
 
+    // Done sets prefill their actuals (you're correcting them); pending prefill targets —
+    // weight, reps, and the planned difficulty (target_rpe) the trainer set.
+    // Weight is signed: negative = assistance (band/machine), 0 = bodyweight, positive = added.
+    var weight = weightField(done ? s.weight_lbs : s.target_weight_lbs);
+    var reps = numField('Reps', done ? s.reps : s.target_reps, '1', 0);
+    var diff = difficultyField(done ? s.rpe : s.target_rpe);
+
+    var actions = el('div', 'flex items-center gap-3 pt-1');
     var save = el('button', 'h-[34px] px-3 bg-black text-white rounded-[4px] text-sm hover:bg-gray-800 transition-colors',
       done ? 'Save' : 'Log set');
     var cancel = el('button', 'h-[34px] px-3 text-sm text-gray-400 hover:text-black transition-colors', 'Cancel');
     cancel.addEventListener('click', function () { slot.innerHTML = ''; editingSetId = null; });
     save.addEventListener('click', function () {
-      if (done) saveSet(s.set_id, weight.input, reps.input, rpe.input, save);
-      else completeSet(s.set_id, weight.input, reps.input, rpe.input, save);
+      if (done) saveSet(s.set_id, weight.input, reps.input, diff, save);
+      else completeSet(s.set_id, weight.input, reps.input, diff, save);
     });
+    actions.appendChild(save);
+    actions.appendChild(cancel);
 
-    [weight, reps, rpe].forEach(function (f) { form.appendChild(f.wrap); });
-    form.appendChild(save);
-    form.appendChild(cancel);
+    form.appendChild(weight.wrap);
+    form.appendChild(reps.wrap);
+    form.appendChild(diff.wrap);
+    form.appendChild(actions);
     slot.appendChild(form);
     // For a logged set, blanking reps clears it — surface that gesture.
     if (done) {
@@ -503,10 +599,10 @@
     weight.input.focus();
   }
 
-  async function completeSet(setId, weightInp, repsInp, rpeInp, btn) {
+  async function completeSet(setId, weightInp, repsInp, diff, btn) {
     btn.disabled = true;
     var r = await postJSON(base + '/trainer/set/' + setId + '/complete', {
-      weight_lbs: weightInp.value, reps: repsInp.value, rpe: rpeInp.value,
+      weight_lbs: weightInp.value, reps: repsInp.value, rpe: diff.getRpe(),
     });
     if (!r.ok || (r.data && r.data.error)) {
       btn.disabled = false; btn.textContent = 'Error';
@@ -520,10 +616,10 @@
         p.bodyweight == null && pendingBodyweight.trim() === '') nudgeWeighIn();
   }
 
-  async function saveSet(setId, weightInp, repsInp, rpeInp, btn) {
+  async function saveSet(setId, weightInp, repsInp, diff, btn) {
     btn.disabled = true;
     var r = await postJSON(base + '/trainer/set/' + setId + '/update', {
-      weight_lbs: weightInp.value, reps: repsInp.value, rpe: rpeInp.value,
+      weight_lbs: weightInp.value, reps: repsInp.value, rpe: diff.getRpe(),
     });
     if (!r.ok || (r.data && r.data.error)) {
       btn.disabled = false; btn.textContent = 'Error';

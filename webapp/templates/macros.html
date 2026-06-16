@@ -26,8 +26,17 @@
 <div class="group flex gap-2 sm:-ml-5 sm:gap-3">
   <a href="{{ base }}/entry/{{ e.entry_id }}" class="entry-open shrink-0 pt-0.5 text-sm leading-relaxed"
      title="Open entry" aria-label="Open this entry">›</a>
-  <div data-md class="flex-1 chat-md text-[15px] text-gray-800 leading-relaxed">{{ e.body_md }}</div>
+  <div class="flex-1">
+    {% if e.kind == 'thought' %}{{ thought_badge() }}{% endif %}
+    <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed">{{ e.body_md }}</div>
+  </div>
 </div>
+{% endmacro %}
+
+{% macro thought_badge() %}
+{# Marks an entry as a personal reflection (kind='thought') rather than an
+   interaction/observation log. Subtle: same uppercase-micro style as the dates. #}
+<span class="inline-block mb-1 text-[10px] uppercase tracking-widest text-gray-400 border border-gray-200 rounded-[3px] px-1.5 py-0.5">Thought</span>
 {% endmacro %}
 
 {% macro day_block(day) %}
@@ -121,9 +130,12 @@
           if (history.replaceState) history.replaceState(null, '', '#' + id);
         } else if (root.hasAttribute('data-day-load')) {
           // Day isn't on the page yet — load history back to it, then the anchor lands.
+          // Preserve the active feed filter (?kind=) so the calendar stays in-view.
           e.preventDefault();
           var d = id.replace(/^day-/, '');
-          window.location = '?since=' + encodeURIComponent(d) + '#' + id;
+          var k = new URLSearchParams(window.location.search).get('kind');
+          window.location = '?since=' + encodeURIComponent(d)
+            + (k ? '&kind=' + encodeURIComponent(k) : '') + '#' + id;
         }
       }
     });

@@ -481,6 +481,7 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `get_briefing` | One-call session context (roster, groups, pending, recent) |
 | `get_entry` | Fetch one entry, including the verbatim `raw_body` on demand |
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body`; pass `mentions` to reconcile who it references (adds/removes mention rows, keeps resolved links) |
+| `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
 | `search_entries` | Full-text search for topics/events |
 | `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
 | `get_drink_summary` | Daily totals + rolling stats and sober streak; `include_rows=True` adds individual rows with ids for editing |
