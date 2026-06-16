@@ -31,7 +31,8 @@ def list_entries(limit: int = 40, offset: int = 0, max_chars: int = 320) -> dict
     with server.db() as conn:
         rows = conn.execute(
             "SELECT id, entry_date, body FROM entries "
-            "ORDER BY entry_date DESC, id DESC LIMIT ? OFFSET ?",
+            "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC "
+            "LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
         total = conn.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"]
@@ -101,21 +102,31 @@ def attach_people(entries: list[dict]) -> list[dict]:
     return entries
 
 
-def all_entry_dates() -> list[str]:
+def all_entry_dates(kind: str | None = None) -> list[str]:
     """Every distinct entry_date in the journal, newest first — the full set the
     sidebar calendar marks, independent of how deep the feed is currently loaded.
-    Cheap: distinct dates only, no bodies."""
+    `kind` ("thought"/"log") narrows it to the dates that have a matching entry, so
+    the calendar tracks the active feed filter. Cheap: distinct dates only, no bodies."""
+    kw = ""
+    if kind == "thought":
+        kw = " WHERE kind = 'thought'"
+    elif kind == "log":
+        kw = " WHERE kind != 'thought'"
     with server.db() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT entry_date FROM entries ORDER BY entry_date DESC"
+            "SELECT DISTINCT entry_date FROM entries" + kw +
+            " ORDER BY entry_date DESC"
         ).fetchall()
     return [r["entry_date"] for r in rows]
 
 
-def list_days(limit_entries: int = 120, since: str | None = None) -> dict:
+def list_days(limit_entries: int = 120, since: str | None = None,
+              kind: str | None = None) -> dict:
     """Entries grouped into days, newest day first; within a day the entries read
-    top-to-bottom in the order they were recorded (so the day reads as one block of
-    prose split into per-topic paragraphs). Each entry carries its resolved people so
+    top-to-bottom in chronological order (`day_position`, set at capture and adjustable
+    via server.reorder_entries; legacy NULL-position entries fall back to insertion id
+    order), so the day reads as one block of prose split into per-topic paragraphs in the
+    sequence the events happened. Each entry carries its resolved people so
     the feed can link names inline. Bodies are returned in full — entries are now small
     per-topic notes, not the day's whole dump.
 
@@ -126,23 +137,40 @@ def list_days(limit_entries: int = 120, since: str | None = None) -> dict:
     and their `#day-…` anchors keep working). Returns `oldest` (oldest day loaded),
     `has_more` (older entries exist below it), and `next_since` (the cursor the "load
     older" button requests to pull roughly `limit_entries` more — a date strictly older
-    than `oldest`, so re-loading also completes any day the default LIMIT split)."""
+    than `oldest`, so re-loading also completes any day the default LIMIT split)).
+
+    `kind` filters the feed: None/"all" = every entry; "thought" = only personal
+    reflections; "log" = everything EXCEPT reflections (interactions/observations).
+    The same predicate drives the paging/`has_more` math so "load older" and the
+    calendar stay consistent with the active view."""
+    # Build a reusable kind predicate so every query below filters identically.
+    kw = ""
+    if kind == "thought":
+        kw = " AND kind = 'thought'"
+    elif kind == "log":
+        kw = " AND kind != 'thought'"
     with server.db() as conn:
         if since:
             rows = conn.execute(
-                "SELECT id, entry_date, body FROM entries "
-                "WHERE entry_date >= ? ORDER BY entry_date DESC, id ASC",
+                "SELECT id, entry_date, body, kind FROM entries "
+                "WHERE entry_date >= ?" + kw +
+                " ORDER BY entry_date DESC, day_position IS NOT NULL, day_position ASC, id ASC",
                 (since,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, entry_date, body FROM entries "
-                "ORDER BY entry_date DESC, id ASC LIMIT ?",
+                "SELECT id, entry_date, body, kind FROM entries "
+                "WHERE 1=1" + kw +
+                " ORDER BY entry_date DESC, day_position IS NOT NULL, day_position ASC, id ASC "
+                "LIMIT ?",
                 (limit_entries,),
             ).fetchall()
-        total = conn.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"]
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM entries WHERE 1=1" + kw
+        ).fetchone()["n"]
         entries = [
-            {"entry_id": r["id"], "entry_date": r["entry_date"], "body": r["body"]}
+            {"entry_id": r["id"], "entry_date": r["entry_date"], "body": r["body"],
+             "kind": r["kind"]}
             for r in rows
         ]
         people = _people_for_entries(conn, [e["entry_id"] for e in entries])
@@ -150,16 +178,17 @@ def list_days(limit_entries: int = 120, since: str | None = None) -> dict:
         has_more, next_since = False, None
         if oldest:
             has_more = conn.execute(
-                "SELECT 1 FROM entries WHERE entry_date < ? LIMIT 1", (oldest,)
+                "SELECT 1 FROM entries WHERE entry_date < ?" + kw + " LIMIT 1",
+                (oldest,),
             ).fetchone() is not None
             if has_more:
                 row = conn.execute(
-                    "SELECT entry_date FROM entries WHERE entry_date < ? "
-                    "ORDER BY entry_date DESC, id ASC LIMIT 1 OFFSET ?",
+                    "SELECT entry_date FROM entries WHERE entry_date < ?" + kw +
+                    " ORDER BY entry_date DESC, id ASC LIMIT 1 OFFSET ?",
                     (oldest, limit_entries - 1),
                 ).fetchone()
                 next_since = row["entry_date"] if row else conn.execute(
-                    "SELECT MIN(entry_date) AS d FROM entries"
+                    "SELECT MIN(entry_date) AS d FROM entries WHERE 1=1" + kw
                 ).fetchone()["d"]
     days: list[dict] = []
     for e in entries:
