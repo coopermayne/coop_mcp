@@ -7,6 +7,7 @@
 
 <div class="mt-4 mb-8">
   <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | long_date }}</p>
+  {% if e.kind == 'thought' %}<div class="mt-2">{{ m.thought_badge() }}</div>{% endif %}
   <p class="text-sm text-gray-300 mt-1">Recorded {{ e.created_at[:10] | short_date }}</p>
 </div>
 
