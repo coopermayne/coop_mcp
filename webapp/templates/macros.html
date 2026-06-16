@@ -43,12 +43,19 @@
 </section>
 {% endmacro %}
 
-{% macro mini_calendar(months) %}
+{% macro mini_calendar(months, day_load=False) %}
 {# 7-col month grid. Cells with `has_entry` link to `#day-YYYY-MM-DD`; cells
    without are dimmed and inert. Today gets a faint ring. One month at a time;
    ‹ / › step through `months` (which is newest-first, so ‹ goes back in time).
-   The inline script wires the arrows; no framework needed. #}
-<div class="text-[11px] tabular-nums" data-mini-cal>
+   The inline script wires the arrows; no framework needed.
+
+   `day_load`: the calendar now marks ALL dates with an entry, but the feed only
+   renders a recent window, so a clicked day may not be on the page yet. With
+   day_load set (the journal), the script falls back to navigating
+   `?since=<date>#day-<date>` — which loads history back to that day — when the
+   anchor target isn't present. Without it (workouts) the click is inert for
+   off-page days, as before. #}
+<div class="text-[11px] tabular-nums" data-mini-cal{% if day_load %} data-day-load{% endif %}>
   {% for cm in months %}
   <div data-month-idx="{{ loop.index0 }}"{% if not loop.first %} hidden{% endif %}>
     <div class="flex items-center justify-between mb-2">
@@ -112,6 +119,11 @@
           void target.offsetWidth;  // restart animation if same day clicked twice
           target.classList.add('cal-zoom');
           if (history.replaceState) history.replaceState(null, '', '#' + id);
+        } else if (root.hasAttribute('data-day-load')) {
+          // Day isn't on the page yet — load history back to it, then the anchor lands.
+          e.preventDefault();
+          var d = id.replace(/^day-/, '');
+          window.location = '?since=' + encodeURIComponent(d) + '#' + id;
         }
       }
     });
@@ -120,7 +132,7 @@
 </script>
 {% endmacro %}
 
-{% macro floating_calendar(months) %}
+{% macro floating_calendar(months, day_load=False) %}
 {# Lurking sidebar: fixed to the right edge on lg+, invisible by default, fades
    in when the cursor enters the strip. The outer aside reserves the hover area
    (w-56) even while the inner content is transparent — divs still register
@@ -135,7 +147,7 @@
 {% if months %}
 <aside class="hidden lg:block fixed right-0 top-20 w-56 max-h-[calc(100vh-6rem)] overflow-x-hidden overflow-y-auto z-20 group/cal pointer-events-auto">
   <div class="px-4 py-2 opacity-0 translate-x-2 group-hover/cal:opacity-100 group-hover/cal:translate-x-0 transition-all duration-200 motion-reduce:transition-none">
-    {{ mini_calendar(months) }}
+    {{ mini_calendar(months, day_load=day_load) }}
   </div>
 </aside>
 {% endif %}
