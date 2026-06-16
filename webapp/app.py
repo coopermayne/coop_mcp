@@ -801,9 +801,13 @@ def _pending_count() -> int:
 
 
 @app.get("/journal")
-async def journal(request: Request, q: str = "", since: str = ""):
+async def journal(request: Request, q: str = "", since: str = "", kind: str = ""):
     q = (q or "").strip()
     since = (since or "").strip() or None
+    # Feed filter: "" / "all" = everything; "thought" = reflections only;
+    # "log" = everything except reflections. Anything else is treated as "all".
+    kind = (kind or "").strip().lower()
+    kind_filter = kind if kind in ("thought", "log") else None
     base = base_path(request)
     pending_n = _pending_count()
     if q:
@@ -815,17 +819,18 @@ async def journal(request: Request, q: str = "", since: str = ""):
             e["body_md"] = link_people_md(e["body"], e["people"], base)
         return page(request, "journal.html", active="journal",
                     q=q, entries=entries, count=res["count"], searching=True,
-                    pending_count=pending_n)
-    res = data.list_days(since=since)
+                    pending_count=pending_n, kind=kind_filter)
+    res = data.list_days(since=since, kind=kind_filter)
     for day in res["days"]:
         for e in day["entries"]:
             e["body_md"] = link_people_md(e["body"], e["people"], base)
-    # Calendar marks ALL dates that have an entry, not just the loaded window — so
-    # every month is reachable even before its days are paged in.
-    months = data.calendar_months(data.all_entry_dates(), today=server.today())
+    # Calendar marks ALL dates that have an entry (of the active kind), not just the
+    # loaded window — so every month is reachable even before its days are paged in.
+    months = data.calendar_months(data.all_entry_dates(kind=kind_filter),
+                                  today=server.today())
     return page(request, "journal.html", active="journal",
                 q="", days=res["days"], count=res["total"], searching=False,
-                pending_count=pending_n, months=months,
+                pending_count=pending_n, months=months, kind=kind_filter,
                 has_more=res["has_more"], next_since=res["next_since"])
 
 

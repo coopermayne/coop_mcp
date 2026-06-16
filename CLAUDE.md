@@ -65,6 +65,18 @@ There is no exercise-selection or progression logic in the server either.
   schema already allows many entries per `entry_date`, and the entries are fully
   independent — no shared conversation id, no cross-linking. Granularity: a single event
   with several people stays one entry; split only genuinely separate threads.
+- **Within-day order is explicit, not insertion order.** Because a day is many one-per-
+  topic entries and people recount a day out of sequence, entries carry a `day_position`
+  (within-day chronological rank, 1=earliest). `add_journal_entry` APPENDS (server sets
+  the next position deterministically — no LLM); the model then calls `reorder_entries`
+  (entry_date, ids earliest-first) to lay the day out chronologically, both right after
+  capture and whenever the user says "move X before Y". This is the same split as
+  everywhere: the server stores/renumbers, the *model* judges the timeline (contract in
+  the `add_journal_entry`/`reorder_entries` docstrings + server `instructions`). Legacy
+  pre-feature rows stay `day_position`-NULL (no back-fill UPDATE, to avoid churning the
+  `entries_fts` triggers) and keep their old id order — NULL sorts first in the feed's
+  ascending order, last in the newest-first lists; a freshly captured entry gets a real
+  position and appends below them.
 - **Two-layer entry storage.** `entries.body` is Claude's cleaned, concise version (the
   journal proper, what search/history show). `entries.raw_body` is the user's verbatim
   words, hidden, returned only via `get_entry`. Mentions are matched against the *raw*
@@ -217,7 +229,16 @@ working.
 - `aliases` — surface forms per person; `phonetic_key` (metaphone), `source`
   (`manual`|`learned`).
 - `entries` — `body` (clean), `raw_body` (verbatim), `entry_date` (day it's *about*,
-  distinct from `created_at`). FTS5 mirror `entries_fts`.
+  distinct from `created_at`), `day_position` (within-day chronological rank, 1=earliest;
+  set on append by the server, rewritten by `reorder_entries`; NULL on legacy rows —
+  sorts first ascending / last newest-first), `kind` (`'log'` = an interaction/observation/fact, the
+  default and back-fill for pre-feature rows; `'thought'` = a personal reflection not
+  anchored to a specific interaction). The model classifies each entry at capture
+  (contract lives in `add_journal_entry`'s docstring + server `instructions`; no LLM in
+  the server — it just stores the flag). Thoughts stay in the journal feed and FTS, but
+  are EXCLUDED from per-person views (`get_person_history`, `get_related_people`) so the
+  CRM spine stays a record of real interactions. The webapp `/journal` feed filters on
+  it (All / Thoughts / Log via `?kind=`). FTS5 mirror `entries_fts`.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
@@ -288,7 +309,13 @@ working.
   list is `MUSCLES`.
 - `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), plus
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
-  lifts, weight/reps NULL for cardio). The two-level log mirroring entries/mentions. A
+  lifts, weight/reps NULL for cardio). A planned set also carries `target_rpe` — the
+  difficulty the trainer programs for it (1-10), the target twin of the actual `rpe`. The
+  /trainer card surfaces difficulty as Easy/Med/Hard buttons (mapped Easy≈5, Med≈7,
+  Hard≈9, in `trainer.js`), prefilled from `target_rpe` on a pending set (or the actual
+  `rpe` when correcting a done one) — the user confirms a feel instead of typing a number,
+  and weight is a `[−5][−1][−.5] (n) [+.5][+1][+5]` stepper over a still-editable field.
+  The two-level log mirroring entries/mentions. A
   *planned* session (`status='active'`, from `start_workout_plan`) is UNDATED — its
   `workout_date` is the `''` not-yet-done sentinel until `finish_workout` stamps it with
   the day it was actually completed (so a plan started late and finished after Pacific

@@ -35,6 +35,20 @@
   {% if searching %}<a href="{{ base }}/journal" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
+{# Feed filter: All / Thoughts / Log. Hidden while searching (search spans all kinds).
+   The active tab is black; the others are muted links that set ?kind=. #}
+{% if not searching %}
+{% set tab_base = "text-xs font-medium px-3 py-1.5 border rounded-[4px] transition-colors" %}
+<nav class="mb-8 flex gap-2" aria-label="Filter entries by kind">
+  <a href="{{ base }}/journal"
+     class="{{ tab_base }} {{ 'bg-black text-white border-black' if not kind else 'border-gray-200 text-gray-500 hover:border-black hover:text-black' }}">All</a>
+  <a href="{{ base }}/journal?kind=thought"
+     class="{{ tab_base }} {{ 'bg-black text-white border-black' if kind == 'thought' else 'border-gray-200 text-gray-500 hover:border-black hover:text-black' }}">Thoughts</a>
+  <a href="{{ base }}/journal?kind=log"
+     class="{{ tab_base }} {{ 'bg-black text-white border-black' if kind == 'log' else 'border-gray-200 text-gray-500 hover:border-black hover:text-black' }}">Log</a>
+</nav>
+{% endif %}
+
 <div data-journal-feed>
 {% if searching %}
   <p class="text-xs uppercase tracking-widest text-gray-400 mb-4">Results for "{{ q }}"</p>
@@ -46,6 +60,7 @@
            title="Open entry" aria-label="Open this entry">›</a>
         <div class="flex-1">
           <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | short_date }}</p>
+          {% if e.kind == 'thought' %}{{ m.thought_badge() }}{% endif %}
           <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed mt-1">{{ e.body_md }}</div>
         </div>
       </div>
@@ -59,7 +74,7 @@
     {% for day in days %}{{ m.day_block(day) }}{% endfor %}
     {% if has_more %}
     <div class="mt-8 flex justify-center">
-      <a href="{{ base }}/journal?since={{ next_since }}"
+      <a href="{{ base }}/journal?since={{ next_since }}{% if kind %}&kind={{ kind }}{% endif %}"
          class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors">Load older</a>
     </div>
     {% endif %}

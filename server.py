@@ -101,6 +101,17 @@ group word itself as a mention); and one note per topic — split unrelated thre
 the same conversation into separate entries so their people don't cross-contaminate
 later lookups.
 
+A day's entries display in the order saved, but people recount a day out of sequence.
+After capturing (or adding to) a day whose entries aren't in the order events happened,
+call reorder_entries to put that day in chronological order — and use it whenever the
+user asks to move an entry earlier/later within its day.
+
+Every entry has a `kind`: "log" (the default — a record of an interaction, event, or
+fact about someone) or "thought" (a personal reflection/musing not anchored to a
+specific interaction). Classify each entry as you capture it; thoughts stay in the
+journal feed but are kept out of per-person history. See add_journal_entry for how to
+tell them apart.
+
 Each person's `summary` is their rolling profile — the durable KEY FACTS about them:
 relationships (parents, partner/spouse, kids, siblings, BY NAME — there is no
 relationship graph, so this is the only place they live), employment, school,
@@ -291,6 +302,8 @@ CREATE TABLE IF NOT EXISTS entries (
     body       TEXT NOT NULL,   -- cleaned, structured, concise: the journal proper
     raw_body   TEXT,            -- verbatim input, hidden fallback (NULL if none kept)
     entry_date TEXT NOT NULL,   -- the day the entry is ABOUT (YYYY-MM-DD)
+    kind       TEXT NOT NULL DEFAULT 'log',  -- 'log' (interaction/observation) | 'thought' (personal reflection)
+    day_position INTEGER,       -- within-day chronological rank (1=earliest that day); NULL=legacy/insertion order
     created_at TEXT NOT NULL
 );
 
@@ -428,6 +441,7 @@ CREATE TABLE IF NOT EXISTS sets (
     distance_miles   REAL,            -- cardio: distance covered; NULL for lifts
     target_weight_lbs REAL,           -- plan target (lift); NULL for ad-hoc logged sets
     target_reps       INTEGER,        -- plan target (lift)
+    target_rpe        REAL,           -- plan target difficulty (1-10); prefills the /trainer card's Easy/Med/Hard buttons
     status      TEXT NOT NULL DEFAULT 'done',  -- 'pending' | 'done' | 'skipped'
     ex_position INTEGER,              -- exercise's slot in the workout (all its sets share it); NULL = insertion order
     note        TEXT
@@ -518,6 +532,17 @@ def init_db() -> None:
         ecols = [r["name"] for r in conn.execute("PRAGMA table_info(entries)")]
         if "raw_body" not in ecols:
             conn.execute("ALTER TABLE entries ADD COLUMN raw_body TEXT")
+        if "kind" not in ecols:
+            # Existing entries are all interaction/observation logs (the only kind
+            # before this feature), so the 'log' default back-fills them correctly.
+            conn.execute("ALTER TABLE entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'log'")
+        if "day_position" not in ecols:
+            # Within-day chronological rank (1=earliest that day). Legacy entries stay
+            # NULL — no back-fill UPDATE (which would needlessly churn the entries_fts
+            # triggers). NULL sorts FIRST in the feed's ascending order (so a legacy day
+            # keeps its old id order at the top) and LAST in the newest-first lists; a
+            # newly captured entry gets a real position and appends below the NULLs.
+            conn.execute("ALTER TABLE entries ADD COLUMN day_position INTEGER")
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
         for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
@@ -541,6 +566,7 @@ def init_db() -> None:
         scols = [r["name"] for r in conn.execute("PRAGMA table_info(sets)")]
         for col, decl in (("duration_seconds", "INTEGER"), ("distance_miles", "REAL"),
                           ("target_weight_lbs", "REAL"), ("target_reps", "INTEGER"),
+                          ("target_rpe", "REAL"),
                           ("status", "TEXT NOT NULL DEFAULT 'done'"),
                           ("ex_position", "INTEGER")):
             if col not in scols:
@@ -743,13 +769,43 @@ def find_candidates(conn: sqlite3.Connection, surface: str, limit: int = 5):
 # Tools
 # --------------------------------------------------------------------------- #
 
+def _next_day_position(conn, entry_date: str) -> int:
+    """Rank to give a newly inserted entry so it lands at the END of its day. Counts
+    only positioned entries (NULL = legacy, which sort by id before any positioned row),
+    so the first save of a day gets 1 and each later one appends. The model reorders the
+    day afterward with reorder_entries if events weren't captured in chronological order."""
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM entries WHERE entry_date=? AND day_position IS NOT NULL",
+        (entry_date,),
+    ).fetchone()["n"]
+    return n + 1
+
+
 @mcp.tool()
 def add_journal_entry(body: str, raw_body: Optional[str] = None,
                       mentions: Optional[list[str]] = None,
-                      entry_date: Optional[str] = None) -> dict:
+                      entry_date: Optional[str] = None,
+                      kind: str = "log") -> dict:
     """Save a journal entry and match any people named in it.
 
     ALWAYS call this to capture an entry — never block on resolution.
+
+    LOG vs THOUGHT (`kind`). Classify every entry as one of two kinds:
+      - "log" (the DEFAULT): a record of something that happened or that the user
+        learned — an interaction with someone, an event, an observation, a fact about
+        a person they know. This is the CRM/diary spine.
+      - "thought": a personal reflection, musing, idea, opinion, feeling, plan, or
+        introspection that ISN'T anchored to a specific interaction or a fact about
+        someone — e.g. "I've been wondering whether I should change careers" or "lately
+        I feel more at peace". Thoughts are kept out of per-person history (so the CRM
+        view stays a record of real interactions), but still live in the same journal
+        feed and are still full-text searchable.
+    Judge by what the entry IS, not whether it names people: a thought can mention
+    someone ("been thinking about how Tom always pushes me") and stays a "thought";
+    a terse factual note about a person ("Tom got the job") is a "log". When a single
+    conversation mixes both — recounting a dinner, then reflecting on it — split per
+    ONE-NOTE-PER-TOPIC and give each its own `kind`. When genuinely unsure, default to
+    "log". You may pass kind explicitly even when it's "log".
 
     ONE NOTE PER TOPIC. A single conversation often spans several unrelated
     threads (e.g. dinner with the family, then a frustrating meeting with the
@@ -761,6 +817,16 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     (dinner with wife + parents = one note, all three mentioned together);
     split only genuinely separate events/threads. The entries are independent —
     there is no shared conversation id and they aren't cross-linked.
+
+    CHRONOLOGICAL ORDER. Each new entry is appended to the END of its day, so a day's
+    entries display in the order you SAVE them. People recount a day out of order (the
+    evening phone call mentioned last actually happened mid-afternoon). When you capture
+    several entries for one day — or add an entry to a day that already has some — and
+    they aren't in the order the events actually happened, finish by calling
+    reorder_entries(entry_date, [ids earliest-first]) so the day reads chronologically.
+    Make your best guess at the timeline from context; if the user is explicit ("put the
+    gym before dinner"), follow that. Skip the reorder call when the save order already
+    matches the timeline.
 
     Write `body` as a clean, structured, concise journal entry in MARKDOWN:
     organize the free-association into readable prose, keep the substance and the
@@ -812,15 +878,20 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
             For a group reference ("my parents"), pass the specific people you can
             identify by name, not the group word (see GROUP REFERENCES).
         entry_date: Day the entry is ABOUT as YYYY-MM-DD. Defaults to today.
+        kind: "log" (interaction/observation/fact — the default) or "thought"
+            (a personal reflection). See LOG vs THOUGHT above.
     """
     if err := _bad_date(entry_date, "entry_date"):
         return err
+    if kind not in ("log", "thought"):
+        return {"error": "kind must be 'log' or 'thought'"}
     entry_date = entry_date or today()
     snippet_source = raw_body or body
     with db() as conn:
         cur = conn.execute(
-            "INSERT INTO entries(body, raw_body, entry_date, created_at) VALUES (?,?,?,?)",
-            (body, raw_body, entry_date, now()),
+            "INSERT INTO entries(body, raw_body, entry_date, kind, day_position, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (body, raw_body, entry_date, kind, _next_day_position(conn, entry_date), now()),
         )
         entry_id = cur.lastrowid
         results = []
@@ -836,7 +907,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
                 "surface_form": surface,
                 "candidates": find_candidates(conn, surface),
             })
-    return {"entry_id": entry_id, "entry_date": entry_date, "mentions": results}
+    return {"entry_id": entry_id, "entry_date": entry_date, "kind": kind,
+            "mentions": results}
 
 
 @mcp.tool()
@@ -1129,23 +1201,28 @@ def list_people(query: Optional[str] = None,
 def get_person_history(person_id: int, limit: int = 50,
                        since: Optional[str] = None,
                        max_chars: int = 600) -> dict:
-    """Every entry that mentions this person, newest first — the payoff query.
-    This is an indexed lookup on the entity, so 'everything about Tom my father'
-    never pulls in the other Tom. Bodies are truncated to max_chars. Also returns the
-    person's full `summary` (the rolling profile, incl. their relationships) and
-    `contact` blob — read them here before editing them with save_person /
-    update_contact, so you append rather than overwrite (the briefing only shows a
-    short summary preview)."""
+    """Every interaction/observation entry that mentions this person, newest first —
+    the payoff query. This is an indexed lookup on the entity, so 'everything about
+    Tom my father' never pulls in the other Tom. Personal-reflection entries
+    (kind='thought') are EXCLUDED so this stays a record of real interactions, even
+    if a reflection happened to name the person. Bodies are truncated to max_chars. Also returns the
+    person's full `summary` (the rolling profile, incl. their relationships), `contact`
+    blob, and `aliases` (every stored surface form, exact text) — read them here before
+    editing them with save_person / update_contact, so you append rather than overwrite
+    (the briefing only shows a short summary preview). The `aliases` list is the exact
+    text to pass back to save_person's `remove_aliases` to detach a wrong one (you can't
+    guess the stored spelling — read it here first)."""
     if err := _bad_date(since, "since"):
         return err
     sql = """SELECT DISTINCT e.id, e.entry_date, e.body
              FROM entries e JOIN mentions m ON m.entry_id=e.id
-             WHERE m.person_id=? AND m.status='resolved'"""
+             WHERE m.person_id=? AND m.status='resolved' AND e.kind != 'thought'"""
     params: list = [person_id]
     if since:
         sql += " AND e.entry_date >= ?"
         params.append(since)
-    sql += " ORDER BY e.entry_date DESC, e.id DESC LIMIT ?"
+    sql += (" ORDER BY e.entry_date DESC, e.day_position IS NULL, "
+            "e.day_position DESC, e.id DESC LIMIT ?")
     params.append(limit)
     with db() as conn:
         person = conn.execute(
@@ -1154,6 +1231,10 @@ def get_person_history(person_id: int, limit: int = 50,
         if not person:
             return {"error": f"no person with id {person_id}"}
         contact = _get_contact(conn, person_id)
+        aliases = [r["surface_form"] for r in conn.execute(
+            "SELECT surface_form FROM aliases WHERE person_id=? ORDER BY surface_form",
+            (person_id,),
+        ).fetchall()]
         rows = conn.execute(sql, params).fetchall()
     entries = [
         {"entry_id": r["id"], "entry_date": r["entry_date"],
@@ -1162,7 +1243,7 @@ def get_person_history(person_id: int, limit: int = 50,
     ]
     return {"person_id": person_id, "name": person["canonical_name"],
             "role": person["role"], "summary": person["summary"], "contact": contact,
-            "entries": entries, "count": len(entries)}
+            "aliases": aliases, "entries": entries, "count": len(entries)}
 
 
 @mcp.tool()
@@ -1171,13 +1252,13 @@ def search_entries(query: str, limit: int = 20, max_chars: int = 400) -> dict:
     people — use get_person_history for people."""
     with db() as conn:
         rows = conn.execute(
-            """SELECT e.id, e.entry_date, e.body
+            """SELECT e.id, e.entry_date, e.body, e.kind
                FROM entries_fts f JOIN entries e ON e.id = f.rowid
                WHERE entries_fts MATCH ? ORDER BY rank LIMIT ?""",
             (query, limit),
         ).fetchall()
     return {"results": [
-        {"entry_id": r["id"], "entry_date": r["entry_date"],
+        {"entry_id": r["id"], "entry_date": r["entry_date"], "kind": r["kind"],
          "body": _truncate(r["body"], max_chars)} for r in rows
     ], "count": len(rows)}
 
@@ -1240,12 +1321,13 @@ def get_entry(entry_id: int, include_raw: bool = True) -> dict:
     dropped a detail."""
     with db() as conn:
         r = conn.execute(
-            "SELECT id, body, raw_body, entry_date, created_at FROM entries WHERE id=?",
+            "SELECT id, body, raw_body, entry_date, kind, created_at "
+            "FROM entries WHERE id=?",
             (entry_id,),
         ).fetchone()
     if not r:
         return {"error": f"no entry with id {entry_id}"}
-    out = {"entry_id": r["id"], "entry_date": r["entry_date"],
+    out = {"entry_id": r["id"], "entry_date": r["entry_date"], "kind": r["kind"],
            "created_at": r["created_at"], "body": r["body"]}
     if include_raw:
         out["raw_body"] = r["raw_body"]
@@ -1255,8 +1337,13 @@ def get_entry(entry_id: int, include_raw: bool = True) -> dict:
 @mcp.tool()
 def update_entry(entry_id: int, entry_date: Optional[str] = None,
                  body: Optional[str] = None, raw_body: Optional[str] = None,
-                 mentions: Optional[list[str]] = None) -> dict:
+                 mentions: Optional[list[str]] = None,
+                 kind: Optional[str] = None) -> dict:
     """Edit an existing journal entry. Only non-null args are written.
+
+    `kind` reclassifies the entry between "log" (interaction/observation/fact) and
+    "thought" (personal reflection) — see add_journal_entry's LOG vs THOUGHT note —
+    e.g. when the user says "that was really just me thinking out loud".
 
     Use `entry_date` (YYYY-MM-DD, Pacific) to correct the day an entry is ABOUT —
     e.g. the user said "that was actually yesterday". Dates are Pacific time; resolve
@@ -1278,7 +1365,10 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
     untouched — the common typo/date fix. Pass [] to clear all of the entry's mentions."""
     if err := _bad_date(entry_date, "entry_date"):
         return err
-    fields = {"entry_date": entry_date, "body": body, "raw_body": raw_body}
+    if kind is not None and kind not in ("log", "thought"):
+        return {"error": "kind must be 'log' or 'thought'"}
+    fields = {"entry_date": entry_date, "body": body, "raw_body": raw_body,
+              "kind": kind}
     sets = {k: v for k, v in fields.items() if v is not None}
     if not sets and mentions is None:
         return {"entry_id": entry_id, "updated": []}
@@ -1291,6 +1381,12 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
         if sets:
             cols = ", ".join(f"{k}=?" for k in sets)
             conn.execute(f"UPDATE entries SET {cols} WHERE id=?", (*sets.values(), entry_id))
+            if "entry_date" in sets:
+                # Moved to a different day — its old within-day rank is meaningless there,
+                # so append it to the end of the new day (reorder_entries can re-place it).
+                conn.execute("UPDATE entries SET day_position=NULL WHERE id=?", (entry_id,))
+                conn.execute("UPDATE entries SET day_position=? WHERE id=?",
+                             (_next_day_position(conn, sets["entry_date"]), entry_id))
         out = {"entry_id": entry_id, "updated": list(sets)}
         if mentions is not None:
             # Snippet against the new text where given, else the stored text.
@@ -1326,6 +1422,46 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
                 conn.execute("DELETE FROM mentions WHERE id=?", (mid,))
             out["mentions"] = {"created": created, "kept": kept, "removed": removed}
         return out
+
+
+@mcp.tool()
+def reorder_entries(entry_date: str, ordered_entry_ids: list[int]) -> dict:
+    """Set the chronological order of a day's entries — the order they read top-to-bottom
+    in the journal (earliest event first).
+
+    Entries are appended in the order they're SAVED, which is often NOT the order events
+    happened (people recount a day out of sequence). Pass `ordered_entry_ids` as that
+    day's entry ids EARLIEST-FIRST and the server renumbers them. Use this:
+      - right after capturing several entries for a day that came out of order;
+      - after adding an entry to a day where it belongs earlier than existing ones;
+      - when the user says to move one ("put the gym before dinner", "move the call to
+        between leaving the Airbnb and getting home") — list the day's ids in the new
+        order, with the moved one in its new slot.
+    You don't have to list every id: any entry on the day you omit keeps its place AFTER
+    the ones you listed (same as reorder_plan). Ids that aren't on `entry_date` are
+    ignored. Returns the resulting order. Get the ids + bodies from get_briefing's recent
+    entries, get_person_history, or search_entries."""
+    if err := _bad_date(entry_date, "entry_date"):
+        return err
+    with db() as conn:
+        day_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM entries WHERE entry_date=? "
+            "ORDER BY day_position IS NOT NULL, day_position, id",
+            (entry_date,),
+        ).fetchall()]
+        day_set = set(day_ids)
+        ordered, seen = [], set()
+        for eid in (ordered_entry_ids or []):
+            if eid in day_set and eid not in seen:
+                ordered.append(eid)
+                seen.add(eid)
+        for eid in day_ids:  # entries left out keep their current relative order, after
+            if eid not in seen:
+                ordered.append(eid)
+                seen.add(eid)
+        for pos, eid in enumerate(ordered, start=1):
+            conn.execute("UPDATE entries SET day_position=? WHERE id=?", (pos, eid))
+    return {"entry_date": entry_date, "order": ordered, "count": len(ordered)}
 
 
 def _delete_record(kind: str, id: int) -> dict:
@@ -1454,7 +1590,9 @@ def get_related_people(person_id: int, limit: int = 10) -> dict:
                JOIN mentions m2 ON m2.entry_id = m1.entry_id
                     AND m2.person_id != m1.person_id
                JOIN people p ON p.id = m2.person_id
+               JOIN entries e ON e.id = m1.entry_id
                WHERE m1.person_id=? AND m1.status='resolved' AND m2.status='resolved'
+                     AND e.kind != 'thought'
                GROUP BY p.id ORDER BY shared DESC LIMIT ?""",
             (person_id, limit),
         ).fetchall()
@@ -1487,7 +1625,8 @@ def get_briefing(recent_entries: int = 5) -> dict:
         ).fetchone()["n"]
         grp = [r["name"] for r in conn.execute("SELECT name FROM groups ORDER BY name")]
         recent = conn.execute(
-            "SELECT id, entry_date, body FROM entries ORDER BY entry_date DESC, id DESC LIMIT ?",
+            "SELECT id, entry_date, body FROM entries "
+            "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC LIMIT ?",
             (recent_entries,),
         ).fetchall()
     return {
@@ -2560,6 +2699,7 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
                distance_miles: Optional[float] = None,
                target_weight_lbs: Optional[float] = None,
                target_reps: Optional[int] = None,
+               target_rpe: Optional[float] = None,
                note: Optional[str] = None) -> dict:
     """Correct a single set. Only non-null args are written, so this can't blank a
     field back to NULL (e.g. clear a weight to mark bodyweight) — delete the set with
@@ -2567,19 +2707,22 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
     get_exercise_history (logged sets) or get_workout_plan (the active plan). `rpe` is
     1-10. `weight_lbs` is SIGNED added/removed load (negative = assisted, 0 = bodyweight,
     positive = added). `duration_seconds`/`distance_miles` are the cardio fields (run/walk/row).
-    `target_weight_lbs`/`target_reps` retarget a still-pending planned set (e.g. bump
-    the planned weight) without completing it — to actually log a planned set as done,
+    `target_weight_lbs`/`target_reps`/`target_rpe` retarget a still-pending planned set
+    (e.g. bump the planned weight, or the expected difficulty the user's Easy/Med/Hard
+    buttons prefill from) without completing it — to actually log a planned set as done,
     use complete_set."""
     if reason := _bad_set({"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
                            "duration_seconds": duration_seconds,
                            "distance_miles": distance_miles}):
         return {"error": reason}
-    if reason := _bad_set({"weight_lbs": target_weight_lbs, "reps": target_reps}):
+    if reason := _bad_set({"weight_lbs": target_weight_lbs, "reps": target_reps,
+                           "rpe": target_rpe}):
         return {"error": reason}
     fields = {"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
               "duration_seconds": duration_seconds,
               "distance_miles": distance_miles,
               "target_weight_lbs": target_weight_lbs, "target_reps": target_reps,
+              "target_rpe": target_rpe,
               "note": note}
     sets = {k: v for k, v in fields.items() if v is not None}
     if not sets:
@@ -2622,7 +2765,8 @@ def _expand_planned_sets(ex: dict) -> list[dict]:
     n = ex.get("set_count")
     if n:
         return [{"target_weight_lbs": ex.get("target_weight_lbs"),
-                 "target_reps": ex.get("target_reps")} for _ in range(int(n))]
+                 "target_reps": ex.get("target_reps"),
+                 "target_rpe": ex.get("target_rpe")} for _ in range(int(n))]
     return []
 
 
@@ -2631,7 +2775,8 @@ def _bad_planned(exercises: list[dict]) -> Optional[dict]:
     for ex in exercises:
         for s in _expand_planned_sets(ex):
             if reason := _bad_set({"weight_lbs": s.get("target_weight_lbs"),
-                                   "reps": s.get("target_reps")}):
+                                   "reps": s.get("target_reps"),
+                                   "rpe": s.get("target_rpe")}):
                 return {"error": f"{ex.get('name','?')}: {reason}"}
     return None
 
@@ -2661,9 +2806,10 @@ def _insert_planned(conn: sqlite3.Connection, wid: int,
         for i, s in enumerate(planned, start=start):
             conn.execute(
                 """INSERT INTO sets(workout_id, exercise_id, set_index,
-                   target_weight_lbs, target_reps, status, note)
-                   VALUES (?,?,?,?,?, 'pending', ?)""",
-                (wid, eid, i, s.get("target_weight_lbs"), s.get("target_reps"), s.get("note")),
+                   target_weight_lbs, target_reps, target_rpe, status, note)
+                   VALUES (?,?,?,?,?,?, 'pending', ?)""",
+                (wid, eid, i, s.get("target_weight_lbs"), s.get("target_reps"),
+                 s.get("target_rpe"), s.get("note")),
             )
         results.append({"exercise_id": eid, "name": row["name"],
                         "planned_sets": len(planned)})
@@ -2688,7 +2834,7 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
         return {"active": False}
     rows = conn.execute(
         """SELECT s.id, s.exercise_id, e.name, s.set_index, s.status,
-                  s.target_weight_lbs, s.target_reps,
+                  s.target_weight_lbs, s.target_reps, s.target_rpe,
                   s.weight_lbs, s.reps, s.rpe,
                   s.duration_seconds, s.distance_miles, s.ex_position, s.note
            FROM sets s JOIN exercises e ON e.id = s.exercise_id
@@ -2711,6 +2857,7 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
         ex["sets"].append({
             "set_id": r["id"], "set_index": r["set_index"], "status": r["status"],
             "target_weight_lbs": r["target_weight_lbs"], "target_reps": r["target_reps"],
+            "target_rpe": r["target_rpe"],
             "weight_lbs": r["weight_lbs"], "reps": r["reps"], "rpe": r["rpe"],
             "duration_seconds": r["duration_seconds"], "distance_miles": r["distance_miles"],
             "note": r["note"],
@@ -2824,12 +2971,18 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
 
     Each item in `exercises` is either explicit:
         {"name": "Bench Press", "muscles": ["chest"],
-         "sets": [{"target_weight_lbs": 100, "target_reps": 10},
-                  {"target_weight_lbs": 100, "target_reps": 10},
-                  {"target_weight_lbs": 100, "target_reps": 8}]}
+         "sets": [{"target_weight_lbs": 100, "target_reps": 10, "target_rpe": 7},
+                  {"target_weight_lbs": 100, "target_reps": 10, "target_rpe": 8},
+                  {"target_weight_lbs": 100, "target_reps": 8,  "target_rpe": 9}]}
     or the shorthand for N identical sets:
         {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
-         "target_reps": 12, "target_weight_lbs": 25}
+         "target_reps": 12, "target_weight_lbs": 25, "target_rpe": 8}
+
+    `target_rpe` (1-10) is the difficulty you're programming for each set — set it from
+    your judgment of how hard that set should be, and ramp it across the exercise's sets
+    when you intend a build-up. It prefills the Easy/Med/Hard buttons the user taps on the
+    /trainer card (Easy ≈ 5, Med ≈ 7, Hard ≈ 9), so they confirm a feel rather than typing
+    a number; they can still change it. Optional — omit it and the buttons start blank.
     Pick the movements from the library with `exercises(muscle=..., rotation_only=True)` —
     the catalog is closed, so program only names it already holds (prefer the rotation).
     Names resolve fuzzily; a name with no real match is SKIPPED and returned under
@@ -2947,7 +3100,7 @@ def swap_exercise(from_exercise: str, to_exercise: str,
                              "exercises(similar_to=...) or add it on the library page",
                     "candidates": _match_exercises(conn, to_exercise)}
         pend = conn.execute(
-            """SELECT target_weight_lbs, target_reps FROM sets
+            """SELECT target_weight_lbs, target_reps, target_rpe FROM sets
                WHERE workout_id=? AND exercise_id=? AND status='pending'
                ORDER BY set_index""",
             (w["id"], frm["id"]),
@@ -2955,7 +3108,8 @@ def swap_exercise(from_exercise: str, to_exercise: str,
         if not pend:
             return {"error": f"no pending {from_exercise} sets to swap in this plan"}
         sub_sets = sets if sets else [
-            {"target_weight_lbs": p["target_weight_lbs"], "target_reps": p["target_reps"]}
+            {"target_weight_lbs": p["target_weight_lbs"], "target_reps": p["target_reps"],
+             "target_rpe": p["target_rpe"]}
             for p in pend
         ]
         spec = [{"name": to["name"], "sets": sub_sets}]
