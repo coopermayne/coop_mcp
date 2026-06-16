@@ -101,31 +101,74 @@ def attach_people(entries: list[dict]) -> list[dict]:
     return entries
 
 
-def list_days(limit_entries: int = 120) -> dict:
-    """Recent entries grouped into days, newest day first; within a day the entries
-    read top-to-bottom in the order they were recorded (so the day reads as one
-    block of prose split into per-topic paragraphs). Each entry carries its resolved
-    people so the feed can link names inline. Bodies are returned in full — entries
-    are now small per-topic notes, not the day's whole dump."""
+def all_entry_dates() -> list[str]:
+    """Every distinct entry_date in the journal, newest first — the full set the
+    sidebar calendar marks, independent of how deep the feed is currently loaded.
+    Cheap: distinct dates only, no bodies."""
     with server.db() as conn:
         rows = conn.execute(
-            "SELECT id, entry_date, body FROM entries "
-            "ORDER BY entry_date DESC, id ASC LIMIT ?",
-            (limit_entries,),
+            "SELECT DISTINCT entry_date FROM entries ORDER BY entry_date DESC"
         ).fetchall()
+    return [r["entry_date"] for r in rows]
+
+
+def list_days(limit_entries: int = 120, since: str | None = None) -> dict:
+    """Entries grouped into days, newest day first; within a day the entries read
+    top-to-bottom in the order they were recorded (so the day reads as one block of
+    prose split into per-topic paragraphs). Each entry carries its resolved people so
+    the feed can link names inline. Bodies are returned in full — entries are now small
+    per-topic notes, not the day's whole dump.
+
+    The feed loads the `limit_entries` newest entries by default. `since` (an ISO date)
+    instead loads EVERY entry on/after that date: the "load older" button and the
+    calendar's day deep-links pass it to pull history past the default window,
+    *cumulatively* (always from today back to `since`, so already-shown days stay shown
+    and their `#day-…` anchors keep working). Returns `oldest` (oldest day loaded),
+    `has_more` (older entries exist below it), and `next_since` (the cursor the "load
+    older" button requests to pull roughly `limit_entries` more — a date strictly older
+    than `oldest`, so re-loading also completes any day the default LIMIT split)."""
+    with server.db() as conn:
+        if since:
+            rows = conn.execute(
+                "SELECT id, entry_date, body FROM entries "
+                "WHERE entry_date >= ? ORDER BY entry_date DESC, id ASC",
+                (since,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, entry_date, body FROM entries "
+                "ORDER BY entry_date DESC, id ASC LIMIT ?",
+                (limit_entries,),
+            ).fetchall()
         total = conn.execute("SELECT COUNT(*) AS n FROM entries").fetchone()["n"]
         entries = [
             {"entry_id": r["id"], "entry_date": r["entry_date"], "body": r["body"]}
             for r in rows
         ]
         people = _people_for_entries(conn, [e["entry_id"] for e in entries])
+        oldest = entries[-1]["entry_date"] if entries else None
+        has_more, next_since = False, None
+        if oldest:
+            has_more = conn.execute(
+                "SELECT 1 FROM entries WHERE entry_date < ? LIMIT 1", (oldest,)
+            ).fetchone() is not None
+            if has_more:
+                row = conn.execute(
+                    "SELECT entry_date FROM entries WHERE entry_date < ? "
+                    "ORDER BY entry_date DESC, id ASC LIMIT 1 OFFSET ?",
+                    (oldest, limit_entries - 1),
+                ).fetchone()
+                next_since = row["entry_date"] if row else conn.execute(
+                    "SELECT MIN(entry_date) AS d FROM entries"
+                ).fetchone()["d"]
     days: list[dict] = []
     for e in entries:
         e["people"] = people.get(e["entry_id"], [])
         if not days or days[-1]["date"] != e["entry_date"]:
             days.append({"date": e["entry_date"], "entries": []})
         days[-1]["entries"].append(e)
-    return {"days": days, "total": total}
+    return {"days": days, "total": total, "oldest": oldest,
+            "has_more": has_more, "next_since": next_since}
 
 
 def calendar_months(entry_dates: list[str], today: str | None = None) -> list[dict]:
@@ -261,8 +304,10 @@ def group_members(name: str) -> dict | None:
     return {"name": g["name"], "members": members, "count": len(members)}
 
 
-def person_detail(person_id: int, history_limit: int = 60):
-    """Everything the read UI shows for one person."""
+def person_detail(person_id: int, history_limit: int = 100_000):
+    """Everything the read UI shows for one person. `history_limit` defaults
+    effectively unbounded — the browse page lists ALL of a person's entries (the
+    small default on the MCP tool is for the token-budgeted conversation, not here)."""
     with server.db() as conn:
         p = conn.execute(
             "SELECT id, canonical_name, role, summary, notes "

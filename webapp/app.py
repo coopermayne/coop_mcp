@@ -801,26 +801,32 @@ def _pending_count() -> int:
 
 
 @app.get("/journal")
-async def journal(request: Request, q: str = ""):
+async def journal(request: Request, q: str = "", since: str = ""):
     q = (q or "").strip()
+    since = (since or "").strip() or None
     base = base_path(request)
     pending_n = _pending_count()
     if q:
-        res = server.search_entries(q, limit=40)
+        # Browse-page search: the user reads all their own matches, so no small cap
+        # (the 20-ish default on the MCP tool is for the token-budgeted conversation).
+        res = server.search_entries(q, limit=100_000)
         entries = data.attach_people(res["results"])
         for e in entries:
             e["body_md"] = link_people_md(e["body"], e["people"], base)
         return page(request, "journal.html", active="journal",
                     q=q, entries=entries, count=res["count"], searching=True,
                     pending_count=pending_n)
-    res = data.list_days(limit_entries=120)
+    res = data.list_days(since=since)
     for day in res["days"]:
         for e in day["entries"]:
             e["body_md"] = link_people_md(e["body"], e["people"], base)
-    months = data.calendar_months([d["date"] for d in res["days"]], today=server.today())
+    # Calendar marks ALL dates that have an entry, not just the loaded window — so
+    # every month is reachable even before its days are paged in.
+    months = data.calendar_months(data.all_entry_dates(), today=server.today())
     return page(request, "journal.html", active="journal",
                 q="", days=res["days"], count=res["total"], searching=False,
-                pending_count=pending_n, months=months)
+                pending_count=pending_n, months=months,
+                has_more=res["has_more"], next_since=res["next_since"])
 
 
 @app.get("/pending")
