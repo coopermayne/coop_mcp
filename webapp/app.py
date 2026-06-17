@@ -693,7 +693,7 @@ async def manifest(request: Request):
 # static assets (icons/favicon). Cross-origin (Tailwind/Fonts CDNs) passes
 # straight through. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [

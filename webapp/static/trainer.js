@@ -21,6 +21,14 @@
   var reordering = false;  // reorder mode: arrows to the left of each exercise, header "Done"
   var reorderList = null;  // working copy of the visible exercises while reordering
 
+  // A programmatic focus() pops the mobile soft keyboard, which covers the weight
+  // steppers and the Easy/Med/Hard buttons — the very controls that let you log a
+  // set without typing. So on a touch-primary device we skip auto-focusing the
+  // editor's inputs; on a mouse/desktop there's no keyboard to get in the way, so
+  // focusing still helps (Enter-to-submit, caret ready for typing).
+  var isTouch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  function maybeFocus(inp) { if (!isTouch) inp.focus(); }
+
   function num(x) {
     if (x === null || x === undefined || x === '') return '';
     return (+x).toString();
@@ -478,7 +486,7 @@
     var cur = parseFloat(inp.value);
     if (isNaN(cur)) cur = 0;
     inp.value = num(Math.round((cur + delta) * 100) / 100);
-    inp.focus();
+    maybeFocus(inp);
   }
 
   function stepBtn(label, delta, inp) {
@@ -587,6 +595,10 @@
     form.appendChild(diff.wrap);
     form.appendChild(actions);
     slot.appendChild(form);
+    // Bring the just-opened editor into view (it expands below the set chips, which
+    // can sit below the fold) without yanking focus into a field — on touch the
+    // keyboard would cover the steppers/difficulty buttons we want you tapping.
+    if (slot.scrollIntoView) slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     // For a logged set, blanking reps clears it — surface that gesture.
     if (done) {
       slot.appendChild(el('p', 'text-[11px] text-gray-400 mt-2',
@@ -596,7 +608,7 @@
     form.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); save.click(); }
     });
-    weight.input.focus();
+    maybeFocus(weight.input);
   }
 
   async function completeSet(setId, weightInp, repsInp, diff, btn) {
