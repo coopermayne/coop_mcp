@@ -467,19 +467,6 @@
 
   // ── Set editor (log a pending set, or correct a done one) ───────────────────
 
-  // A plain labelled number field (reps).
-  function numField(label, value, step, min) {
-    var w = el('label', 'flex flex-col gap-1');
-    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', label));
-    var inp = el('input', 'w-20 border border-gray-200 rounded-[4px] px-2.5 py-1.5 text-sm focus:outline-none focus:border-black transition-colors');
-    inp.type = 'number'; inp.inputMode = 'decimal';
-    if (step != null) inp.step = step;
-    if (min != null) inp.min = min;
-    if (value != null) inp.value = num(value);
-    w.appendChild(inp);
-    return { wrap: w, input: inp };
-  }
-
   // Nudge the weight input by a signed delta (weight itself can be negative, for assisted
   // work). Rounds to kill float drift; an empty field counts as 0.
   function nudgeWeight(inp, delta) {
@@ -489,12 +476,21 @@
     maybeFocus(inp);
   }
 
-  function stepBtn(label, delta, inp) {
+  // Nudge the reps input by ±1, clamped at 0 (no negative reps); an empty field counts as 0.
+  function nudgeReps(inp, delta) {
+    var cur = parseInt(inp.value, 10);
+    if (isNaN(cur)) cur = 0;
+    inp.value = String(Math.max(0, cur + delta));
+    maybeFocus(inp);
+  }
+
+  // A graduated stepper button; `nudge` defaults to the weight stepper.
+  function stepBtn(label, delta, inp, nudge) {
     var b = el('button', 'shrink-0 w-9 h-9 flex items-center justify-center rounded-[4px] ' +
       'border border-gray-200 text-xs text-gray-600 hover:border-black hover:text-black transition-colors',
       label);
     b.type = 'button';
-    b.addEventListener('click', function () { nudgeWeight(inp, delta); });
+    b.addEventListener('click', function () { (nudge || nudgeWeight)(inp, delta); });
     return b;
   }
 
@@ -516,6 +512,24 @@
     [['+.5', 0.5], ['+1', 1], ['+5', 5]].forEach(function (st) {
       row.appendChild(stepBtn(st[0], st[1], inp));
     });
+    w.appendChild(row);
+    return { wrap: w, input: inp };
+  }
+
+  // Reps as a centered editable number flanked by −1 / +1 steppers — the usual nudge when a
+  // set lands a rep or two off plan, without popping the keyboard. Field stays editable for
+  // bigger jumps.
+  function repsField(value) {
+    var w = el('div', 'flex flex-col gap-1');
+    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'Reps'));
+    var row = el('div', 'flex items-center gap-1.5');
+    var inp = el('input', 'flex-1 min-w-0 text-center border border-gray-200 rounded-[4px] ' +
+      'px-2 py-1.5 text-sm focus:outline-none focus:border-black transition-colors');
+    inp.type = 'number'; inp.inputMode = 'numeric'; inp.step = '1'; inp.min = '0';
+    if (value != null) inp.value = num(value);
+    row.appendChild(stepBtn('−1', -1, inp, nudgeReps));
+    row.appendChild(inp);
+    row.appendChild(stepBtn('+1', 1, inp, nudgeReps));
     w.appendChild(row);
     return { wrap: w, input: inp };
   }
@@ -575,7 +589,7 @@
     // weight, reps, and the planned difficulty (target_rpe) the trainer set.
     // Weight is signed: negative = assistance (band/machine), 0 = bodyweight, positive = added.
     var weight = weightField(done ? s.weight_lbs : s.target_weight_lbs);
-    var reps = numField('Reps', done ? s.reps : s.target_reps, '1', 0);
+    var reps = repsField(done ? s.reps : s.target_reps);
     var diff = difficultyField(done ? s.rpe : s.target_rpe);
 
     var actions = el('div', 'flex items-center gap-3 pt-1');
