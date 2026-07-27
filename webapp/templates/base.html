@@ -195,6 +195,7 @@
     html[data-theme="dark"] .chat-md blockquote { border-left-color: #262626; color: #a3a3a3; }
     html[data-theme="dark"] .chat-md hr { border-top-color: #262626; }
   </style>
+  {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen bg-white text-black">
   {% if active %}
@@ -216,6 +217,9 @@
       </a>
       <a href="{{ base }}/drinking" aria-label="Drinking" title="Drinking" class="hover:text-black transition-colors {% if active == 'drinking' %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 22h8"/><path d="M7 10h10"/><path d="M12 15v7"/><path d="M12 15a5 5 0 0 0 5-5c0-2-.5-4-1-6H8c-.5 2-1 4-1 6a5 5 0 0 0 5 5Z"/></svg>
+      </a>
+      <a href="{{ base }}/graphs" aria-label="Graphs" title="Graphs" class="hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
       </a>
       {# Hamburger → dropdown of secondary actions. Firms to black when the
          current page (people) lives inside the menu. The dropdown is a quiet
@@ -322,6 +326,7 @@
         '2': '{{ base }}/trainer',
         '3': '{{ base }}/workouts',
         '4': '{{ base }}/drinking',
+        '5': '{{ base }}/graphs',
       };
       function typingInField(el) {
         if (!el) return false;
