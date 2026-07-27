@@ -1603,13 +1603,16 @@ def get_related_people(person_id: int, limit: int = 10) -> dict:
 
 
 @mcp.tool()
-def get_briefing(recent_entries: int = 5) -> dict:
+def get_briefing(recent_entries: int = 5, recent_days: Optional[int] = None) -> dict:
     """One-call session context. Returns the people roster (id, name, role, groups,
     short summary), the pending-mention count, the list of groups, and the most
-    recent entries. Also returns `now`: the current Pacific date/time — all dates in
-    this log are Pacific, so use it to anchor "today"/"yesterday" before defaulting
-    or computing any entry_date. Call this at the start of a conversation so you know
-    who and what the user is likely talking about."""
+    recent entries — by default the last `recent_entries` (5); pass `recent_days`
+    instead to get EVERY entry from the last N Pacific days (e.g. recent_days=7 for
+    a week of catch-up context before a debrief). Also returns `now`: the current
+    Pacific date/time — all dates in this log are Pacific, so use it to anchor
+    "today"/"yesterday" before defaulting or computing any entry_date. Call this at
+    the start of a conversation so you know who and what the user is likely talking
+    about."""
     with db() as conn:
         prows = conn.execute(
             "SELECT id, canonical_name, role, summary FROM people ORDER BY canonical_name"
@@ -1624,11 +1627,20 @@ def get_briefing(recent_entries: int = 5) -> dict:
             "SELECT COUNT(*) AS n FROM mentions WHERE status='pending'"
         ).fetchone()["n"]
         grp = [r["name"] for r in conn.execute("SELECT name FROM groups ORDER BY name")]
-        recent = conn.execute(
-            "SELECT id, entry_date, body FROM entries "
-            "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC LIMIT ?",
-            (recent_entries,),
-        ).fetchall()
+        if recent_days:
+            cutoff = (date.fromisoformat(today()) - timedelta(days=recent_days - 1)).isoformat()
+            recent = conn.execute(
+                "SELECT id, entry_date, body FROM entries WHERE entry_date >= ? "
+                "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC "
+                "LIMIT 100",
+                (cutoff,),
+            ).fetchall()
+        else:
+            recent = conn.execute(
+                "SELECT id, entry_date, body FROM entries "
+                "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC LIMIT ?",
+                (recent_entries,),
+            ).fetchall()
     return {
         "now": current_clock(),
         "people": roster,
