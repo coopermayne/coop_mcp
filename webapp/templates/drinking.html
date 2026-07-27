@@ -152,8 +152,10 @@
 {# Daily chart. The first (newest) window is server-rendered; the ‹ › arrows page
    `window_days` at a time through history, re-rendering the bars + the date labels
    from /drinking/chart.json without a reload. Hovering a bar shows that day's exact
-   amount in a floating tooltip (event-delegated, so it works on the re-rendered bars
-   too). Same no-framework data-* pattern as the cards above. #}
+   amount in a floating tooltip; clicking a day opens the Custom panel above with
+   that date prefilled, for back-filling past days (both event-delegated, so they
+   work on the re-rendered bars too). Same no-framework data-* pattern as the
+   cards above. #}
 <div class="border border-gray-200 rounded-[4px] px-5 sm:px-6 py-5 mb-12"
      data-drink-chart data-base="{{ base }}" data-today="{{ today }}"
      data-since="{{ s.since }}" data-until="{{ s.until }}" data-days="{{ s.window_days }}">
@@ -171,7 +173,7 @@
     </div>
   </div>
   <div class="relative">
-    <div class="flex items-end gap-px h-32 mt-2" data-chart-bars>
+    <div class="flex items-end gap-px h-32 mt-2 cursor-pointer" data-chart-bars>
       {% for day in s.series %}
         {% set t = day.total %}
         {% if t <= 0 %}{% set c = '' %}
@@ -303,6 +305,25 @@
       tip.style.top = (e.clientY - wrap.top - 8) + 'px';
     });
     bars.addEventListener('mouseleave', function () { tip.hidden = true; });
+
+    // Click a day → open the Custom panel with that date prefilled, so past days
+    // can be back-filled straight from the chart.
+    bars.addEventListener('click', function (e) {
+      var cell = e.target.closest('[data-bar]');
+      if (!cell) return;
+      var card = document.querySelector('[data-log-drink]');
+      var panel = card.querySelector('[data-custom-panel]');
+      var caret = card.querySelector('[data-custom-caret]');
+      panel.hidden = false;
+      caret.style.transform = 'rotate(180deg)';
+      panel.querySelector('[name="drink_date"]').value = cell.dataset.date;
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      // Focus the amount (the next thing to type) — but not on touch devices,
+      // where the keyboard popping up would shove the page around.
+      if (!window.matchMedia('(pointer: coarse)').matches) {
+        panel.querySelector('[data-custom-amt]').focus({ preventScroll: true });
+      }
+    });
   })();
 </script>
 
