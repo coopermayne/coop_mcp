@@ -1255,6 +1255,18 @@ async def drinking_delete(request: Request):
 
 
 # --------------------------------------------------------------------------- #
+# Graphs — one page of line charts over the trends the app already stores
+# (bodyweight, drinks, per-exercise strength progress). Read-only; the whole
+# history is bootstrapped into the page as JSON (single-user data is small) and
+# filtered/toggled client-side by static/graphs.js.
+# --------------------------------------------------------------------------- #
+
+@app.get("/graphs")
+async def graphs(request: Request):
+    return page(request, "graphs.html", active="graphs", graph=data.graph_data())
+
+
+# --------------------------------------------------------------------------- #
 # AI chat — a write path for prose (the journal). Browse pages above stay
 # read-only; drinks have their own direct-entry form. Each surface is scoped to
 # one toolset: the `journal` panel (journal page) and the `trainer` page get

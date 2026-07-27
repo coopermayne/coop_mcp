@@ -665,3 +665,73 @@ def recent_drinks(limit: int = 30) -> list:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Graphs
+# --------------------------------------------------------------------------- #
+
+def graph_data() -> dict:
+    """Everything the /graphs page plots, in one bootstrap payload (the data is a
+    single user's history — small enough to ship whole and filter client-side).
+
+    - weight: one point per weighed day (latest reading wins, matching
+      bodyweight_on / server.log_bodyweight).
+    - drinks: the logged days only; the page gap-fills sober days to 0 so the
+      line is honest about the calendar.
+    - exercises: per strength exercise (has at least one done, weighted set on a
+      done workout), one point per session date with the deterministic aggregates
+      the page can plot: heaviest set (`top`), best Epley est. 1RM (`e1rm` =
+      weight * (1 + reps/30)), and total volume (`vol` = Σ weight*reps). Cardio
+      sets (weight NULL) don't produce points, so pure-cardio movements are
+      absent. Judgment about what the numbers mean stays with the reader/model —
+      this is arithmetic only.
+    - rotation_ids: the current rotation, the page's default selection.
+    """
+    with server.db() as conn:
+        weight = [
+            {"date": r["weigh_date"], "lbs": r["weight_lbs"]}
+            for r in conn.execute(
+                """SELECT weigh_date, weight_lbs FROM body_weight b
+                   WHERE id = (SELECT MAX(id) FROM body_weight
+                               WHERE weigh_date = b.weigh_date)
+                   ORDER BY weigh_date"""
+            )
+        ]
+        drinks = [
+            {"date": r["drink_date"], "total": r["standard_drinks"]}
+            for r in conn.execute(
+                "SELECT drink_date, ROUND(SUM(standard_drinks),2) AS standard_drinks "
+                "FROM drinks GROUP BY drink_date ORDER BY drink_date"
+            )
+        ]
+        ex_rows = conn.execute(
+            """SELECT s.exercise_id, e.name, w.workout_date AS date,
+                      MAX(s.weight_lbs) AS top,
+                      ROUND(MAX(s.weight_lbs * (1 + COALESCE(s.reps, 1) / 30.0)), 1) AS e1rm,
+                      ROUND(SUM(s.weight_lbs * COALESCE(s.reps, 1)), 1) AS vol
+               FROM sets s
+               JOIN workouts w ON w.id = s.workout_id
+               JOIN exercises e ON e.id = s.exercise_id
+               WHERE s.status = 'done' AND w.status = 'done'
+                     AND w.workout_date != '' AND s.weight_lbs IS NOT NULL
+               GROUP BY s.exercise_id, w.workout_date
+               ORDER BY e.name, w.workout_date""",
+        ).fetchall()
+        rotation_ids = [
+            r["id"] for r in conn.execute(
+                "SELECT id FROM exercises WHERE in_rotation=1 AND archived=0 ORDER BY name"
+            )
+        ]
+    exercises: list[dict] = []
+    by_id: dict[int, dict] = {}
+    for r in ex_rows:
+        ex = by_id.get(r["exercise_id"])
+        if ex is None:
+            ex = {"exercise_id": r["exercise_id"], "name": r["name"], "points": []}
+            by_id[r["exercise_id"]] = ex
+            exercises.append(ex)
+        ex["points"].append({"date": r["date"], "top": r["top"],
+                             "e1rm": r["e1rm"], "vol": r["vol"]})
+    return {"weight": weight, "drinks": drinks, "exercises": exercises,
+            "rotation_ids": rotation_ids, "today": server.today()}
