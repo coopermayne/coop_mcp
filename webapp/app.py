@@ -23,7 +23,7 @@ import sys
 import time
 from typing import Optional
 from urllib.parse import quote
-from datetime import datetime
+from datetime import datetime, date as date_cls
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -1264,6 +1264,40 @@ async def drinking_delete(request: Request):
 @app.get("/graphs")
 async def graphs(request: Request):
     return page(request, "graphs.html", active="graphs", graph=data.graph_data())
+
+
+@app.post("/graphs/goal")
+async def graphs_goal(request: Request):
+    """Set or clear the bodyweight goal from the graphs page (PRG). Stored as
+    `weight_goal` in the trainer profile blob via server.update_profile — the
+    same profile get_fitness_briefing surfaces, so the trainer model coaches
+    within the goal without any new plumbing. The latest weigh-in at save time
+    is captured as the fixed anchor the chart draws the pace line from."""
+    form = await request.form()
+    base = base_path(request)
+    if (form.get("action") or "") == "clear":
+        server.update_profile(profile={"weight_goal": None})
+        return RedirectResponse(base + "/graphs", status_code=303)
+    try:
+        target = float((form.get("target_lbs") or "").strip())
+    except ValueError:
+        return RedirectResponse(base + "/graphs", status_code=303)
+    target_date = (form.get("target_date") or "").strip() or None
+    if target_date:
+        try:
+            date_cls.fromisoformat(target_date)
+        except ValueError:
+            target_date = None
+    goal = {"target_lbs": target, "target_date": target_date, "set_on": server.today(),
+            "start_lbs": None, "start_date": None}
+    with server.db() as conn:
+        r = conn.execute(
+            "SELECT weigh_date, weight_lbs FROM body_weight "
+            "ORDER BY weigh_date DESC, id DESC LIMIT 1").fetchone()
+    if r:
+        goal["start_lbs"], goal["start_date"] = r["weight_lbs"], r["weigh_date"]
+    server.update_profile(profile={"weight_goal": goal})
+    return RedirectResponse(base + "/graphs", status_code=303)
 
 
 # --------------------------------------------------------------------------- #

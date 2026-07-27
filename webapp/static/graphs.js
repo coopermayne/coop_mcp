@@ -42,13 +42,13 @@
   /* ---------- state (persisted) ----------------------------------------- */
   var STORE_KEY = 'graphs.state';
   var state = { range: 90, panels: { weight: true, drinks: true, exercises: true },
-                sel: null, metric: 'top' };
+                ex: null, metric: 'top' };
   try {
     var saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
     if (saved && typeof saved === 'object') {
       if (typeof saved.range === 'number') state.range = saved.range;
       if (saved.panels) state.panels = Object.assign(state.panels, saved.panels);
-      if (Array.isArray(saved.sel)) state.sel = saved.sel;
+      if (saved.ex != null) state.ex = saved.ex;
       if (saved.metric) state.metric = saved.metric;
     }
   } catch (e) {}
@@ -58,22 +58,18 @@
 
   var exById = {};
   DATA.exercises.forEach(function (ex) { exById[ex.exercise_id] = ex; });
-  // Selection is an 8-slot array (index = color slot); a removed exercise leaves
-  // a null hole so the survivors KEEP their colors — color follows the entity,
-  // not its position in the list. Default: the current rotation.
-  function selCount() { return state.sel.filter(function (x) { return x != null; }).length; }
-  if (state.sel) {
-    state.sel = state.sel.map(function (id) { return exById[id] ? id : null; });
+  // One exercise shows at a time; the cycle order is most-recently-trained
+  // first, walking back to the lift touched longest ago (points are
+  // date-ascending, so the last point is the latest session).
+  var EX_ORDER = DATA.exercises.slice().sort(function (a, b) {
+    var la = a.points[a.points.length - 1].date, lb = b.points[b.points.length - 1].date;
+    return la < lb ? 1 : la > lb ? -1 : a.name.localeCompare(b.name);
+  });
+  if (!exById[state.ex]) state.ex = EX_ORDER.length ? EX_ORDER[0].exercise_id : null;
+  function exIndex() {
+    for (var i = 0; i < EX_ORDER.length; i++) if (EX_ORDER[i].exercise_id === state.ex) return i;
+    return 0;
   }
-  if (!state.sel || !selCount()) {
-    state.sel = DATA.rotation_ids.filter(function (id) { return exById[id]; }).slice(0, 8);
-  }
-  if (!selCount()) {   // no rotation yet — start with the most-trained lifts
-    state.sel = DATA.exercises.slice()
-      .sort(function (a, b) { return b.points.length - a.points.length; })
-      .slice(0, 8).map(function (ex) { return ex.exercise_id; });
-  }
-  state.sel = state.sel.slice(0, 8);
 
   /* ---------- helpers ---------------------------------------------------- */
   function ts(iso) { return Date.parse(iso + 'T12:00:00') / 1000; }  // local noon, DST-safe
@@ -141,7 +137,8 @@
           return {
             label: s.label,
             stroke: s.color,
-            width: 2,
+            width: s.width || 2,
+            dash: s.dash,
             spanGaps: true,
             points: { show: s.points !== false, size: 5, fill: s.color },
             value: function (u_, v) { return v == null ? '—' : fmtNum(v); },
@@ -168,10 +165,49 @@
   function buildWeight(el) {
     var pts = DATA.weight.filter(function (p) { return ts(p.date) >= minTs(); });
     if (!pts.length) return emptyNote(el, 'No weigh-ins in this range.');
-    makeChart(el, [{ label: 'Bodyweight', color: WEIGHT_COLOR[theme()] }], [
-      pts.map(function (p) { return ts(p.date); }),
-      pts.map(function (p) { return p.lbs; }),
-    ], { height: 180 });
+    var col = WEIGHT_COLOR[theme()];
+    var pal = palette();
+    var goal = DATA.weight_goal;
+    var wBy = {}, xsSet = {};
+    pts.forEach(function (p) { var t = ts(p.date); wBy[t] = p.lbs; xsSet[t] = true; });
+
+    // Pace line: from the weigh-in the goal was anchored at to (target_date,
+    // target_lbs), clipped to the visible window (interpolated at the edges).
+    // In the All range the axis extends to the goal date so the flag itself is
+    // on screen; in windowed ranges you still see whether you're above or
+    // below pace where the line crosses the window.
+    var trajBy = null;
+    if (goal && goal.target_date && goal.start_date && goal.start_lbs != null) {
+      var gTs = ts(goal.target_date), sTs = ts(goal.start_date);
+      if (gTs > sTs) {
+        var winEnd = state.range ? todayTs : Math.max(todayTs, gTs);
+        var t0 = Math.max(sTs, minTs() === -Infinity ? sTs : minTs());
+        var t1 = Math.min(gTs, winEnd);
+        if (t1 > t0) {
+          var lerp = function (t) {
+            return goal.start_lbs + (goal.target_lbs - goal.start_lbs) * (t - sTs) / (gTs - sTs);
+          };
+          trajBy = {};
+          trajBy[t0] = lerp(t0);
+          trajBy[t1] = lerp(t1);
+          xsSet[t0] = xsSet[t1] = true;
+        }
+      }
+    }
+    var xs = Object.keys(xsSet).map(Number).sort(function (a, b) { return a - b; });
+    var series = [{ label: 'Bodyweight', color: col }];
+    var cols = [xs.map(function (t) { return wBy[t] != null ? wBy[t] : null; })];
+    if (trajBy) {
+      series.push({ label: 'Pace', color: col, dash: [5, 6], points: false, width: 1.5 });
+      cols.push(xs.map(function (t) { return trajBy[t] != null ? trajBy[t] : null; }));
+    }
+    if (goal) {   // horizontal target line across the whole plot
+      var gl = {};
+      gl[xs[0]] = gl[xs[xs.length - 1]] = goal.target_lbs;
+      series.push({ label: 'Goal', color: pal.axis, dash: [3, 5], points: false, width: 1.5 });
+      cols.push(xs.map(function (t) { return gl[t] != null ? gl[t] : null; }));
+    }
+    makeChart(el, series, [xs].concat(cols), { height: 180 });
   }
 
   function buildDrinks(el) {
@@ -196,29 +232,19 @@
   }
 
   function buildExercises(el) {
-    if (!selCount()) return emptyNote(el, 'Pick an exercise below.');
-    var pal = palette();
-    // Shared x: the union of session dates across the selected lifts; each
-    // series is null where it wasn't trained (spanGaps connects across).
-    var dateSet = {};
-    var picked = [];
-    state.sel.forEach(function (id, i) {
-      if (id == null) return;
-      var ex = exById[id];
-      var pts = ex.points.filter(function (p) { return ts(p.date) >= minTs(); });
-      pts.forEach(function (p) { dateSet[ts(p.date)] = true; });
-      picked.push({ ex: ex, pts: pts, color: pal.slots[i] });
-    });
-    var xs = Object.keys(dateSet).map(Number).sort(function (a, b) { return a - b; });
-    if (!xs.length) return emptyNote(el, 'No sessions in this range.');
-    var series = [], cols = [];
-    picked.forEach(function (p) {
-      var byTs = {};
-      p.pts.forEach(function (pt) { byTs[ts(pt.date)] = pt[state.metric]; });
-      series.push({ label: p.ex.name, color: p.color });
-      cols.push(xs.map(function (t) { return byTs[t] != null ? byTs[t] : null; }));
-    });
-    makeChart(el, series, [xs].concat(cols), { height: 240 });
+    var ex = exById[state.ex];
+    if (!ex) return emptyNote(el, 'No logged lifts yet.');
+    var pts = ex.points.filter(function (p) { return ts(p.date) >= minTs(); });
+    var meta = root.querySelector('[data-ex-meta]');
+    var last = ex.points[ex.points.length - 1].date;
+    meta.textContent = ex.points.length + ' session' + (ex.points.length === 1 ? '' : 's')
+      + ' · last done ' + fmtDate(ts(last))
+      + ' · ' + (exIndex() + 1) + ' of ' + EX_ORDER.length;
+    if (!pts.length) return emptyNote(el, 'No sessions in this range — widen the range to see this lift.');
+    makeChart(el, [{ label: ex.name, color: SLOTS[theme()][0] }], [
+      pts.map(function (p) { return ts(p.date); }),
+      pts.map(function (p) { return p[state.metric]; }),
+    ], { height: 240 });
   }
 
   var BUILDERS = { weight: buildWeight, drinks: buildDrinks, exercises: buildExercises };
@@ -250,7 +276,6 @@
     root.querySelectorAll('[data-range]').forEach(function (b) {
       b.setAttribute('aria-pressed', String(Number(b.dataset.range) === state.range));
     });
-    var pal = palette();
     var panelColor = { weight: WEIGHT_COLOR[theme()], drinks: DRINKS_COLOR[theme()], exercises: '' };
     root.querySelectorAll('[data-panel]').forEach(function (b) {
       var key = b.dataset.panel;
@@ -259,12 +284,7 @@
       if (panelColor[key]) b.style.setProperty('--dot', panelColor[key]);
       else b.querySelector('.gdot').style.display = 'none';
     });
-    root.querySelectorAll('[data-ex]').forEach(function (b) {
-      var id = Number(b.dataset.ex);
-      var i = state.sel.indexOf(id);
-      b.setAttribute('aria-pressed', String(i !== -1));
-      b.style.setProperty('--dot', i !== -1 ? pal.slots[i] : 'transparent');
-    });
+    if (exPick && state.ex != null) exPick.value = String(state.ex);
   }
 
   root.querySelector('[data-range-chips]').addEventListener('click', function (e) {
@@ -283,6 +303,12 @@
     render();
   });
 
+  var goalToggle = root.querySelector('[data-goal-toggle]');
+  var goalForm = root.querySelector('[data-goal-form]');
+  if (goalToggle && goalForm) {
+    goalToggle.addEventListener('click', function () { goalForm.hidden = !goalForm.hidden; });
+  }
+
   root.querySelector('[data-ex-metric]').value = state.metric;
   root.querySelector('[data-ex-metric]').addEventListener('change', function (e) {
     state.metric = e.target.value;
@@ -290,41 +316,37 @@
     render();
   });
 
-  // Exercise picker chips — most-trained first so the useful ones are near the top.
-  var chipWrap = root.querySelector('[data-ex-chips]');
-  var hint = root.querySelector('[data-ex-hint]');
-  DATA.exercises
-    .slice()
-    .sort(function (a, b) { return b.points.length - a.points.length || a.name.localeCompare(b.name); })
-    .forEach(function (ex) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'gchip';
-      b.dataset.ex = ex.exercise_id;
-      b.title = ex.points.length + ' session' + (ex.points.length === 1 ? '' : 's');
-      var dot = document.createElement('span');
-      dot.className = 'gdot';
-      b.appendChild(dot);
-      b.appendChild(document.createTextNode(ex.name));
-      chipWrap.appendChild(b);
-    });
-  chipWrap.addEventListener('click', function (e) {
-    var b = e.target.closest('[data-ex]');
-    if (!b) return;
-    var id = Number(b.dataset.ex);
-    var i = state.sel.indexOf(id);
-    if (i !== -1) {
-      state.sel[i] = null;   // leave the hole so the others keep their colors
-      while (state.sel.length && state.sel[state.sel.length - 1] == null) state.sel.pop();
-    } else {
-      var hole = state.sel.indexOf(null);
-      if (hole !== -1) state.sel[hole] = id;
-      else if (state.sel.length < 8) state.sel.push(id);
-      else { hint.hidden = false; return; }
-    }
-    hint.hidden = selCount() < 8;
+  // Exercise cycler — the dropdown lists every lift in cycle order (most
+  // recently trained first); the arrows (and ←/→ off a text field) walk it,
+  // wrapping at the ends.
+  var exPick = root.querySelector('[data-ex-pick]');
+  EX_ORDER.forEach(function (ex) {
+    var o = document.createElement('option');
+    o.value = String(ex.exercise_id);
+    o.textContent = ex.name;
+    exPick.appendChild(o);
+  });
+  exPick.addEventListener('change', function () {
+    state.ex = Number(exPick.value);
     persist();
     render();
+  });
+  function cycleEx(step) {
+    if (!EX_ORDER.length) return;
+    var i = (exIndex() + step + EX_ORDER.length) % EX_ORDER.length;
+    state.ex = EX_ORDER[i].exercise_id;
+    persist();
+    render();
+  }
+  root.querySelector('[data-ex-prev]').addEventListener('click', function () { cycleEx(-1); });
+  root.querySelector('[data-ex-next]').addEventListener('click', function () { cycleEx(1); });
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+    if (root.querySelector('[data-panel-el="exercises"]').hidden) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); cycleEx(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); cycleEx(1); }
   });
 
   /* ---------- environment reactions --------------------------------------- */

@@ -687,8 +687,17 @@ def graph_data() -> dict:
       absent. Judgment about what the numbers mean stays with the reader/model —
       this is arithmetic only.
     - rotation_ids: the current rotation, the page's default selection.
+    - weight_goal: the goal from the trainer profile (settings key 'profile',
+      the same blob get_fitness_briefing surfaces, so the trainer chat sees it
+      too): {target_lbs, target_date?, start_lbs?, start_date?} or None. The
+      start_* anchor is the latest weigh-in at the moment the goal was set —
+      the fixed point the page draws the pace line from. Written by the
+      /graphs/goal route via server.update_profile; no goal logic lives here.
     """
     with server.db() as conn:
+        goal = server._get_profile(conn).get("weight_goal") or None
+        if goal and not isinstance(goal.get("target_lbs"), (int, float)):
+            goal = None
         weight = [
             {"date": r["weigh_date"], "lbs": r["weight_lbs"]}
             for r in conn.execute(
@@ -734,4 +743,5 @@ def graph_data() -> dict:
         ex["points"].append({"date": r["date"], "top": r["top"],
                              "e1rm": r["e1rm"], "vol": r["vol"]})
     return {"weight": weight, "drinks": drinks, "exercises": exercises,
-            "rotation_ids": rotation_ids, "today": server.today()}
+            "rotation_ids": rotation_ids, "today": server.today(),
+            "weight_goal": goal}

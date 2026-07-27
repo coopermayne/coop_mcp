@@ -52,9 +52,40 @@
   </div>
 
   <section data-panel-el="weight" hidden class="mb-8">
-    <div class="flex items-baseline justify-between mb-2">
+    <div class="flex items-baseline justify-between gap-3 mb-2">
       <h2 class="text-sm font-semibold">Bodyweight <span class="text-gray-400 font-normal">lbs</span></h2>
+      {# Goal control: the current goal reads as quiet text; tapping it opens the
+         edit form. Saved into the trainer profile (see /graphs/goal), so the
+         trainer chat can also see and discuss it. #}
+      <button type="button" data-goal-toggle class="text-xs text-gray-400 hover:text-black transition-colors">
+        {%- if graph.weight_goal -%}
+          goal {{ graph.weight_goal.target_lbs | num }} lbs{% if graph.weight_goal.target_date %} by {{ graph.weight_goal.target_date | short_date }}{% endif %} ✎
+        {%- else -%}
+          + set goal
+        {%- endif -%}
+      </button>
     </div>
+    <form method="post" action="{{ base }}/graphs/goal" hidden data-goal-form
+          class="flex flex-wrap items-end gap-2 mb-3 border border-gray-200 rounded-[4px] px-3 py-2.5">
+      <label class="text-xs text-gray-500">
+        <span class="block mb-1">Goal weight (lbs)</span>
+        <input type="number" name="target_lbs" step="0.1" min="1" required
+               value="{{ graph.weight_goal.target_lbs if graph.weight_goal else '' }}"
+               class="w-28 border border-gray-200 rounded-[4px] px-2 py-1 text-sm" />
+      </label>
+      <label class="text-xs text-gray-500">
+        <span class="block mb-1">By (optional)</span>
+        <input type="date" name="target_date"
+               value="{{ graph.weight_goal.target_date or '' if graph.weight_goal else '' }}"
+               class="border border-gray-200 rounded-[4px] px-2 py-1 text-sm" />
+      </label>
+      <button type="submit" name="action" value="save"
+              class="text-xs font-medium border border-black rounded-[4px] px-3 py-1.5 hover:bg-black hover:text-white transition-colors">Save</button>
+      {% if graph.weight_goal %}
+      <button type="submit" name="action" value="clear"
+              class="text-xs text-gray-400 hover:text-red-500 px-1.5 py-1.5 transition-colors">Clear</button>
+      {% endif %}
+    </form>
     <div data-chart="weight"></div>
   </section>
 
@@ -68,12 +99,24 @@
         <option value="vol">Volume</option>
       </select>
     </div>
+    {# One exercise at a time, so the y-axis is scaled to that lift. Cycle with
+       the arrows (also ←/→ on a keyboard) through every movement with logged
+       weighted sets, most recently trained first; the dropdown jumps straight
+       to one. graphs.js fills the options. #}
+    <div class="flex items-center gap-2 mb-2">
+      <button type="button" data-ex-prev aria-label="Previous exercise" title="Previous exercise (←)"
+              class="shrink-0 w-8 h-8 flex items-center justify-center rounded-full border border-gray-200 text-gray-400 hover:text-black hover:border-gray-400 transition-colors">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <select data-ex-pick aria-label="Exercise"
+              class="flex-1 min-w-0 text-sm font-medium border border-gray-200 rounded-[4px] px-2 py-1.5 bg-white"></select>
+      <button type="button" data-ex-next aria-label="Next exercise" title="Next exercise (→)"
+              class="shrink-0 w-8 h-8 flex items-center justify-center rounded-full border border-gray-200 text-gray-400 hover:text-black hover:border-gray-400 transition-colors">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+    </div>
     <div data-chart="exercises"></div>
-    {# Exercise picker — every strength movement with logged weighted sets. Colors
-       are assigned per exercise while selected (max 8 at once, the palette's
-       fixed slot order; the dot on the chip mirrors the line color). #}
-    <div class="flex flex-wrap gap-1.5 mt-3" data-ex-chips role="group" aria-label="Exercises plotted"></div>
-    <p class="text-[11px] text-gray-400 mt-2" data-ex-hint hidden>Up to 8 exercises at a time — unselect one to add another.</p>
+    <p class="text-[11px] text-gray-400 mt-2" data-ex-meta></p>
   </section>
 
   <section data-panel-el="drinks" hidden class="mb-8">
