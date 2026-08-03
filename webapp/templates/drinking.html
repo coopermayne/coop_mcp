@@ -239,10 +239,10 @@
       if (t <= 4) return '#808080';
       return '#2a2a2a';
     }
-    function shortDate(iso) {  // mirror the `short_date` filter: "Jun 3, 2026"
+    function shortDate(iso) {  // hover readout: "Sun, Jun 3, 2026"
       var p = iso.split('-');
       return new Date(+p[0], +p[1] - 1, +p[2])
-        .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     }
     function dowLetter(iso) {  // sparse label: only Mon/Wed/Fri, the rest blank
       var p = iso.split('-');

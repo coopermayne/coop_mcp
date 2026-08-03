@@ -85,6 +85,10 @@
     var d = new Date(v * 1000);
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   }
+  function fmtDateDow(v) {   // hover readout — day of week up front ("Sun, Aug 2, 2026")
+    var d = new Date(v * 1000);
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
   function fmtNum(v) {
     if (v == null) return '';
     return (Math.round(v * 10) / 10).toLocaleString();
@@ -132,7 +136,7 @@
           grid: { stroke: pal.grid, width: 1 }, ticks: { show: false },
           values: function (u_, vals) { return vals.map(fmtNum); } },
       ],
-      series: [{ label: 'Date', value: function (u_, v) { return v == null ? '—' : fmtDate(v); } }]
+      series: [{ label: 'Date', value: function (u_, v) { return v == null ? '—' : fmtDateDow(v); } }]
         .concat(series.map(function (s) {
           return {
             label: s.label,
