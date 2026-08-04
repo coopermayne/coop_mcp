@@ -84,6 +84,120 @@
 {% endif %}
 </div>
 
+{# Drink editor — the whole drinking UI now that the separate page is gone. Opened
+   by any day header's counter (m.drink_counter). Just a number: the stepper writes
+   an ABSOLUTE total for that day through /drinking/day (0 clears it back to sober);
+   kind/notes stay in the DB, editable through chat, but aren't worth a form here.
+   Lives outside data-journal-feed so a chat-driven feed refresh can't blow it away
+   mid-edit; the button handler is delegated for the same reason. #}
+<div data-drink-modal hidden
+     class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/30"
+     role="dialog" aria-modal="true" aria-labelledby="drink-modal-date">
+  <div class="w-full max-w-xs bg-white border border-gray-200 rounded-[6px] shadow-xl px-6 py-5"
+       data-drink-card>
+    <p id="drink-modal-date" class="text-[10px] uppercase tracking-widest text-gray-400 text-center"
+       data-drink-modal-date></p>
+    <div class="flex items-center justify-center gap-4 mt-4">
+      <button type="button" data-drink-step="-0.5" aria-label="Fewer drinks"
+              class="w-10 h-10 flex items-center justify-center border border-gray-200 rounded-[8px] text-xl leading-none text-gray-600 hover:bg-black hover:text-white hover:border-black transition-colors">–</button>
+      <input type="number" step="0.5" min="0" inputmode="decimal" data-drink-amt
+             class="w-20 px-2 py-1.5 border border-gray-200 text-2xl font-semibold tabular-nums text-center focus:outline-none focus:border-black" />
+      <button type="button" data-drink-step="0.5" aria-label="More drinks"
+              class="w-10 h-10 flex items-center justify-center border border-gray-200 rounded-[8px] text-xl leading-none text-gray-600 hover:bg-black hover:text-white hover:border-black transition-colors">+</button>
+    </div>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400 text-center mt-2">standard drinks</p>
+    <p class="text-xs text-red-600 text-center mt-3" data-drink-error hidden></p>
+    <div class="flex items-center gap-2 mt-5">
+      <button type="button" data-drink-cancel
+              class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Cancel</button>
+      <button type="button" data-drink-save
+              class="ml-auto px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 disabled:opacity-40 transition-colors">Save</button>
+    </div>
+  </div>
+</div>
+<script>
+  // Day-header drink counter → modal → PUT-style absolute save. No framework; the
+  // click handler is delegated off document so it survives the chat panel's feed
+  // re-render, and the saved total is written straight back onto the button (no
+  // page reload, so the reading position is kept).
+  (function () {
+    var modal = document.querySelector('[data-drink-modal]');
+    if (!modal) return;
+    var base = {{ base | tojson }};
+    var amt = modal.querySelector('[data-drink-amt]');
+    var dateEl = modal.querySelector('[data-drink-modal-date]');
+    var errEl = modal.querySelector('[data-drink-error]');
+    var save = modal.querySelector('[data-drink-save]');
+    var current = null;  // the counter button being edited
+
+    function fmt(n) { return String(Math.round(n * 100) / 100); }
+    function longDate(iso) {
+      var p = iso.split('-');
+      return new Date(+p[0], +p[1] - 1, +p[2])
+        .toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    }
+    function open(btn) {
+      current = btn;
+      var t = parseFloat(btn.dataset.total) || 0;
+      amt.value = fmt(t);
+      dateEl.textContent = longDate(btn.dataset.date);
+      errEl.hidden = true;
+      modal.hidden = false;
+      // Not on touch: the keyboard popping up would cover the stepper.
+      if (!window.matchMedia('(pointer: coarse)').matches) amt.focus({ preventScroll: true });
+    }
+    function close() { modal.hidden = true; current = null; }
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-drink-btn]');
+      if (btn) { e.preventDefault(); open(btn); }
+    });
+    modal.querySelector('[data-drink-cancel]').addEventListener('click', close);
+    modal.addEventListener('click', function (e) {  // click the backdrop to dismiss
+      if (!e.target.closest('[data-drink-card]')) close();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modal.hidden) close();
+    });
+    modal.querySelectorAll('[data-drink-step]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        amt.value = fmt(Math.max(0, (parseFloat(amt.value) || 0) + parseFloat(b.dataset.drinkStep)));
+      });
+    });
+    amt.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSave(); });
+    save.addEventListener('click', doSave);
+
+    function doSave() {
+      if (!current) return;
+      var value = Math.max(0, parseFloat(amt.value) || 0);
+      var btn = current;
+      save.disabled = true;
+      errEl.hidden = true;
+      fetch(base + '/drinking/day', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: btn.dataset.date, standard_drinks: value })
+      })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw j; return j; }); })
+        .then(function (j) {
+          var t = j.standard_drinks || 0;
+          btn.dataset.total = t;
+          btn.querySelector('[data-drink-total]').textContent = t ? fmt(t) : '';
+          btn.classList.toggle('text-gray-500', !!t);
+          btn.classList.toggle('hover:text-black', !!t);
+          btn.classList.toggle('text-gray-200', !t);
+          btn.classList.toggle('hover:text-gray-500', !t);
+          close();
+        })
+        .catch(function (j) {
+          errEl.textContent = (j && j.error) || 'Could not save.';
+          errEl.hidden = false;
+        })
+        .finally(function () { save.disabled = false; });
+    }
+  })();
+</script>
+
 {% if chat_enabled %}{% include "_chat_panel.html" %}{% endif %}
 
 {% endblock %}

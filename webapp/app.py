@@ -96,10 +96,11 @@ BACKUP_TOKEN = (os.environ.get("BACKUP_TOKEN") or "").strip()
 # Google auth keeps strangers OUT; this keeps someone who picks up the ALREADY
 # signed-in device (the classic "my wife grabs my phone") from scrolling the
 # journal. It guards ONLY the journal surface (entries / people / pending /
-# groups + the journal chat) — trainer and drinking stay open, they're not
-# private. It's deliberately low-security: the only person who can even reach
-# these routes is the authenticated owner, so the gate's job is to stop casual
-# reading, not a determined attacker.
+# groups + the journal chat, and now the day-header drink write, which lives on
+# the feed) — the trainer stays open, it isn't private. It's deliberately
+# low-security: the only person who can even reach these routes is the
+# authenticated owner, so the gate's job is to stop casual reading, not a
+# determined attacker.
 #
 # Unlock is a "secret knock": tap a rhythm on the lock screen. We compare the
 # *ratios* between taps (normalized so total tempo doesn't matter), so the same
@@ -121,10 +122,12 @@ LOCK_IDLE_SECONDS = int(os.environ.get("JOURNAL_LOCK_IDLE", "300") or "300")
 LOCK_TOLERANCE = float(os.environ.get("JOURNAL_LOCK_TOLERANCE", "0.15") or "0.15")
 
 # Journal-only paths the lock guards (relative to the mount prefix). Everything
-# else — trainer, drinking, library, auth, static, the lock screen itself —
-# passes straight through.
+# else — trainer, library, auth, static, the lock screen itself — passes
+# straight through. /drinking/day is in scope because the drink counter is part
+# of the journal feed's day header now.
 LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
-LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/")
+LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/",
+                     "/drinking/")
 
 app = FastAPI(title="Journal")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
@@ -275,11 +278,11 @@ def page(request: Request, template: str, active: str = "", status_code: int = 2
     ctx.update(active=active, auth_enabled=AUTH_ENABLED, show_logout=SHOW_LOGOUT,
                chat_enabled=chat.ENABLED,
                # `lock_guard` arms the client idle-relock timer, on the guarded
-               # journal pages only (never on trainer/drinking, never on the lock
+               # journal pages only (never on the trainer, never on the lock
                # screen itself). `lock_in_journal` gates the nav's lock controls
                # (Lock journal / Change knock): shown ONLY while you're actually
                # inside the unlocked journal — so they're never reachable from the
-               # lock screen or the open trainer/drinking pages (otherwise the knock
+               # lock screen or the open trainer pages (otherwise the knock
                # could be changed without first proving you're in).
                lock_guard=_lock_active() and locked_here,
                lock_in_journal=_lock_active() and locked_here and _is_unlocked(request),
@@ -434,7 +437,7 @@ class LockGate(BaseHTTPMiddleware):
     session is unlocked and still inside the idle window. On a guarded, unlocked
     request it slides the idle timer forward, so the lock is an inactivity timeout
     — set the device down and it re-locks itself. Everything outside the journal
-    surface (trainer, drinking, the lock screen, static) passes straight through."""
+    surface (trainer, the lock screen, static) passes straight through."""
     async def dispatch(self, request: Request, call_next):
         root = request.scope.get("root_path", "") or ""
         path = _rel_path(request)
@@ -512,7 +515,7 @@ async def lock_page(request: Request):
     else:
         mode = "unlock"
     # active="journal" so base.html renders the nav: the lock only covers the journal,
-    # so the rest of the app (trainer, training, drinking, library) stays reachable
+    # so the rest of the app (trainer, training, library) stays reachable
     # from the lock screen without unlocking.
     return page(request, "lock.html", active="journal", next=nxt, mode=mode,
                 pin_enabled=bool(LOCK_PIN), tolerance=LOCK_TOLERANCE)
@@ -1151,107 +1154,37 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
     return JSONResponse(info, status_code=code)
 
 
-@app.get("/drinking")
-async def drinking(request: Request, error: str = ""):
-    s = data.drinking(days=30)
-    log = data.recent_drinks(limit=30)
-    # Today's running tally for the header — drinks are one row per day, so today's
-    # row (if any) IS today's total/tags. None on a sober day.
-    today = server.today()
-    today_drink = next((r for r in log if r["drink_date"] == today), None)
-    return page(request, "drinking.html", active="drinking",
-                s=s, log=log, today=today, today_drink=today_drink, error=error)
+@app.post("/drinking/day")
+async def drinking_set_day(request: Request):
+    """Set one day's drink total from the journal feed's day-header counter (the
+    only drink write in the UI now — there's no separate drinking page). Body:
+    {date: "YYYY-MM-DD", standard_drinks: float}. The value is ABSOLUTE, not an
+    increment: it's what the modal's stepper is showing. 0 clears the day (a day
+    with no row is sober). kind/notes aren't editable here — the counter is just a
+    number — so an existing day's tags survive an amount correction untouched.
 
-
-@app.get("/drinking/chart.json")
-async def drinking_chart(request: Request, until: str = "", days: int = 30):
-    """Windowed bar-chart data for the drinking page's paging arrows. Returns the
-    gap-filled per-day series for the `days` window ending on `until` (default
-    today), plus the peak for scaling and `can_next` (whether a newer window
-    exists, i.e. the window doesn't already end today). The page renders the first
-    window server-side; this feeds the prev/next re-render without a reload."""
+    Returns {date, standard_drinks} so the header can re-render off the saved value."""
     from fastapi.responses import JSONResponse
-    u = until.strip() or None
-    s = data.drinking(days=days, until=u)
-    return JSONResponse({
-        "since": s["since"], "until": s["until"], "window_days": s["window_days"],
-        "peak": s["peak"], "series": s["series"],
-        "since_label": short_date(s["since"]), "until_label": short_date(s["until"]),
-        "can_next": s["until"] < server.today(),
-    })
-
-
-@app.post("/drinking/add")
-async def drinking_add(request: Request):
-    """Direct drink entry — the one write on the drinking page. Drinks are simple
-    enough that they don't need the AI: this calls server.log_drinks straight and
-    redirects back (Post/Redirect/Get). server.log_drinks does the validation."""
-    form = await request.form()
-    base = base_path(request)
-    raw = (form.get("standard_drinks") or "").strip()
+    body = await request.json()
+    d = (body.get("date") or "").strip() or server.today()
     try:
-        amount = float(raw)
-    except ValueError:
-        return RedirectResponse(base + "/drinking?error=Enter+a+number+of+drinks.",
-                                status_code=303)
-    res = server.log_drinks(
-        standard_drinks=amount,
-        drink_date=(form.get("drink_date") or "").strip() or None,
-        kind=(form.get("kind") or "").strip() or None,
-        notes=(form.get("notes") or "").strip() or None,
-    )
+        amount = float(body.get("standard_drinks"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "standard_drinks must be a number"}, status_code=400)
+    if amount < 0:
+        return JSONResponse({"error": "standard_drinks can't be negative"}, status_code=400)
+    with server.db() as conn:
+        row = conn.execute("SELECT id FROM drinks WHERE drink_date=?", (d,)).fetchone()
+    if amount == 0:
+        if row:
+            server.delete_record(kind="drink", id=row["id"])
+        return JSONResponse({"date": d, "standard_drinks": 0})
+    # Existing day → absolute correction (log_drinks only ever adds); new day → create.
+    res = (server.update_drink(drink_id=row["id"], standard_drinks=amount) if row
+           else server.log_drinks(standard_drinks=amount, drink_date=d))
     if isinstance(res, dict) and res.get("error"):
-        from urllib.parse import quote_plus
-        return RedirectResponse(base + "/drinking?error=" + quote_plus(res["error"]),
-                                status_code=303)
-    return RedirectResponse(base + "/drinking", status_code=303)
-
-
-@app.post("/drinking/edit")
-async def drinking_edit(request: Request):
-    """Edit one past day in place — overwrites the day's total/kind/notes/date with
-    absolute values via server.update_drink (PRG back). Blank fields are left
-    unchanged (update_drink only writes non-null args); to clear a day, delete it."""
-    from urllib.parse import quote_plus
-    form = await request.form()
-    base = base_path(request)
-    try:
-        drink_id = int((form.get("drink_id") or "").strip())
-    except ValueError:
-        return RedirectResponse(base + "/drinking", status_code=303)
-    raw = (form.get("standard_drinks") or "").strip()
-    amount = None
-    if raw:
-        try:
-            amount = float(raw)
-        except ValueError:
-            return RedirectResponse(base + "/drinking?error=Enter+a+number+of+drinks.",
-                                    status_code=303)
-    res = server.update_drink(
-        drink_id=drink_id,
-        standard_drinks=amount,
-        drink_date=(form.get("drink_date") or "").strip() or None,
-        kind=(form.get("kind") or "").strip() or None,
-        notes=(form.get("notes") or "").strip() or None,
-    )
-    if isinstance(res, dict) and res.get("error"):
-        return RedirectResponse(base + "/drinking?error=" + quote_plus(res["error"]),
-                                status_code=303)
-    return RedirectResponse(base + "/drinking", status_code=303)
-
-
-@app.post("/drinking/delete")
-async def drinking_delete(request: Request):
-    """Remove one logged day entirely (server.delete_record kind='drink'); the day
-    reverts to sober. PRG back to the drinking page."""
-    form = await request.form()
-    base = base_path(request)
-    try:
-        drink_id = int((form.get("drink_id") or "").strip())
-    except ValueError:
-        return RedirectResponse(base + "/drinking", status_code=303)
-    server.delete_record(kind="drink", id=drink_id)
-    return RedirectResponse(base + "/drinking", status_code=303)
+        return JSONResponse(res, status_code=400)
+    return JSONResponse({"date": d, "standard_drinks": amount})
 
 
 # --------------------------------------------------------------------------- #

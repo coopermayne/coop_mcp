@@ -196,8 +196,45 @@ def list_days(limit_entries: int = 120, since: str | None = None,
         if not days or days[-1]["date"] != e["entry_date"]:
             days.append({"date": e["entry_date"], "entries": []})
         days[-1]["entries"].append(e)
+    # Floor for bare drink-only days: the start of what's actually loaded. An
+    # explicit `since` IS that start; otherwise the default window reaches back to
+    # `oldest` — unless there's nothing older at all (has_more False), in which case
+    # the feed is complete and every drink day belongs on it.
+    floor = since or (oldest if has_more else None)
+    _attach_drinks(days, floor, bare_days=kind is None)
     return {"days": days, "total": total, "oldest": oldest,
             "has_more": has_more, "next_since": next_since}
+
+
+def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
+    """Hang each day's standard-drink total onto the feed's day blocks, in place.
+
+    The journal day header is where drinks are read and edited now (there's no
+    separate drinking page), so every rendered day carries a `drinks` total —
+    0.0 on a sober/unlogged day.
+
+    With `bare_days`, a day that has drinks but NO entries is inserted as an
+    empty day block, so a drink-only day (notably today, before anything is
+    written) is still visible and tappable. Those bare days are confined to the
+    loaded window (>= `floor`, the oldest day the feed reaches), so they never
+    imply history that hasn't been paged in; `floor=None` means the feed already
+    goes back to the beginning, so every drink day belongs on it. A kind filter
+    is a scoped view of entries, so it passes bare_days=False."""
+    with server.db() as conn:
+        rows = conn.execute(
+            "SELECT drink_date, ROUND(SUM(standard_drinks),2) AS total FROM drinks "
+            + ("WHERE drink_date >= ? " if floor else "")
+            + "GROUP BY drink_date",
+            (floor,) if floor else (),
+        ).fetchall()
+    totals = {r["drink_date"]: r["total"] for r in rows}
+    for day in days:
+        day["drinks"] = totals.pop(day["date"], 0.0)
+    if not bare_days or not totals:
+        return
+    for d, total in totals.items():
+        days.append({"date": d, "entries": [], "drinks": total})
+    days.sort(key=lambda x: x["date"], reverse=True)
 
 
 def calendar_months(entry_dates: list[str], today: str | None = None) -> list[dict]:
@@ -602,69 +639,6 @@ def muscle_breakdown() -> dict:
                 {"name": r["name"], "sets_14d": r["sets_14d"], "sets_7d": r["sets_7d"]}
             )
     return out
-
-
-# --------------------------------------------------------------------------- #
-# Drinking
-# --------------------------------------------------------------------------- #
-
-def drinking(days: int = 30, until=None) -> dict:
-    """Drink summary plus a gap-filled day-by-day series for the chart.
-
-    `until` (ISO date, default today) is the last day of the window — the chart's
-    paging arrows pass an earlier `until` to scroll back through history; the window
-    is the `days` calendar days ending on it.
-
-    Adds two headline averages (always today-relative, so they don't shift as the
-    chart pages back):
-      - avg_alltime: total drinks across all calendar days from the first ever logged
-        day through today (sober days count as 0).
-      - avg_6d_excl_today: last 6 calendar days NOT counting today, divided by 6.
-    """
-    s = server.get_drink_summary(days=days, until=until)
-    by_date = {d["date"]: d["total"] for d in s["daily"]}
-    start = date.fromisoformat(s["since"])
-    end = date.fromisoformat(s["until"])
-    series = []
-    cur = start
-    while cur <= end:
-        iso = cur.isoformat()
-        series.append({"date": iso, "total": by_date.get(iso, 0.0)})
-        cur += timedelta(days=1)
-    s["series"] = series
-    s["peak"] = max([x["total"] for x in series] + [1.0])
-
-    today_d = date.fromisoformat(server.today())
-    with server.db() as conn:
-        agg = conn.execute(
-            "SELECT MIN(drink_date) AS first, ROUND(SUM(standard_drinks),2) AS total FROM drinks"
-        ).fetchone()
-        first_iso, total_all = agg["first"], agg["total"] or 0.0
-        if first_iso:
-            span = (today_d - date.fromisoformat(first_iso)).days + 1
-            s["avg_alltime"] = round(total_all / span, 2) if span > 0 else 0.0
-        else:
-            s["avg_alltime"] = 0.0
-        six_start = (today_d - timedelta(days=6)).isoformat()
-        six_end = (today_d - timedelta(days=1)).isoformat()
-        r6 = conn.execute(
-            "SELECT ROUND(SUM(standard_drinks),2) AS t FROM drinks WHERE drink_date BETWEEN ? AND ?",
-            (six_start, six_end),
-        ).fetchone()
-        s["avg_6d_excl_today"] = round((r6["t"] or 0.0) / 6, 2)
-    return s
-
-
-def recent_drinks(limit: int = 30) -> list:
-    """Recent drinking days (one row per day), with the `id` the edit/delete forms
-    need plus the kind/notes the summary doesn't carry."""
-    with server.db() as conn:
-        rows = conn.execute(
-            "SELECT id, drink_date, standard_drinks, kind, notes FROM drinks "
-            "ORDER BY drink_date DESC, id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # --------------------------------------------------------------------------- #
