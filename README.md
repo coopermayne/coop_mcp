@@ -359,14 +359,14 @@ cp journal-2026-06-04.db /data/journal.db   # the path JOURNAL_DB points at
 pages are **read-only**: they read the **same** SQLite DB and reuse `server.py`'s
 retrieval functions directly (the single source of truth for data shapes), so they never
 duplicate query logic. Writes are confined to two purpose-built surfaces: the **journal
-chat panel** (AI) and the **direct drinks form** (no AI) — see below.
+chat panel** (AI) and the **day-header drink counter** (no AI) — see below.
 
 Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 `workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
 uppercase `tracking-widest` labels, stat-tile grids.
 
-Pages: dashboard · journal (+ `?q=` search, + AI chat panel) · entry detail · workouts ·
-drinking (+ direct entry) · people · person detail.
+Pages: dashboard · journal (+ `?q=` search, + AI chat panel, + per-day drink counter) ·
+entry detail · workouts · graphs · people · person detail.
 
 ### In-app AI chat — toolset-scoped
 
@@ -398,10 +398,14 @@ auto-loads a git-ignored `.env` at the project root (a tiny zero-dep loader in
 
 ### Direct drinks entry — no AI
 
-Drinks are simple structured data, so the `/drinking` page has its own write form:
-quick-add buttons (`+1 beer/wine/cocktail`) and a custom amount/kind/date/notes form, both
-POSTing to `/drinking/add`, which calls `server.log_drinks` and redirects back
-(Post/Redirect/Get). `server.log_drinks` does the validation. No LLM, no chat.
+Drinks are a number per day, so they live **on the journal feed** rather than a page of
+their own (there is no `/drinking` page): each day header carries a right-aligned drink
+counter, and tapping it opens a stepper modal. Saving POSTs the day's **absolute** total
+to `/drinking/day`, which corrects an existing day through `server.update_drink`, creates
+a new one through `server.log_drinks`, or deletes the row when the total is 0 (a day with
+no row is sober). A day with drinks but no entries still renders a bare day header, so a
+drink-only day — today included — is always reachable. `kind`/`notes` stay in the DB and
+stay writable from chat; the counter is just the number. Trends live on `/graphs`. No LLM.
 
 **Installable as a PWA.** The UI ships a web app manifest
 (`/manifest.webmanifest`) and a service worker (`/sw.js`), both generated

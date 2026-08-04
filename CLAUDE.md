@@ -248,7 +248,12 @@ working.
   deduped list via `_merge_kinds`) — so it takes the increment, not the running total;
   `update_drink` sets absolutes (corrections/overwrites). Sober days aren't stored — a
   day is sober if it has no row. `get_drink_summary` aggregates (daily totals, sober
-  streak) in SQL; the webapp `/drinking` page edits/deletes past days inline.
+  streak) in SQL. The webapp has NO drinking page: a day's total is shown and edited from
+  the **journal feed's day header** (a right-aligned counter → stepper modal → `POST
+  /drinking/day`, which writes the day's ABSOLUTE total — update_drink on an existing row,
+  log_drinks on a new one, delete at 0). `data.list_days` hangs the total on each day and
+  inserts a bare day block for a drink-only day so it's still reachable; the charts live on
+  `/graphs`.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's

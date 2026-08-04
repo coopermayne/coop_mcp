@@ -201,7 +201,7 @@
   {% if active %}
   <header class="border-b border-gray-100 sticky top-0 bg-white/90 backdrop-blur z-10">
     {# Icon-only nav: the primary sections (journal · trainer · training ·
-       drinking) sit on the strip; everything secondary (people, theme toggle,
+       graphs) sit on the strip; everything secondary (people, theme toggle,
        logout) collapses behind a hamburger that opens a dropdown. Icons are inline
        Lucide-style strokes inheriting currentColor; active page firms to black
        (white in dark). aria-label/title carry the names for a11y + tooltips. #}
@@ -214,9 +214,6 @@
       </a>
       <a href="{{ base }}/workouts" aria-label="Training" title="Training" class="hover:text-black transition-colors {% if active == 'workouts' %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="9" x2="3.5" y2="15"/><line x1="6.5" y1="6.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="20.5" y1="9" x2="20.5" y2="15"/><line x1="6.5" y1="12" x2="17.5" y2="12"/></svg>
-      </a>
-      <a href="{{ base }}/drinking" aria-label="Drinking" title="Drinking" class="hover:text-black transition-colors {% if active == 'drinking' %}text-black{% endif %}">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 22h8"/><path d="M7 10h10"/><path d="M12 15v7"/><path d="M12 15a5 5 0 0 0 5-5c0-2-.5-4-1-6H8c-.5 2-1 4-1 6a5 5 0 0 0 5 5Z"/></svg>
       </a>
       <a href="{{ base }}/graphs" aria-label="Graphs" title="Graphs" class="hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
@@ -243,7 +240,7 @@
           </button>
           {% if lock_in_journal %}
           {# Journal lock controls — only while you're actually inside the unlocked
-             journal (never on the lock screen or the open trainer/drinking pages), so
+             journal (never on the lock screen or the open trainer pages), so
              the knock can't be changed without first proving you're in. Lock now, or
              re-record the secret knock (the change screen also re-checks the session). #}
           <a href="{{ base }}/lock/relock" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-500 hover:text-black transition-colors">
@@ -315,7 +312,7 @@
     })();
   </script>
   {# Global keyboard shortcuts: 1-4 jump to the primary sections (journal,
-     trainer, training, drinking) and "/" focuses the page's search box if it
+     trainer, training, graphs) and "/" focuses the page's search box if it
      has one. Bare keys only — we bail when a modifier is held or when focus is
      in a text field (input/textarea/select/contenteditable) so the keys still
      reach search, the chat composer, and any other input. #}
@@ -325,8 +322,7 @@
         '1': '{{ base }}/journal',
         '2': '{{ base }}/trainer',
         '3': '{{ base }}/workouts',
-        '4': '{{ base }}/drinking',
-        '5': '{{ base }}/graphs',
+        '4': '{{ base }}/graphs',
       };
       function typingInField(el) {
         if (!el) return false;
