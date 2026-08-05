@@ -37,7 +37,12 @@
     };
   }
   var WEIGHT_COLOR = { light: SLOTS.light[0], dark: SLOTS.dark[0] };
-  var DRINKS_COLOR = { light: SLOTS.light[1], dark: SLOTS.dark[1] };
+  // Drinks read against a guideline rather than as a bare trend: a day at or
+  // under DRINK_LIMIT standard drinks is green, over it red (slots 5 and 7 of the
+  // validated palette, so the pair stays distinguishable in both themes).
+  var DRINK_LIMIT = 2;
+  var UNDER_COLOR = { light: SLOTS.light[5], dark: SLOTS.dark[5] };
+  var OVER_COLOR  = { light: SLOTS.light[7], dark: SLOTS.dark[7] };
 
   /* ---------- state (persisted) ----------------------------------------- */
   var STORE_KEY = 'graphs.state';
@@ -121,7 +126,7 @@
         y: {
           range: function (u_, min, max) {
             if (min == null) return [0, 1];
-            if (opts.zeroBase) return [0, max * 1.1 || 1];
+            if (opts.zeroBase) return [0, Math.max(max * 1.1, opts.yMin || 0) || 1];
             var pad = (max - min) * 0.12 || Math.abs(max) * 0.05 || 1;
             return [min - pad, max + pad];
           },
@@ -138,7 +143,7 @@
       ],
       series: [{ label: 'Date', value: function (u_, v) { return v == null ? '—' : fmtDateDow(v); } }]
         .concat(series.map(function (s) {
-          return {
+          var cfg = {
             label: s.label,
             stroke: s.color,
             width: s.width || 2,
@@ -147,6 +152,21 @@
             points: { show: s.points !== false, size: 5, fill: s.color },
             value: function (u_, v) { return v == null ? '—' : fmtNum(v); },
           };
+          // A bar series: one column per day, colored per-bar off s.colors (uPlot's
+          // `disp` per-datum values) so a single series can carry a threshold's
+          // worth of meaning without splitting into two.
+          if (s.bars) {
+            var colors = s.colors || [];
+            var at = function () { return colors; };
+            cfg.paths = uPlot.paths.bars({
+              size: [0.72, 18],
+              disp: { fill: { unit: 3, values: at }, stroke: { unit: 3, values: at } },
+            });
+            cfg.fill = s.color;
+            cfg.width = 0;
+            cfg.points = { show: false };
+          }
+          return cfg;
         })),
     }, data, el);
     charts.push({ u: u, el: el, height: opts.height || 200 });
@@ -230,8 +250,17 @@
       if (byDate[d]) any = true;
     }
     if (!xs.length) return emptyNote(el, 'No days in this range.');
-    makeChart(el, [{ label: 'Drinks', color: DRINKS_COLOR[theme()], points: false }],
-              [xs, ys], { height: 180, zeroBase: true });
+    // One bar per day, read against the DRINK_LIMIT guideline: at or under the
+    // line is green, over it red. The limit itself is drawn as a flat dashed
+    // series so the eye has the reference, and the y-range is floored just above
+    // it so an all-sober stretch still shows the line.
+    var t = theme();
+    var colors = ys.map(function (v) { return v > DRINK_LIMIT ? OVER_COLOR[t] : UNDER_COLOR[t]; });
+    var limit = xs.map(function () { return DRINK_LIMIT; });
+    makeChart(el, [
+      { label: 'Drinks', color: UNDER_COLOR[t], bars: true, colors: colors },
+      { label: 'Limit', color: palette().axis, dash: [3, 5], points: false, width: 1.5 },
+    ], [xs, ys, limit], { height: 180, zeroBase: true, yMin: DRINK_LIMIT * 1.4 });
     if (!any) emptyNote(el, 'All sober in this range.');
   }
 
@@ -280,7 +309,7 @@
     root.querySelectorAll('[data-range]').forEach(function (b) {
       b.setAttribute('aria-pressed', String(Number(b.dataset.range) === state.range));
     });
-    var panelColor = { weight: WEIGHT_COLOR[theme()], drinks: DRINKS_COLOR[theme()], exercises: '' };
+    var panelColor = { weight: WEIGHT_COLOR[theme()], drinks: UNDER_COLOR[theme()], exercises: '' };
     root.querySelectorAll('[data-panel]').forEach(function (b) {
       var key = b.dataset.panel;
       b.hidden = !HAS_DATA[key];

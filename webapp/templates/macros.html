@@ -48,14 +48,26 @@
    live on the journal now (there's no drinking page), and one number per day is
    the whole UI: tapping it opens the editor modal in journal.html. A day with
    none shows a ghosted glass, so every day is still tappable. #}
+{# An empty day is still a day (it carries the drink counter and the "write about
+   this day" way in), but it shouldn't eat a full block of scroll — a quiet stretch
+   compresses to one line each. #}
 <section id="day-{{ day.date }}"
-         class="scroll-mt-20 mb-10 pt-8 border-t border-gray-200 first:border-t-0 first:pt-0">
-  <div class="flex items-center justify-between gap-3 mb-4">
+         class="scroll-mt-20 border-t border-gray-200 first:border-t-0 first:pt-0
+                {{ 'mb-3 pt-3' if not day.entries else 'mb-10 pt-8' }}">
+  <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not day.entries else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
     {{ drink_counter(day.date, day.drinks or 0) }}
   </div>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
+    {% if not day.entries and chat_enabled %}
+    {# Nothing written that day. Offer the way in: opens the chat panel with the
+       date prefilled (wired in _chat_panel.html) so the user can just start talking
+       about it. Only with chat on — otherwise there'd be nothing to open (the day
+       still shows, and its drink counter still works). #}
+    <button type="button" data-day-write data-date="{{ day.date }}"
+            class="text-sm text-gray-300 hover:text-black transition-colors">Nothing yet — write about this day ›</button>
+    {% endif %}
   </div>
 </section>
 {% endmacro %}

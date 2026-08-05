@@ -105,6 +105,26 @@
 
   openBtn.addEventListener('click', open);
   closeBtn.addEventListener('click', close);
+
+  // "Write about this day" on an empty day block: open the panel with the composer
+  // primed with that date, so the user just keeps typing. Delegated off document —
+  // the feed re-renders after a chat write, which would drop a bound listener. The
+  // ISO date rides along in parentheses so the model back-dates the entry instead of
+  // defaulting to today.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-day-write]');
+    if (!btn) return;
+    var p = btn.dataset.date.split('-');
+    var label = new Date(+p[0], +p[1] - 1, +p[2])
+      .toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    open();
+    input.value = 'About ' + label + ' (' + btn.dataset.date + '): ';
+    input.dispatchEvent(new Event('input'));  // let the composer autosize
+    setTimeout(function () {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }, 220);
+  });
   backdrop.addEventListener('click', close);
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !backdrop.classList.contains('hidden')) close();

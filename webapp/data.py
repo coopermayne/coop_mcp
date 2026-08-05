@@ -202,8 +202,41 @@ def list_days(limit_entries: int = 120, since: str | None = None,
     # the feed is complete and every drink day belongs on it.
     floor = since or (oldest if has_more else None)
     _attach_drinks(days, floor, bare_days=kind is None)
+    if kind is None:
+        _fill_empty_days(days)
     return {"days": days, "total": total, "oldest": oldest,
             "has_more": has_more, "next_since": next_since}
+
+
+def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
+    """Insert a bare block for every calendar day inside the loaded window that has
+    neither entries nor drinks, in place.
+
+    A day with nothing written is still a day you want to reach: it's where the
+    drink counter is tapped and where "write about this day" opens the chat. Without
+    this the feed silently skips quiet days (an empty Tuesday simply isn't there, so
+    there's nothing to tap). The window runs from today back to the oldest loaded
+    day — never older, so it doesn't imply history that hasn't been paged in — and
+    is capped at `span_cap` days as a guard against a single ancient outlier
+    rendering years of blanks.
+
+    Only the unfiltered feed fills: a kind filter is a scoped view of entries, so
+    empty days there would be noise (same reason bare drink days are skipped)."""
+    if not days:
+        return
+    newest = max(date.fromisoformat(d["date"]) for d in days)
+    oldest_d = min(date.fromisoformat(d["date"]) for d in days)
+    top = max(newest, date.fromisoformat(server.today()))
+    if (top - oldest_d).days > span_cap:
+        oldest_d = top - timedelta(days=span_cap)
+    have = {d["date"] for d in days}
+    cur = top
+    while cur >= oldest_d:
+        iso = cur.isoformat()
+        if iso not in have:
+            days.append({"date": iso, "entries": [], "drinks": 0.0})
+        cur -= timedelta(days=1)
+    days.sort(key=lambda x: x["date"], reverse=True)
 
 
 def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
