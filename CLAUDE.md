@@ -252,8 +252,14 @@ working.
   the **journal feed's day header** (a right-aligned counter → stepper modal → `POST
   /drinking/day`, which writes the day's ABSOLUTE total — update_drink on an existing row,
   log_drinks on a new one, delete at 0). `data.list_days` hangs the total on each day and
-  inserts a bare day block for a drink-only day so it's still reachable; the charts live on
-  `/graphs`.
+  inserts a bare day block for a drink-only day so it's still reachable — and, on the
+  unfiltered feed, for EVERY otherwise-empty day in the loaded window (`_fill_empty_days`,
+  today back to the oldest loaded day, capped): a quiet day still needs to be tappable to
+  log drinks, and it carries the "write about this day" button that opens the chat panel
+  with that date prefilled. The charts live on `/graphs`, where drinks are one bar per day
+  colored against a 2-drink guideline (green at/under, red over, dashed limit line) —
+  `DRINK_LIMIT` in `webapp/static/graphs.js`, a display-only threshold; the server stores
+  no goal.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's
