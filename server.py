@@ -385,6 +385,10 @@ CREATE TABLE IF NOT EXISTS nutrition (
     fat_g      REAL,
     sodium_mg  REAL,             -- not a macro, but tracked daily against a target
     fiber_g    REAL,
+    standard_drinks REAL,        -- alcohol, tracked as just another daily nutrient:
+                                 -- NULL = day not accounted for, 0 = confirmed sober
+                                 -- (the drinks table's row-exists trick, but native)
+    water_oz   REAL,             -- fluid ounces of water (128 = a gallon)
     notes      TEXT,             -- how it felt / context, kept apart from the food list
     created_at TEXT NOT NULL
 );
@@ -680,9 +684,44 @@ def init_db() -> None:
         # NULL — the same "not estimated" state as any unfilled nutrient, so nothing
         # needs back-filling.
         ncols = [r["name"] for r in conn.execute("PRAGMA table_info(nutrition)")]
-        for col in ("sodium_mg", "fiber_g"):
+        for col in ("sodium_mg", "fiber_g", "standard_drinks", "water_oz"):
             if col not in ncols:
                 conn.execute(f"ALTER TABLE nutrition ADD COLUMN {col} REAL")
+        # Alcohol moved from its own `drinks` table into the eating log, where it's
+        # just another daily nutrient with a target. Fold the old rows in ONCE (keyed
+        # by date — both tables are one-row-per-day, so it's a merge, not a reshape),
+        # then leave the `drinks` table dormant rather than dropping it: it costs
+        # nothing and is the only copy of the per-day `kind` ("beer, wine"), which the
+        # nutrition row has no column for. The settings flag makes this idempotent —
+        # without it, re-running after the user edited a day would silently revert it.
+        done = conn.execute(
+            "SELECT value FROM settings WHERE key='drinks_folded_into_nutrition'"
+        ).fetchone()
+        if not done:
+            for r in conn.execute(
+                "SELECT drink_date, standard_drinks, kind, notes FROM drinks"
+            ).fetchall():
+                row = conn.execute(
+                    "SELECT id, notes FROM nutrition WHERE food_date=?", (r["drink_date"],)
+                ).fetchone()
+                # The drink's kind/notes are the only prose it carried; keep them on the
+                # day's notes so nothing is lost when the table goes quiet.
+                note = _merge_notes(r["kind"], r["notes"])
+                if row:
+                    conn.execute(
+                        "UPDATE nutrition SET standard_drinks=?, notes=? WHERE id=?",
+                        (r["standard_drinks"], _merge_notes(row["notes"], note), row["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO nutrition(food_date, notes, standard_drinks, created_at) "
+                        "VALUES (?,?,?,?)",
+                        (r["drink_date"], note, r["standard_drinks"], now()),
+                    )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES "
+                "('drinks_folded_into_nutrition', 'true')"
+            )
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -1944,16 +1983,54 @@ def _get_profile(conn: sqlite3.Connection) -> dict:
     return json.loads(row["value"]) if row else {}
 
 
+def set_day_nutrient(food_date: str, column: str, value: Optional[float]) -> dict:
+    """Set ONE nutrient on a day to an ABSOLUTE value (or None to clear it).
+
+    The website path behind the feed's tappable rings — a NON-tool, like log_drinks
+    below and create_exercise: the model appends through log_food, the UI sets one
+    number outright. Creates the day's row if there isn't one, and deletes the row
+    again if clearing leaves it completely empty (so an accidental tap doesn't strand
+    a blank day). Returns the day's row as _nutrition_row would.
+    """
+    if err := _bad_date(food_date, "food_date"):
+        return err
+    if column not in NUTRIENTS:
+        return {"error": f"unknown nutrient {column!r}; use one of {list(NUTRIENTS)}"}
+    if value is not None and value < 0:
+        return {"error": f"{column} can't be negative, got {value}"}
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM nutrition WHERE food_date=?", (food_date,)).fetchone()
+        if row:
+            conn.execute(f"UPDATE nutrition SET {column}=? WHERE id=?", (value, row["id"]))
+            # Clearing the last thing on a day removes the day.
+            fresh = conn.execute(
+                "SELECT * FROM nutrition WHERE id=?", (row["id"],)).fetchone()
+            if (not fresh["summary"] and not fresh["notes"]
+                    and all(fresh[m] is None for m in NUTRIENTS)):
+                conn.execute("DELETE FROM nutrition WHERE id=?", (row["id"],))
+                return {"food_date": food_date, column: None, "logged": False}
+            return {**_nutrition_row(fresh), "logged": True}
+        if value is None:
+            return {"food_date": food_date, column: None, "logged": False}
+        rid = conn.execute(
+            f"INSERT INTO nutrition(food_date, {column}, created_at) VALUES (?,?,?)",
+            (food_date, value, now()),
+        ).lastrowid
+        fresh = conn.execute("SELECT * FROM nutrition WHERE id=?", (rid,)).fetchone()
+    return {**_nutrition_row(fresh), "logged": True}
+
+
 # --------------------------------------------------------------------------- #
-# Drinking — NOT MCP tools.
+# Drinking — legacy `drinks` table, NOT MCP tools.
 #
-# Drinks are logged entirely from the website: the journal feed's day-header
-# counter → stepper modal → POST /drinking/day, which calls these functions
-# directly. They carry no @mcp.tool() decorator on purpose, the same NON-tool
-# pattern as create_exercise/set_archived — a day's drinks are one number, faster
-# to tap than to describe, so putting them on a connector only costs every
-# conversation three tool schemas it will never use. The functions stay public and
-# fully documented because webapp/app.py is their caller.
+# Alcohol now lives on the nutrition row (see NUTRIENTS); these functions and the
+# table they write are kept only so the fold-in migration has a source and old data
+# stays readable. Nothing in the app calls them any more: the feed's drinks ring
+# writes nutrition.standard_drinks through set_day_nutrient, and the model logs
+# alcohol through log_food like any other intake. They never carried an @mcp.tool()
+# decorator (a day's drinks are one number, faster to tap than to describe), so
+# removing them later is a pure deletion — no tool surface to break.
 # --------------------------------------------------------------------------- #
 
 def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
@@ -2124,8 +2201,12 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 # --------------------------------------------------------------------------- #
 
 # The numeric nutrient columns, in the order they read back. One list so adding a
-# nutrient later doesn't mean editing every accumulate/average/round site.
-NUTRIENTS = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g")
+# nutrient later doesn't mean editing every accumulate/average/round site. Alcohol and
+# water are in here deliberately: they're daily intake numbers with targets, exactly
+# like the macros, so they get the same append/correct/average/ring machinery instead
+# of a parallel table and a parallel UI (which is what `drinks` used to be).
+NUTRIENTS = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g",
+             "standard_drinks", "water_oz")
 
 
 def _nutrition_row(r) -> dict:
@@ -2137,12 +2218,13 @@ def _nutrition_row(r) -> dict:
 
 
 @mcp.tool()
-def log_food(summary: str, food_date: Optional[str] = None,
+def log_food(summary: str = "", food_date: Optional[str] = None,
              calories: Optional[float] = None, protein_g: Optional[float] = None,
              carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
              sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
+             standard_drinks: Optional[float] = None, water_oz: Optional[float] = None,
              notes: Optional[str] = None) -> dict:
-    """Log what the user ate. A day has EXACTLY ONE eating section, so this ADDS to
+    """Log what the user ate OR DRANK. A day has EXACTLY ONE intake section, so this ADDS to
     the day rather than creating a new record: `summary` is appended to the day's
     running food list ("eggs and toast" then "chipotle bowl" reads back as "eggs and
     toast; chipotle bowl"), and any nutrients you pass are ADDED to that day's totals.
@@ -2151,6 +2233,13 @@ def log_food(summary: str, food_date: Optional[str] = None,
     Keep `summary` the food itself, in the user's own terms, concise and concrete
     ("2 eggs, toast, black coffee"). Put how it went — cravings, feeling stuffed,
     skipped a meal on purpose — in `notes`.
+
+    ALCOHOL AND WATER are logged here too, as nutrients, not as separate things:
+    "two beers" is `summary="two beers"` with `standard_drinks=2` (plus its calories);
+    "a big glass of water" is `water_oz=16`, usually with no summary text worth
+    keeping. Convert to standard drinks before calling — a regular beer, a 5oz glass
+    of wine, or a shot each count ~1.0; a strong cocktail ~1.5; a tallboy/double ~2.0.
+    Water is in fluid ounces (a gallon is 128).
 
     The nutrient numbers are OPTIONAL and stay NULL until someone fills them in.
     Estimate them yourself when the user wants numbers tracked or asks how a day is
@@ -2162,7 +2251,8 @@ def log_food(summary: str, food_date: Optional[str] = None,
     which sets ABSOLUTE values. Read a day back with get_nutrition.
 
     Args:
-        summary: The food to append for this day, e.g. "chipotle bowl, chips".
+        summary: The food/drink to append for this day, e.g. "chipotle bowl, chips".
+            Optional — omit it when logging a bare number, like topping up water.
         food_date: Day eaten, YYYY-MM-DD (Pacific). Defaults to today.
         calories: Optional calories to ADD for this food.
         protein_g: Optional grams of protein to ADD.
@@ -2170,18 +2260,25 @@ def log_food(summary: str, food_date: Optional[str] = None,
         fat_g: Optional grams of fat to ADD.
         sodium_mg: Optional milligrams of sodium to ADD.
         fiber_g: Optional grams of fiber to ADD.
+        standard_drinks: Optional standard drinks of alcohol to ADD. Pass 0 (with no
+            other args) to mark the day CONFIRMED sober — different from leaving it
+            NULL, which just means the day was never accounted for.
+        water_oz: Optional fluid ounces of water to ADD (128 = a gallon).
         notes: Optional context/how it felt, appended to the day's notes.
     """
     if err := _bad_date(food_date, "food_date"):
         return err
     summary = (summary or "").strip()
-    if not summary:
-        return {"error": "summary is required — say what was eaten"}
     add = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
-           "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g}
+           "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
+           "standard_drinks": standard_drinks, "water_oz": water_oz}
     for k, v in add.items():
         if v is not None and v < 0:
             return {"error": f"{k} must not be negative, got {v}"}
+    # Water and alcohol are often logged as a bare number ("another 16oz"), so a
+    # summary isn't required — but a call with neither text nor numbers is a no-op.
+    if not summary and all(v is None for v in add.values()):
+        return {"error": "nothing to log — pass a summary and/or a nutrient amount"}
     d = food_date or today()
     with db() as conn:
         existing = conn.execute(
@@ -2259,8 +2356,9 @@ def update_nutrition(food_date: str, summary: Optional[str] = None,
                      calories: Optional[float] = None, protein_g: Optional[float] = None,
                      carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
                      sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
+                     standard_drinks: Optional[float] = None, water_oz: Optional[float] = None,
                      notes: Optional[str] = None) -> dict:
-    """Correct one day's eating section. Only the args you pass are written, and they
+    """Correct one day's intake section (food, alcohol, water). Only the args you pass are written, and they
     are ABSOLUTE — they REPLACE what's there (unlike log_food, which appends/adds).
 
     Use it to rewrite a day's food list, fix an over-estimate, or tidy the notes.
@@ -2279,13 +2377,16 @@ def update_nutrition(food_date: str, summary: Optional[str] = None,
         fat_g: Replacement day total (grams).
         sodium_mg: Replacement day total (milligrams).
         fiber_g: Replacement day total (grams).
+        standard_drinks: Replacement day total (standard drinks); 0 = confirmed sober.
+        water_oz: Replacement day total (fluid ounces).
         notes: Replacement notes for the day.
     """
     if err := _bad_date(food_date, "food_date"):
         return err
     fields = {"summary": summary, "notes": notes, "calories": calories,
               "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
-              "sodium_mg": sodium_mg, "fiber_g": fiber_g}
+              "sodium_mg": sodium_mg, "fiber_g": fiber_g,
+              "standard_drinks": standard_drinks, "water_oz": water_oz}
     for m in NUTRIENTS:
         if fields[m] is not None and fields[m] < 0:
             return {"error": f"{m} must not be negative, got {fields[m]}"}

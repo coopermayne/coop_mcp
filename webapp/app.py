@@ -1160,42 +1160,41 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
 
 @app.post("/drinking/day")
 async def drinking_set_day(request: Request):
-    """Set one day's drink total from the journal feed's day-header counter (the
-    only drink write in the UI now — there's no separate drinking page). Body:
-    {date: "YYYY-MM-DD", standard_drinks: float} or {date, clear: true}.
+    """Set one nutrient on one day from the feed's tappable rings (drinks, water) —
+    the only intake write in the UI. Body: {date: "YYYY-MM-DD", key: "<column>",
+    amount: float} or {date, key, clear: true}.
 
     The amount is ABSOLUTE, not an increment: it's what the modal's stepper is
-    showing. Saving 0 KEEPS a row, recording the day as confirmed sober — which is
-    a different state from an unlogged day, and the whole reason the counter can
-    show "0". `clear: true` is the way back to unlogged: it deletes the row.
-    kind/notes aren't editable here — the counter is just a number — so an existing
-    day's tags survive an amount correction untouched.
+    showing (log_food is the accumulating path, and that's the model's). Saving 0
+    KEEPS the value, recording e.g. a day confirmed sober — a different state from
+    an unlogged day, which is what `clear: true` restores by setting the column back
+    to NULL (and dropping the row if that empties it). Only the one column is
+    touched, so a day's food list and other numbers survive untouched.
 
-    Returns {date, standard_drinks, logged} so the header can re-render off the
-    saved value; `logged` false means the day has no row at all."""
+    The path is still /drinking/day for continuity (it predates water); `key`
+    is what actually decides the column.
+
+    Returns {date, key, amount, logged} so the ring can re-render off the saved
+    value; `logged` false means the column is NULL again."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     d = (body.get("date") or "").strip() or server.today()
-    with server.db() as conn:
-        row = conn.execute("SELECT id FROM drinks WHERE drink_date=?", (d,)).fetchone()
+    # Only the two the UI can edit — never an arbitrary column from the client.
+    key = body.get("key") or "standard_drinks"
+    if key not in ("standard_drinks", "water_oz"):
+        return JSONResponse({"error": f"{key} isn't editable here"}, status_code=400)
     if body.get("clear"):
-        if row:
-            # _delete_record, not the delete_record TOOL — drinks aren't on the MCP
-            # surface any more, so the tool no longer accepts kind="drink".
-            server._delete_record("drink", row["id"])
-        return JSONResponse({"date": d, "standard_drinks": 0, "logged": False})
-    try:
-        amount = float(body.get("standard_drinks"))
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "standard_drinks must be a number"}, status_code=400)
-    if amount < 0:
-        return JSONResponse({"error": "standard_drinks can't be negative"}, status_code=400)
-    # Existing day → absolute correction (log_drinks only ever adds); new day → create.
-    res = (server.update_drink(drink_id=row["id"], standard_drinks=amount) if row
-           else server.log_drinks(standard_drinks=amount, drink_date=d))
+        res = server.set_day_nutrient(d, key, None)
+    else:
+        try:
+            amount = float(body.get("amount", body.get("standard_drinks")))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "amount must be a number"}, status_code=400)
+        res = server.set_day_nutrient(d, key, amount)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse({"date": d, "standard_drinks": amount, "logged": True})
+    return JSONResponse({"date": d, "key": key, "amount": res.get(key),
+                         "logged": bool(res.get("logged"))})
 
 
 # --------------------------------------------------------------------------- #

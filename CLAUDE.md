@@ -242,44 +242,23 @@ working.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
-- `drinks` — exactly one row per day (`drink_date` is unique); `standard_drinks`
-  (REAL), `kind`, `notes`. `log_drinks` upserts: the first log of a day creates the
-  row, later logs accumulate onto it (`standard_drinks` add up, `kind` merges into a
-  deduped list via `_merge_kinds`) — so it takes the increment, not the running total;
-  `update_drink` sets absolutes (corrections/overwrites). **None of the three is an
-  MCP tool** — they're plain functions the webapp calls (the `create_exercise` pattern):
-  a day's drinks are one number, faster to tap than to describe, so putting them on a
-  connector only costs every conversation three schemas it won't use.
-  `_delete_record("drink", id)` removes a day (the kind-scoped `delete_record` TOOL
-  doesn't accept it). Sober days generally aren't
-  stored — a day with no row is sober — but a row of **0 IS allowed and meaningful**:
-  it's a day CONFIRMED sober, versus one merely never logged, and the counter shows a
-  real "0" for it. Aggregates treat the two identically (a 0 row is not a drinking day
-  and can't be the streak's "last drink" — both queries filter `standard_drinks > 0`);
-  the distinction exists only so the UI can say "I checked this day". `get_drink_summary`
-  aggregates (daily totals, sober streak) in SQL. The webapp has NO drinking page: a
-  day's total is shown and edited from the **journal feed's day header** (a right-aligned
-  counter → stepper modal → `POST /drinking/day`, which writes the day's ABSOLUTE total —
-  update_drink on an existing row, log_drinks on a new one; saving 0 KEEPS the row, and
-  the modal's separate **Clear** button — `{clear: true}` — is the only way back to
-  unlogged). `data.list_days` hangs the total AND a `drinks_logged` flag on each day (the
-  total alone can't tell 0-logged from unlogged) and
-  inserts a bare day block for a drink-only day so it's still reachable — and, on the
-  unfiltered feed, for EVERY otherwise-empty day in the loaded window (`_fill_empty_days`,
-  today back to the oldest loaded day, capped): a quiet day still needs to be tappable to
-  log drinks, and it carries the "write about this day" button that opens the chat panel
-  with that date prefilled. The charts live on `/graphs`, where drinks are one bar per day
-  colored against a 2-drink guideline (green at/under, red over, dashed limit line) —
-  `DRINK_LIMIT` in `webapp/static/graphs.js`, a display-only threshold; the server stores
-  no goal.
-- `nutrition` — the eating log, one row per day (`food_date` unique — the drinks
-  pattern, not the entries pattern): a day's eating is ONE section, deliberately not a
-  list of meal/food-item rows, because food gets described in passing prose and per-item
-  logging is more bookkeeping than it's worth. `summary` is the running text of what was
+- `drinks` — LEGACY, dormant. Alcohol moved onto the `nutrition` row (see below);
+  this table and `server.log_drinks`/`get_drink_summary`/`update_drink` are kept only
+  as the fold-in migration's source and the one copy of the per-day `kind`
+  ("beer, wine"), which nutrition has no column for. Nothing reads it any more.
+- `nutrition` — the INTAKE log: food, alcohol and water, one row per day (`food_date`
+  unique). A day's intake is ONE section, deliberately not a list of meal/food-item
+  rows, because food gets described in passing prose and per-item logging is more
+  bookkeeping than it's worth. Alcohol (`standard_drinks`) and water (`water_oz`) are
+  columns here rather than tables of their own — they're daily intake numbers with
+  targets, exactly like the macros, so ONE shape carries all three and NULL-vs-0 does
+  the unlogged-vs-confirmed-none work natively (what the old `drinks` table needed a
+  row-exists trick for). `summary` is the running text of what was
   eaten — `log_food` APPENDS to it (and ADDS any macros passed), `update_nutrition`
   (keyed by DATE, since a day has one row) sets absolutes for corrections. The numeric
-  columns (`NUTRIENTS` — calories, protein/carbs/fat, plus `sodium_mg` and `fiber_g`,
-  which aren't macros but are tracked against daily targets) are OPTIONAL and stay NULL
+  columns (`NUTRIENTS` — calories, protein/carbs/fat, plus `sodium_mg`, `fiber_g`,
+  `standard_drinks` and `water_oz`, which aren't macros but are tracked against daily
+  targets) are OPTIONAL and stay NULL
   until someone fills them in, so a day described only in words is "unestimated", never
   a zero-calorie day — `get_nutrition`'s averages are taken over the days that actually
   carry each nutrient, so each average has its OWN denominator (returned alongside
@@ -290,14 +269,19 @@ working.
   the MODEL's estimate, made in conversation; there is no food database or lookup in the
   server. The webapp shows a day's section under its entries on the journal feed
   (`data._attach_nutrition` + `macros.eating_block`), read-only — writes come through
-  chat/MCP, unlike the drink counter's stepper. Each nutrient renders as a ring with
+  chat/MCP — EXCEPT alcohol and water, whose rings are tappable and open the stepper
+  modal (`POST /drinking/day` → `server.set_day_nutrient`, one column, absolute value;
+  Clear sets it back to NULL and drops the row if that empties it). Those two always
+  render, dashed when unlogged, since they're topped up through the day and need a tap
+  target before the first log; a day with NO intake row at all still shows the ghosted
+  glass on its header (`macros.drink_counter`) as the way in. Each nutrient renders as a ring with
   BOTH the figure (unit included: "1400mg") and a short label ("sod") inside it
   (`macros.nutrient_ring`), read against
   `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY webapp constant, the `DRINK_LIMIT` pattern:
   the server stores no goals, so targets never enter the DB or a tool return. A
-  `ceiling` target (sodium, calories) turns the ring clay once passed; a floor one
-  (protein, carbs, fiber) doesn't, and an untargeted nutrient (fat) draws a DASHED
-  track with no arc — an empty solid ring would read as "0% of goal" rather than "no
+  `ceiling` target (sodium, calories, alcohol) turns the ring clay once passed; a floor one
+  (protein, carbs, fiber, water) doesn't, and an untargeted nutrient (fat) draws a
+  DASHED track with no arc — an empty solid ring would read as "0% of goal" rather than "no
   goal set". `summary` renders as a NUMBERED list,
   not the raw string: `_attach_nutrition` splits it back on the "; " that log_food
   joined with, recovering one item per thing eaten (they flow inline, each index

@@ -123,25 +123,24 @@ single process routes that hostname to the trainer server at its root (connector
 With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
 `/trainer/mcp` on the main origin. See "Remote deployment" for the subdomain steps.
 
-- **Drinking — website only, NOT an MCP tool.** A day's drinks are one number, faster
-  to tap than to describe, so they're logged from the journal feed's day-header counter
-  (stepper modal → `POST /drinking/day`) and no connector carries a drink tool. The
-  counter has three states: never logged (empty glass), logged **0** (confirmed sober —
-  a real row, so you can tell "didn't drink" from "didn't log"), and logged with drinks.
-  A 0 day isn't a drinking day: it never counts in the averages and never breaks the
-  streak. `server.log_drinks` / `get_drink_summary` / `update_drink` still exist as
-  plain functions behind that route (same non-tool pattern as `create_exercise`).
-- **Eating.** A day has ONE eating section, the same daily shape as drinks. `log_food`
-  appends what you ate to that day's running food list ("eggs and toast", later
-  "chipotle bowl") and ADDS any nutrients passed with it; the numeric columns
-  (calories, protein/carbs/fat, sodium, fiber) are optional and stay NULL until
-  estimated, so a day described only in words never reads as zero calories.
-  `get_nutrition` reads days back with per-nutrient averages over the days that carry
-  them (each average has its own denominator); `update_nutrition(food_date=…)`
-  replaces a day's values (read first — `summary` overwrites the whole list), and
+- **Intake: food, alcohol and water in one row.** A day has ONE intake section, so
+  there's one shape instead of three. `log_food` appends what you ate or drank to that
+  day's running list ("eggs and toast", later "two beers") and ADDS any nutrients passed
+  with it — calories, protein/carbs/fat, sodium, fiber, `standard_drinks`, `water_oz`.
+  Every number is optional and stays NULL until filled in, so a day described only in
+  words never reads as zero, and NULL-vs-0 distinguishes "not logged" from "confirmed
+  none" (a sober day, say). `get_nutrition` reads days back with per-nutrient averages
+  over the days that carry them; `update_nutrition(food_date=…)` replaces a day's values
+  (read first — `summary` overwrites the whole list), and
   `delete_record(kind="nutrition")` drops a day. The estimating is the model's job:
-  there's no food database in the server. The day's section renders under its entries
-  on the journal feed.
+  there's no food database in the server.
+
+  In the web app, each nutrient is a ring on the day's block, showing the figure against
+  its target. **Alcohol and water are tappable** — they open a stepper, since you top
+  them up through the day and they're faster to tap than to describe. Alcohol has no MCP
+  tool of its own any more; it's just a nutrient. (The old `drinks` table is dormant:
+  its rows fold into the intake log once, automatically, on first start.)
+
 - **A closed exercise library.** The catalog is a fixed set the trainer draws on but
   never grows: ~870 movements pre-loaded from free-exercise-db, plus any you add yourself
   through the AI **+ Add an exercise** panel at `/trainer/library` (describe a movement and
@@ -398,7 +397,7 @@ Each surface is bound to **one** toolset (smaller tool surface = less latency, t
 reason the MCP servers are split):
 
 - **`journal`** — the journal server's people/entry tools, *minus* the drink tools
-  (drinks are direct entry now). Lives as a **slide-in panel** on the `/journal` page
+  (alcohol and water are direct entry). Lives as a **slide-in panel** on the `/journal` page
   (near-fullscreen on mobile, a right-edge side panel on desktop). Posts to
   `/chat/journal/send`.
 - **`trainer`** — the trainer server's workout tools. Will get its **own page** linked
@@ -410,16 +409,18 @@ Env: `ANTHROPIC_API_KEY` (required to enable), `CHAT_MODEL` (default
 auto-loads a git-ignored `.env` at the project root (a tiny zero-dep loader in
 `app.py`; a real shell/Coolify var still wins, a present-but-blank one yields to `.env`).
 
-### Direct drinks entry — no AI
+### Direct intake entry — no AI
 
-Drinks are a number per day, so they live **on the journal feed** rather than a page of
-their own (there is no `/drinking` page): each day header carries a right-aligned drink
-counter, and tapping it opens a stepper modal. Saving POSTs the day's **absolute** total
-to `/drinking/day`, which corrects an existing day through `server.update_drink`, creates
-a new one through `server.log_drinks`, or deletes the row when the total is 0 (a day with
-no row is sober). A day with drinks but no entries still renders a bare day header, so a
-drink-only day — today included — is always reachable. `kind`/`notes` stay in the DB and
-stay writable from chat; the counter is just the number. Trends live on `/graphs`. No LLM.
+Alcohol and water are a number per day, so they're tapped, not described: each day's
+intake block shows a ring per nutrient, and the **water** and **drinks** rings open a
+stepper modal. Saving POSTs an **absolute** value for that ONE column to `/drinking/day`
+(→ `server.set_day_nutrient`); **Clear** sets it back to NULL, i.e. never logged, and
+drops the day's row if that empties it. Those two rings always render (dashed when
+unlogged) so there's a tap target before the first log; a day with no intake row at all
+keeps a ghosted glass on its header as the way in. A day with intake but no entries still
+renders a bare day header, so an intake-only day — today included — is always reachable.
+The rest of the numbers (calories, macros, sodium, fiber) and the food list itself are
+written through chat/MCP, not here. Trends live on `/graphs`. No LLM.
 
 **Installable as a PWA.** The UI ships a web app manifest
 (`/manifest.webmanifest`) and a service worker (`/sw.js`), both generated
@@ -482,8 +483,8 @@ in one Coolify project.
 
 Split across two connectors. The **journal** server (`YOUR-DOMAIN/mcp`) carries the
 journal + eating tools through `update_nutrition`, plus a `delete_record` scoped to
-`entry`/`nutrition`. (Drinks are deliberately NOT on any connector — see "Drinking"
-above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
+`entry`/`nutrition`. (Alcohol is a nutrient on that same intake row, not a tool of
+its own — see "Intake" above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
 main origin when authless) carries `save_exercise` through `update_profile`, plus its
 own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 
@@ -502,6 +503,9 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body`; pass `mentions` to reconcile who it references (adds/removes mention rows, keeps resolved links) |
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
 | `search_entries` | Full-text search for topics/events |
+| `log_food` | Append food/drink to a day's ONE intake section and ADD any nutrients passed (calories, macros, sodium, fiber, standard drinks, water oz) |
+| `get_nutrition` | Read intake days back with per-nutrient averages (each over the days that carry it) |
+| `update_nutrition` | Correct one day's intake — absolute values, replaces (read first) |
 | `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
 | `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
 | `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |

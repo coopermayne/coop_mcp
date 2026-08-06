@@ -44,10 +44,9 @@
    scroll-mt-20 keeps the heading clear of the sticky page header on jump. A top
    rule separates one day from the next; first:* drops it on the first block.
 
-   The day's standard-drink count sits right-aligned on the date line — drinks
-   live on the journal now (there's no drinking page), and one number per day is
-   the whole UI: tapping it opens the editor modal in journal.html. A day with
-   none shows a ghosted glass, so every day is still tappable. #}
+   A day with no intake row at all shows a ghosted glass on the date line so it's
+   still tappable; once anything is logged, the intake block below carries the
+   tappable water/drinks rings instead. #}
 {# An empty day is still a day (it carries the drink counter and the "write about
    this day" way in), but it shouldn't eat a full block of scroll — a quiet stretch
    compresses to one line each. #}
@@ -56,11 +55,14 @@
                 {{ 'mb-3 pt-3' if not (day.entries or day.nutrition) else 'mb-10 pt-8' }}">
   <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not (day.entries or day.nutrition) else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
-    {{ drink_counter(day.date, day.drinks or 0, day.drinks_logged) }}
+    {# The glass is only the WAY IN on a day with no intake row at all. Once a day
+       has one, its drinks live in the eating block's ring — never both, so the
+       same number is never shown twice. #}
+    {% if not day.nutrition %}{{ drink_counter(day.date) }}{% endif %}
   </div>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
-    {% if day.nutrition %}{{ eating_block(day.nutrition) }}{% endif %}
+    {% if day.nutrition %}{{ eating_block(day.nutrition, day.date) }}{% endif %}
     {% if not day.entries and chat_enabled %}
     {# Nothing written that day. Offer the way in: opens the chat panel with the
        date prefilled (wired in _chat_panel.html) so the user can just start talking
@@ -73,34 +75,33 @@
 </section>
 {% endmacro %}
 
-{% macro drink_counter(day_date, total, logged=False) %}
-{# The day header's drink control, in three states — the day was never logged
-   (faint glass, no number), logged as 0 (a real "0", so a confirmed-sober day is
-   visibly different from one nobody touched), or logged with drinks (glass +
-   count). Opens the edit modal (wired in journal.html); the button carries the
-   date, current total, and whether a row exists, so the modal needs no lookup.
-   `logged` comes from data._attach_nutrition's sibling _attach_drinks — the total
-   alone can't tell 0-logged from unlogged. #}
-<button type="button" data-drink-btn data-date="{{ day_date }}" data-total="{{ total }}"
-        data-logged="{{ 1 if logged else 0 }}"
-        title="Drinks on this day" aria-label="Edit drinks for {{ day_date | long_date }}"
-        class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 -mr-1.5 rounded-[4px] transition-colors
-               {{ 'text-gray-500 hover:text-black' if logged else 'text-gray-200 hover:text-gray-500' }}">
+{% macro drink_counter(day_date) %}
+{# Way in on a day with NOTHING logged — no intake row, so there's no eating block
+   and no drinks ring to tap. A ghosted glass on the date line, opening the same
+   stepper (wired in journal.html) and writing the same nutrition column; the first
+   save creates the day's row, after which the block's ring takes over and this
+   disappears. Always the empty state by construction, so it takes no total. #}
+<button type="button" data-drink-btn data-date="{{ day_date }}" data-key="standard_drinks"
+        data-total="0" data-logged="0" data-target="2" data-ceiling="1"
+        title="Drinks on this day" aria-label="Log drinks for {{ day_date | long_date }}"
+        class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 -mr-1.5 rounded-[4px]
+               text-gray-200 hover:text-gray-500 transition-colors">
   <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <path d="M8 22h8M7 10h10M12 15v7"/><path d="M12 15a5 5 0 0 0 5-5c0-2-.5-4-2-8H9c-1.5 4-2 6-2 8a5 5 0 0 0 5 5Z"/>
   </svg>
-  <span class="text-xs font-medium tabular-nums" data-drink-total>{{ total | num if logged else '' }}</span>
 </button>
 {% endmacro %}
 
-{% macro eating_block(n) %}
-{# The day's ONE eating section (server.nutrition, appended to by log_food). Sits
-   below the day's notes, styled as an aside rather than a note — it's a daily
-   metric like the drink counter, not a journal entry. Nutrients render only when
-   they were actually estimated (NULL ones are simply absent from the dict), so a
-   day described only in words shows just the food list, with no phantom zeros.
-   Read-only here: updates come through chat/MCP.
+{% macro eating_block(n, day_date) %}
+{# The day's ONE intake section (server.nutrition, appended to by log_food) — food,
+   alcohol and water together, since they're all daily intake numbers with targets
+   and there's no reason for three parallel shapes. Styled as an aside rather than a
+   note: it's a daily metric, not a journal entry. Nutrients render only when they
+   were actually estimated (NULL ones are simply absent from the dict), so a day
+   described only in words shows just the food list, with no phantom zeros — EXCEPT
+   water and alcohol, which always show (dashed when unlogged) because they're the
+   two you top up through the day and need a tap target before the first log.
 
    The day's foods were appended one at a time (data._attach_nutrition splits them
    back out), and each gets a circled index — but they FLOW as one paragraph rather
@@ -109,17 +110,15 @@
    to its item's first word in a nowrap span, so a wrap never strands an index at
    the end of a line; the rest of the item wraps freely.
 
-   Each targeted nutrient (data.NUTRIENT_TARGETS) gets a small progress ring above
-   its existing number, which becomes the ring's label — the ring answers "how did
-   the day land against the target" at a glance, the number stays for the exact
-   figure. Untargeted ones (carbs, fat) keep the bare label, so the row aligns on
-   its bottom edge rather than pretending they have a goal. The day's notes hide
-   behind a circled "i" at the END of that row, opening a modal (wired in
-   journal.html): they're context you want occasionally, not on every day. #}
+   Each nutrient is a ring (data.NUTRIENT_TARGETS supplies the goal) with its figure
+   and short label inside. Water and drinks are TAPPABLE — they open the stepper —
+   the rest are display only, written through chat/MCP. The day's notes hide behind a
+   circled "i" at the END of that row, opening a modal (wired in journal.html):
+   they're context you want occasionally, not on every day. #}
 <div class="flex gap-2 sm:-ml-5 sm:gap-3">
   <span class="shrink-0 pt-0.5 text-sm leading-relaxed text-transparent select-none" aria-hidden="true">›</span>
   <div class="flex-1 border-l-2 border-gray-200 pl-3">
-    <p class="text-[10px] uppercase tracking-widest text-gray-400">Eating</p>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400">Intake</p>
     {% if n['items'] %}
     <p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">
       {%- for item in n['items'] %}
@@ -139,27 +138,35 @@
        Per nutrient: the unit that rides with the FIGURE inside the ring, the short
        label under it, and the spoken name for the ring's aria-label. #}
     {% set units = {
-        'calories':  {'suffix': '',   'short': 'cal',   'name': 'calories'},
-        'protein_g': {'suffix': 'g',  'short': 'prot',  'name': 'g protein'},
-        'carbs_g':   {'suffix': 'g',  'short': 'carbs', 'name': 'g carbs'},
-        'fat_g':     {'suffix': 'g',  'short': 'fat',   'name': 'g fat'},
-        'sodium_mg': {'suffix': 'mg', 'short': 'sod',   'name': 'mg sodium'},
-        'fiber_g':   {'suffix': 'g',  'short': 'fib',   'name': 'g fiber'},
+        'calories':  {'suffix': '',   'short': 'cal',    'name': 'calories'},
+        'protein_g': {'suffix': 'g',  'short': 'prot',   'name': 'g protein'},
+        'carbs_g':   {'suffix': 'g',  'short': 'carbs',  'name': 'g carbs'},
+        'fat_g':     {'suffix': 'g',  'short': 'fat',    'name': 'g fat'},
+        'sodium_mg': {'suffix': 'mg', 'short': 'sod',    'name': 'mg sodium'},
+        'fiber_g':   {'suffix': 'g',  'short': 'fib',    'name': 'g fiber'},
+        'water_oz':  {'suffix': 'oz', 'short': 'water',  'name': 'oz water'},
+        'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks'},
     } %}
-    {% set shown = units | select('in', n) | list %}
-    {% if shown or n.notes %}
+    {# Alcohol and water always get a ring on a day that has any intake at all, even
+       unlogged (a dashed empty one) — they're the two the user tops up through the
+       day, so the tap target has to be there before the first log. #}
+    {% set shown = [] %}
+    {% for key in units %}
+      {%- if key in n or key in ('water_oz', 'standard_drinks') -%}
+        {% set _ = shown.append(key) %}
+      {%- endif -%}
+    {% endfor %}
     <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
       {% for key in shown %}
-      {{ nutrient_ring(n[key], units[key], NUTRIENT_TARGETS.get(key)) }}
+      {{ nutrient_ring(n.get(key), units[key], NUTRIENT_TARGETS.get(key), key, day_date) }}
       {% endfor %}
       {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
     </div>
-    {% endif %}
   </div>
 </div>
 {% endmacro %}
 
-{% macro nutrient_ring(value, unit, goal) %}
+{% macro nutrient_ring(value, unit, goal, key=None, day_date=None) %}
 {# One nutrient, whole: the figure (with its unit) and a short label both sit INSIDE
    the ring, so each nutrient is one self-contained object instead of a stack. The
    arc is share-of-target, capped at a full circle so an overshoot doesn't wrap
@@ -176,26 +183,43 @@
    The figure's font steps down as it gets longer, since a 6-character "1400mg" has
    to fit the same inner diameter as a 3-character "10g". #}
 {% set circ = 150.8 %}{# 2πr at r=24 — the dasharray works in path length, not degrees #}
-{% set pct = (value / goal.target) if goal and goal.target else 0 %}
+{% set logged = value is not none %}
+{% set pct = (value / goal.target) if (logged and goal and goal.target) else 0 %}
 {% set over = goal and goal.ceiling and pct > 1 %}
 {% set arc = (circ * (1 if pct > 1 else pct)) | round(1) %}
-{% set figure = (value | num) ~ unit.suffix %}
+{% set figure = ((value | num) ~ unit.suffix) if logged else '' %}
 {% set size = 15 if figure|length <= 3 else (13 if figure|length == 4 else (11.5 if figure|length == 5 else 10)) %}
+{# Water and alcohol are topped up through the day, so their rings are the tap
+   target for the stepper (wired in journal.html); the rest are display only. #}
+{% set tappable = key in ('water_oz', 'standard_drinks') and day_date %}
+{# Two explicit branches, not one interpolated tag string: Jinja autoescaping would
+   turn the quotes in a built-up attribute string into &#34; and silently produce a
+   tag with no usable attributes. #}
+{% if tappable %}
+<button type="button" data-drink-btn data-date="{{ day_date }}" data-key="{{ key }}"
+        data-total="{{ value if logged else 0 }}" data-logged="{{ 1 if logged else 0 }}"
+        data-target="{{ goal.target if goal else 0 }}" data-ceiling="{{ 1 if (goal and goal.ceiling) else 0 }}"
+        aria-label="Edit {{ unit.short }} for {{ day_date | long_date }}"
+        class="shrink-0 inline-block leading-none transition-opacity hover:opacity-70">
+{% else %}
+<span class="shrink-0 inline-block leading-none">
+{% endif %}
 <svg viewBox="0 0 56 56" class="w-14 h-14 shrink-0 text-gray-600" role="img"
-     aria-label="{{ value | num }} {{ unit.name }}{{ ' of %s target' % (goal.target | num) if goal else ', no target' }}">
+     aria-label="{{ (value | num) ~ ' ' ~ unit.name if logged else unit.name ~ ' not logged' }}{{ ' of %s target' % (goal.target | num) if goal else '' }}">
   <circle cx="28" cy="28" r="24" fill="none" stroke-width="3" class="ring-track"
-          {% if not goal %}stroke-dasharray="2 3.5"{% endif %}/>
+          {% if not goal or not logged %}stroke-dasharray="2 3.5"{% endif %}/>
   {% if arc > 0 %}
   <circle cx="28" cy="28" r="24" fill="none" stroke-width="3" stroke-linecap="round"
           stroke-dasharray="{{ arc }} {{ circ }}" transform="rotate(-90 28 28)"
-          class="{{ 'ring-over' if over else 'ring-fill' }}"/>
+          class="{{ 'ring-over' if over else 'ring-fill' }}" data-ring-arc/>
   {% endif %}
-  <text x="28" y="25" text-anchor="middle" dominant-baseline="central"
-        font-size="{{ size }}" fill="currentColor"
+  <text x="28" y="{{ 25 if logged else 28 }}" text-anchor="middle" dominant-baseline="central"
+        font-size="{{ size }}" fill="currentColor" data-ring-figure
         style="font-variant-numeric: tabular-nums">{{ figure }}</text>
-  <text x="28" y="37" text-anchor="middle" dominant-baseline="central"
+  <text x="28" y="{{ 37 if logged else 40 }}" text-anchor="middle" dominant-baseline="central"
         font-size="9" fill="currentColor" class="ring-sublabel">{{ unit.short }}</text>
 </svg>
+{% if tappable %}</button>{% else %}</span>{% endif %}
 {% endmacro %}
 
 {% macro index_circle(i) %}

@@ -196,12 +196,11 @@ def list_days(limit_entries: int = 120, since: str | None = None,
         if not days or days[-1]["date"] != e["entry_date"]:
             days.append({"date": e["entry_date"], "entries": []})
         days[-1]["entries"].append(e)
-    # Floor for bare drink-only days: the start of what's actually loaded. An
+    # Floor for bare intake-only days: the start of what's actually loaded. An
     # explicit `since` IS that start; otherwise the default window reaches back to
     # `oldest` — unless there's nothing older at all (has_more False), in which case
-    # the feed is complete and every drink day belongs on it.
+    # the feed is complete and every logged day belongs on it.
     floor = since or (oldest if has_more else None)
-    _attach_drinks(days, floor, bare_days=kind is None)
     _attach_nutrition(days, floor, bare_days=kind is None)
     if kind is None:
         _fill_empty_days(days)
@@ -211,10 +210,10 @@ def list_days(limit_entries: int = 120, since: str | None = None,
 
 def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
     """Insert a bare block for every calendar day inside the loaded window that has
-    neither entries nor drinks, in place.
+    neither entries nor an intake row, in place.
 
     A day with nothing written is still a day you want to reach: it's where the
-    drink counter is tapped and where "write about this day" opens the chat. Without
+    drinks counter is tapped and where "write about this day" opens the chat. Without
     this the feed silently skips quiet days (an empty Tuesday simply isn't there, so
     there's nothing to tap). The window runs from today back to the oldest loaded
     day — never older, so it doesn't imply history that hasn't been paged in — and
@@ -222,7 +221,7 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
     rendering years of blanks.
 
     Only the unfiltered feed fills: a kind filter is a scoped view of entries, so
-    empty days there would be noise (same reason bare drink days are skipped)."""
+    empty days there would be noise (same reason bare intake days are skipped)."""
     if not days:
         return
     newest = max(date.fromisoformat(d["date"]) for d in days)
@@ -235,66 +234,32 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
     while cur >= oldest_d:
         iso = cur.isoformat()
         if iso not in have:
-            days.append({"date": iso, "entries": [], "drinks": 0.0})
+            days.append({"date": iso, "entries": []})
         cur -= timedelta(days=1)
     days.sort(key=lambda x: x["date"], reverse=True)
 
 
-def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
-    """Hang each day's standard-drink total onto the feed's day blocks, in place.
-
-    The journal day header is where drinks are read and edited now (there's no
-    separate drinking page), so every rendered day carries a `drinks` total —
-    0.0 on a sober/unlogged day — plus `drinks_logged`, true when the day HAS a
-    row. The pair distinguishes a day explicitly logged as 0 (confirmed sober,
-    counter shows "0") from one never logged at all (empty glass); the total alone
-    can't, since both are 0.
-
-    With `bare_days`, a day that has drinks but NO entries is inserted as an
-    empty day block, so a drink-only day (notably today, before anything is
-    written) is still visible and tappable. Those bare days are confined to the
-    loaded window (>= `floor`, the oldest day the feed reaches), so they never
-    imply history that hasn't been paged in; `floor=None` means the feed already
-    goes back to the beginning, so every drink day belongs on it. A kind filter
-    is a scoped view of entries, so it passes bare_days=False."""
-    with server.db() as conn:
-        rows = conn.execute(
-            "SELECT drink_date, ROUND(SUM(standard_drinks),2) AS total FROM drinks "
-            + ("WHERE drink_date >= ? " if floor else "")
-            + "GROUP BY drink_date",
-            (floor,) if floor else (),
-        ).fetchall()
-    totals = {r["drink_date"]: r["total"] for r in rows}
-    for day in days:
-        day["drinks_logged"] = day["date"] in totals
-        day["drinks"] = totals.pop(day["date"], 0.0)
-    if not bare_days or not totals:
-        return
-    for d, total in totals.items():
-        days.append({"date": d, "entries": [], "drinks": total, "drinks_logged": True})
-    days.sort(key=lambda x: x["date"], reverse=True)
-
-
-# Daily targets the eating block's rings read against. DISPLAY-ONLY, the same shape
+# Daily targets the intake block's rings read against. DISPLAY-ONLY, the same shape
 # as graphs.js's DRINK_LIMIT: the server stores no goals (all coaching judgment lives
 # in the conversation), so these are a webapp constant, not a settings row. `ceiling`
-# marks a number you're trying to stay UNDER (sodium, calories) rather than reach —
-# it only changes the ring's color once it's past the target. Calories use the middle
-# of the 2,200-2,400 band, since a ring can't show a range. A nutrient with no entry
-# here (fat) is tracked but untargeted and renders as a bare label.
+# marks a number you're trying to stay UNDER (sodium, calories, alcohol) rather than
+# reach — it only changes the ring's color once it's past the target. Calories use the
+# middle of the 2,200-2,400 band, since a ring can't show a range.
 #
 # The macros are set so they add up to the calorie target rather than each being
 # picked on its own (150p + 250c + 75f = 2,275 kcal): protein is fixed by muscle
 # preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder — which
 # is also why carbs is NOT a ceiling. It's the flex macro, and calories already has
 # a ceiling ring to catch a genuine overshoot; a second warning color the moment
-# carbs pass 250 would be noise.
+# carbs pass 250 would be noise. Fat has no target yet, so it renders a dashed ring.
 NUTRIENT_TARGETS = {
     "calories":  {"target": 2300, "ceiling": True},
     "protein_g": {"target": 150,  "ceiling": False},
     "carbs_g":   {"target": 250,  "ceiling": False},
     "sodium_mg": {"target": 2300, "ceiling": True},
     "fiber_g":   {"target": 30,   "ceiling": False},
+    "water_oz":  {"target": 128,  "ceiling": False},  # a gallon
+    "standard_drinks": {"target": 2, "ceiling": True},
 }
 
 
@@ -304,9 +269,10 @@ def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = Tru
     A day gets a `nutrition` dict (summary, notes, and whichever nutrients were
     actually estimated) only when one was logged — days with none carry nothing,
     so the template can just test truthiness and the block stays absent rather
-    than rendering an empty "Eating —". Same window/bare-day rules as
-    `_attach_drinks`: a food-only day is inserted inside the loaded window so it's
-    still reachable, and a kind-filtered feed skips those insertions.
+    than rendering an empty "Eating —". This is the ONLY intake attach now: alcohol
+    and water are nutrients on this row, so the old, separate `_attach_drinks` is
+    gone. A day with intake but no entries is inserted inside the loaded window so
+    it's still reachable, and a kind-filtered feed skips those insertions.
 
     Also splits `summary` back into the `items` it was built from: log_food appends
     each new food with "; " (server._merge_notes), so splitting on that separator
@@ -331,7 +297,7 @@ def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = Tru
     if not bare_days or not by_date:
         return
     for d, n in by_date.items():
-        days.append({"date": d, "entries": [], "drinks": 0.0, "nutrition": n})
+        days.append({"date": d, "entries": [], "nutrition": n})
     days.sort(key=lambda x: x["date"], reverse=True)
 
 
@@ -749,7 +715,8 @@ def graph_data() -> dict:
 
     - weight: one point per weighed day (latest reading wins, matching
       bodyweight_on / server.log_bodyweight).
-    - drinks: the logged days only; the page gap-fills sober days to 0 so the
+    - drinks: days with an alcohol figure on the intake row (nutrition.standard_
+      drinks, including explicit 0s); the page gap-fills unlogged days to 0 so the
       line is honest about the calendar.
     - exercises: per strength exercise (has at least one done, weighted set on a
       done workout), one point per session date with the deterministic aggregates
@@ -779,11 +746,12 @@ def graph_data() -> dict:
                    ORDER BY weigh_date"""
             )
         ]
+        # Alcohol lives on the intake row now, not the legacy `drinks` table.
         drinks = [
-            {"date": r["drink_date"], "total": r["standard_drinks"]}
+            {"date": r["food_date"], "total": r["standard_drinks"]}
             for r in conn.execute(
-                "SELECT drink_date, ROUND(SUM(standard_drinks),2) AS standard_drinks "
-                "FROM drinks GROUP BY drink_date ORDER BY drink_date"
+                "SELECT food_date, ROUND(standard_drinks,2) AS standard_drinks "
+                "FROM nutrition WHERE standard_drinks IS NOT NULL ORDER BY food_date"
             )
         ]
         ex_rows = conn.execute(
