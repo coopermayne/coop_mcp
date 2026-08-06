@@ -84,10 +84,12 @@
 {% endif %}
 </div>
 
-{# Drink editor — the whole drinking UI now that the separate page is gone. Opened
-   by any day header's counter (m.drink_counter). Just a number: the stepper writes
-   an ABSOLUTE total for that day through /drinking/day (0 clears it back to sober);
-   kind/notes stay in the DB, editable through chat, but aren't worth a form here.
+{# Intake stepper — the one editable-in-the-browser part of a day's intake row.
+   Opened by a tappable ring (water or drinks) in the day's block, or by the ghosted
+   glass on a day with nothing logged at all. Writes an ABSOLUTE value for ONE column
+   through /drinking/day; Clear sets it back to NULL (unlogged). The step size and
+   label follow the nutrient — half-drinks vs 8oz of water — off the button's
+   data-key. Food and the other nutrients are written through chat/MCP, not here.
    Lives outside data-journal-feed so a chat-driven feed refresh can't blow it away
    mid-edit; the button handler is delegated for the same reason. #}
 <div data-drink-modal hidden
@@ -98,20 +100,20 @@
     <p id="drink-modal-date" class="text-[10px] uppercase tracking-widest text-gray-400 text-center"
        data-drink-modal-date></p>
     <div class="flex items-center justify-center gap-4 mt-4">
-      <button type="button" data-drink-step="-0.5" aria-label="Fewer drinks"
+      <button type="button" data-drink-step="-1" aria-label="Less"
               class="w-10 h-10 flex items-center justify-center border border-gray-200 rounded-[8px] text-xl leading-none text-gray-600 hover:bg-black hover:text-white hover:border-black transition-colors">–</button>
-      <input type="number" step="0.5" min="0" inputmode="decimal" data-drink-amt
+      <input type="number" min="0" inputmode="decimal" data-drink-amt
              class="w-20 px-2 py-1.5 border border-gray-200 text-2xl font-semibold tabular-nums text-center focus:outline-none focus:border-black" />
-      <button type="button" data-drink-step="0.5" aria-label="More drinks"
+      <button type="button" data-drink-step="1" aria-label="More"
               class="w-10 h-10 flex items-center justify-center border border-gray-200 rounded-[8px] text-xl leading-none text-gray-600 hover:bg-black hover:text-white hover:border-black transition-colors">+</button>
     </div>
-    <p class="text-[10px] uppercase tracking-widest text-gray-400 text-center mt-2">standard drinks</p>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400 text-center mt-2" data-drink-unit></p>
     <p class="text-xs text-red-600 text-center mt-3" data-drink-error hidden></p>
     <div class="flex items-center gap-2 mt-5">
       <button type="button" data-drink-cancel
               class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Cancel</button>
-      {# Saving 0 now RECORDS the day as sober, so "unlog it" needs its own way out.
-         Only offered on a day that actually has a row. #}
+      {# Saving 0 RECORDS the day (sober / no water), so "unlog it" needs its own way
+         out. Only offered when the column actually has a value. #}
       <button type="button" data-drink-clear
               class="px-3 py-2 text-gray-400 text-xs hover:text-black transition-colors">Clear</button>
       <button type="button" data-drink-save
@@ -120,21 +122,30 @@
   </div>
 </div>
 <script>
-  // Day-header drink counter → modal → PUT-style absolute save. No framework; the
-  // click handler is delegated off document so it survives the chat panel's feed
-  // re-render, and the saved total is written straight back onto the button (no
-  // page reload, so the reading position is kept).
+  // Tappable ring / ghost glass → modal → absolute save of ONE nutrient. No
+  // framework; the click handler is delegated off document so it survives the chat
+  // panel's feed re-render, and the saved value is drawn straight back onto the ring
+  // (no page reload, so the reading position is kept).
   (function () {
     var modal = document.querySelector('[data-drink-modal]');
     if (!modal) return;
     var base = {{ base | tojson }};
     var amt = modal.querySelector('[data-drink-amt]');
     var dateEl = modal.querySelector('[data-drink-modal-date]');
+    var unitEl = modal.querySelector('[data-drink-unit]');
     var errEl = modal.querySelector('[data-drink-error]');
     var save = modal.querySelector('[data-drink-save]');
     var clear = modal.querySelector('[data-drink-clear]');
-    var current = null;  // the counter button being edited
+    var current = null;  // the ring/counter button being edited
 
+    // Per-nutrient stepper behavior: drinks move in halves, water by the glass.
+    var NUTRIENTS = {
+      standard_drinks: { step: 0.5, label: 'standard drinks', suffix: '' },
+      water_oz:        { step: 8,   label: 'fl oz of water',  suffix: 'oz' }
+    };
+    var CIRC = 150.8;  // must match macros.nutrient_ring
+
+    function conf(btn) { return NUTRIENTS[btn.dataset.key] || NUTRIENTS.standard_drinks; }
     function fmt(n) { return String(Math.round(n * 100) / 100); }
     function longDate(iso) {
       var p = iso.split('-');
@@ -143,11 +154,15 @@
     }
     function open(btn) {
       current = btn;
-      var t = parseFloat(btn.dataset.total) || 0;
-      amt.value = fmt(t);
+      var c = conf(btn);
+      amt.value = fmt(parseFloat(btn.dataset.total) || 0);
+      amt.step = c.step;
+      unitEl.textContent = c.label;
       dateEl.textContent = longDate(btn.dataset.date);
+      modal.querySelectorAll('[data-drink-step]').forEach(function (b) {
+        b.dataset.drinkStep = (b.getAttribute('aria-label') === 'More' ? 1 : -1) * c.step;
+      });
       errEl.hidden = true;
-      // "Clear" only makes sense on a day that has a row to remove.
       clear.hidden = btn.dataset.logged !== '1';
       modal.hidden = false;
       // Not on touch: the keyboard popping up would cover the stepper.
@@ -173,9 +188,30 @@
     });
     amt.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSave(); });
     save.addEventListener('click', function () { doSave(); });
-    // Clear removes the row entirely — back to "never logged", which saving 0 no
-    // longer does (0 now means "confirmed sober").
+    // Clear nulls the column — back to "never logged", which saving 0 no longer does
+    // (0 means confirmed sober / no water).
     clear.addEventListener('click', function () { doSave(true); });
+
+    // Redraw a ring in place: arc length, over/under color, and the figure text.
+    // The ghost glass on an empty day has no <svg>, so it just gets its number.
+    function paint(btn, value, logged) {
+      btn.dataset.total = value || 0;
+      btn.dataset.logged = logged ? '1' : '0';
+      var arc = btn.querySelector('[data-ring-arc]');
+      var fig = btn.querySelector('[data-ring-figure]');
+      if (!fig) return true;  // not a ring — caller reloads instead
+      var target = parseFloat(btn.dataset.target) || 0;
+      var pct = target ? (value || 0) / target : 0;
+      if (arc) {
+        arc.setAttribute('stroke-dasharray', (CIRC * Math.min(pct, 1)).toFixed(1) + ' ' + CIRC);
+        var over = btn.dataset.ceiling === '1' && pct > 1;
+        arc.classList.toggle('ring-over', over);
+        arc.classList.toggle('ring-fill', !over);
+      }
+      var c = conf(btn);
+      fig.textContent = logged ? fmt(value || 0) + c.suffix : '';
+      return false;
+    }
 
     function doSave(clearIt) {
       if (!current) return;
@@ -186,22 +222,17 @@
       fetch(base + '/drinking/day', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(clearIt ? { date: btn.dataset.date, clear: true }
-                                     : { date: btn.dataset.date, standard_drinks: value })
+        body: JSON.stringify(clearIt ? { date: btn.dataset.date, key: btn.dataset.key, clear: true }
+                                     : { date: btn.dataset.date, key: btn.dataset.key, amount: value })
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw j; return j; }); })
         .then(function (j) {
-          // The counter's look follows whether the day HAS a row, not whether the
-          // number is non-zero — a logged 0 is a real state and shows its "0".
-          var t = j.standard_drinks || 0, on = !!j.logged;
-          btn.dataset.total = t;
-          btn.dataset.logged = on ? '1' : '0';
-          btn.querySelector('[data-drink-total]').textContent = on ? fmt(t) : '';
-          btn.classList.toggle('text-gray-500', on);
-          btn.classList.toggle('hover:text-black', on);
-          btn.classList.toggle('text-gray-200', !on);
-          btn.classList.toggle('hover:text-gray-500', !on);
+          // A ring with no arc yet (first log of the day) can't be drawn in place,
+          // and neither can the ghost glass — the day's whole block changes shape.
+          // Reload the feed region in those cases; otherwise repaint and stay put.
+          var needsReload = paint(btn, j.amount, j.logged) || !btn.querySelector('[data-ring-arc]');
           close();
+          if (needsReload) window.location.reload();
         })
         .catch(function (j) {
           errEl.textContent = (j && j.error) || 'Could not save.';
@@ -209,46 +240,6 @@
         })
         .finally(function () { save.disabled = false; });
     }
-  })();
-</script>
-
-{# Eating-notes reader. Opened by the circled "i" on a day's Eating block
-   (m.note_button), which carries the text itself — so this is display-only, with
-   no fetch and nothing to save. Outside data-journal-feed, delegated handler, same
-   reasons as the drink modal above. #}
-<div data-note-modal hidden
-     class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/30"
-     role="dialog" aria-modal="true" aria-labelledby="note-modal-title">
-  <div class="w-full max-w-sm bg-white border border-gray-200 rounded-[6px] shadow-xl px-6 py-5"
-       data-note-card>
-    <p id="note-modal-title" class="text-[10px] uppercase tracking-widest text-gray-400">Notes</p>
-    <p class="text-[15px] text-gray-800 leading-relaxed mt-2 whitespace-pre-line" data-note-text></p>
-    <div class="flex justify-end mt-5">
-      <button type="button" data-note-close
-              class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Close</button>
-    </div>
-  </div>
-</div>
-<script>
-  (function () {
-    var modal = document.querySelector('[data-note-modal]');
-    if (!modal) return;
-    var text = modal.querySelector('[data-note-text]');
-    function close() { modal.hidden = true; }
-    document.addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-note-btn]');
-      if (!btn) return;
-      e.preventDefault();
-      text.textContent = btn.dataset.note || '';
-      modal.hidden = false;
-    });
-    modal.querySelector('[data-note-close]').addEventListener('click', close);
-    modal.addEventListener('click', function (e) {  // backdrop dismisses
-      if (!e.target.closest('[data-note-card]')) close();
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && !modal.hidden) close();
-    });
   })();
 </script>
 

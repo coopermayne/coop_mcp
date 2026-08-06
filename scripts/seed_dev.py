@@ -230,7 +230,8 @@ DRINKS = [
     ("2026-06-01", 1.0, "wine", "Lillet"),
 ]
 for dd, n, kind, notes in DRINKS:
-    server.log_drinks(standard_drinks=n, drink_date=dd, kind=kind, notes=notes)
+    # Alcohol is a nutrient on the intake row now — same path as food.
+    server.log_food(summary=kind, food_date=dd, standard_drinks=n, notes=notes)
 print(f"drinks logged: {len(DRINKS)}")
 
 
