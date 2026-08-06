@@ -250,7 +250,7 @@ working.
   row, a beer is a row, a 12oz glass of water is a row — food, alcohol and water are
   the same kind of fact, so they share one table, one tool path, and one set of
   columns. There is no per-nutrient special case anywhere above this table.
-  `log_food` inserts ONE item (the model calls it once per thing; `position` is the
+  `log_intake` inserts ONE item (the model calls it once per thing; `position` is the
   server-assigned order within the day, the same append as entries' `day_position`);
   `update_intake_item` edits one by id; `delete_record(kind="intake_item")` removes
   one.
@@ -262,22 +262,19 @@ working.
   `sodium_mg`, `fiber_g`, `standard_drinks`, `water_oz`) are per-item and OPTIONAL,
   staying NULL until filled in, so a day described only in words is "unestimated",
   never a zero-calorie day; a nutrient no item carries is ABSENT from the day's
-  totals rather than 0. `get_nutrition`'s averages are per nutrient over the days
+  totals rather than 0. `get_intake`'s averages are per nutrient over the days
   that carry it, so each has its OWN denominator (returned with `logged_days`). The
   `NUTRIENTS` tuple drives every sum/average/render site, so adding a nutrient is one
   tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
   Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
   estimate, made in conversation; there is no food database in the server.
   The webapp shows a day's items and its summed rings under that day's entries on the
-  journal feed (`data._attach_nutrition` + `macros.eating_block`). Read-only —
-  EXCEPT the water and alcohol rings, which are tappable and open the quick-add:
-  `POST /intake/add` logs ANOTHER ITEM through `server.log_food` (the same row chat
-  would create — the UI has no privileged "set the day total" path, because no such
-  total exists), and the modal lists that day's items for the nutrient each with an ×
-  (`POST /intake/delete`). Those two always render, dashed when unlogged, since
-  they're topped up through the day and need a tap target before the first log; a day
-  with nothing logged still shows the ghosted glass on its header
-  (`macros.drink_counter`) as the way in. Each nutrient renders as a ring with BOTH
+  journal feed (`data._attach_nutrition` + `macros.eating_block`), STRICTLY READ-ONLY:
+  intake has exactly ONE write path, the MCP tools (the in-app chat panel counts —
+  it calls the same functions). There is no form, no tappable ring, no /intake write
+  route; the browser only renders. Water and alcohol rings still always render, dashed
+  when unlogged, because "no water yet" is worth seeing on a day you mean to hit a
+  gallon. Each nutrient renders as a ring with BOTH
   its summed figure (unit included: "1400mg") and a short label ("sod") inside it
   (`macros.nutrient_ring`), read against `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY
   webapp constant, the `DRINK_LIMIT` pattern: the server stores no goals, so targets

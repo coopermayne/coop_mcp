@@ -130,7 +130,7 @@ on Pacific time. get_briefing returns `now` (current Pacific date/time) with
 any bare day reference against them before defaulting or saving.
 
 Intake is its own log, not a journal entry: when the user mentions eating or
-drinking, call log_food — ONCE PER ITEM ("a sandwich and a beer" is two calls) —
+drinking, call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls) —
 instead of, or as well as, writing an entry about it. Food, alcohol and water are all
 items; nutrient numbers are optional, so estimate them when the user wants numbers
 and otherwise just record what it was. Corrections go through update_intake_item by
@@ -1631,7 +1631,7 @@ def delete_record(kind: str, id: int) -> dict:
       - "entry" — a journal entry (its mentions go too; FTS stays in sync).
       - "intake_item" — one logged thing (a meal, a beer, a glass of water). The
         day's totals re-derive from what's left, so nothing else needs fixing.
-    Find ids with get_entry/search_entries, or get_nutrition/log_food for items.
+    Find ids with get_entry/search_entries, or get_intake/log_intake for items.
     (Workouts and sets are deleted via the trainer server's own delete_record.)"""
     if kind not in ("entry", "intake_item"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
@@ -2031,7 +2031,7 @@ def _get_profile(conn: sqlite3.Connection) -> dict:
 # Alcohol now lives on the nutrition row (see NUTRIENTS); these functions and the
 # table they write are kept only so the fold-in migration has a source and old data
 # stays readable. Nothing in the app calls them any more: the feed's drinks ring
-# quick-add logs an intake item through log_food, exactly like the model does. They never carried an @mcp.tool()
+# quick-add logs an intake item through log_intake, exactly like the model does. They never carried an @mcp.tool()
 # decorator (a day's drinks are one number, faster to tap than to describe), so
 # removing them later is a pure deletion — no tool surface to break.
 # --------------------------------------------------------------------------- #
@@ -2234,7 +2234,7 @@ def _day_totals(rows) -> dict:
 
 
 @mcp.tool()
-def log_food(item: str = "", food_date: Optional[str] = None,
+def log_intake(item: str = "", food_date: Optional[str] = None,
              calories: Optional[float] = None, protein_g: Optional[float] = None,
              carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
              sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
@@ -2264,7 +2264,7 @@ def log_food(item: str = "", food_date: Optional[str] = None,
     with no other numbers — that's a record that the day was accounted for.
 
     To fix a logged item use update_intake_item (by `item_id`, which this returns and
-    get_nutrition lists); to remove one, delete_record(kind="intake_item", id=...).
+    get_intake lists); to remove one, delete_record(kind="intake_item", id=...).
     Neither needs any arithmetic — the day's totals re-derive themselves.
 
     Args:
@@ -2314,7 +2314,7 @@ def log_food(item: str = "", food_date: Optional[str] = None,
 
 
 @mcp.tool()
-def get_nutrition(days: int = 14, since: Optional[str] = None,
+def get_intake(days: int = 14, since: Optional[str] = None,
                   until: Optional[str] = None, include_items: bool = True) -> dict:
     """Read the intake log back: per day, its items (with ids) and summed totals.
 
@@ -2381,15 +2381,15 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
                        water_oz: Optional[float] = None,
                        note: Optional[str] = None) -> dict:
     """Correct ONE logged item. Only the args you pass are written, and they REPLACE
-    that item's values (log_food adds a new item; this edits an existing one).
+    that item's values (log_intake adds a new item; this edits an existing one).
 
     This is the whole correction path: "that bowl was 600, not 1100" is one call with
     `calories=600` — you do NOT recompute the day, because the day's totals are summed
     from the items. `food_date` moves the item to another day. To remove it entirely,
-    delete_record(kind="intake_item", id=...). Find ids with get_nutrition.
+    delete_record(kind="intake_item", id=...). Find ids with get_intake.
 
     Args:
-        item_id: The item to correct (from get_nutrition or log_food).
+        item_id: The item to correct (from get_intake or log_intake).
         item: Replacement text for what it was.
         food_date: Move it to this day, YYYY-MM-DD (Pacific).
         calories: Replacement calories for this item.

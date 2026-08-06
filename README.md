@@ -125,7 +125,7 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
 
 - **Intake: one row per thing consumed.** A sandwich is a row, a beer is a row, a
   12oz glass of water is a row — food, alcohol and water are the same kind of fact, so
-  they share one table and one code path. `log_food` logs ONE item (call it once per
+  they share one table and one code path. `log_intake` logs ONE item (call it once per
   thing) with whatever nutrients are known: calories, protein/carbs/fat, sodium, fiber,
   `standard_drinks`, `water_oz`. Every number is optional and stays NULL until filled
   in, so a day described only in words never reads as zero.
@@ -133,17 +133,17 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   **Day totals are derived, never stored** — they're a SUM over the day's items. That's
   what makes corrections cheap: "that bowl was 600, not 1100" is
   `update_intake_item(item_id, calories=600)`, with no recomputing of the day, and
-  removing something is `delete_record(kind="intake_item", id=…)`. `get_nutrition`
+  removing something is `delete_record(kind="intake_item", id=…)`. `get_intake`
   returns each day's items *with ids* plus its totals, and per-nutrient averages (each
   over the days that carry it). The estimating is the model's job: there's no food
   database in the server.
 
   In the web app, each nutrient is a ring on the day's block showing the summed total
-  against its target. **Water and alcohol rings are tappable** — a quick-add that logs
-  another item (never a day total) and lists the day's items so a mis-tap can be
-  removed. Alcohol has no tool of its own; it's just a nutrient on an item. (The old
-  `drinks` and day-level `nutrition` tables are dormant: their rows fold into the
-  intake log once, automatically, on first start.)
+  against its target — **read-only**. Logging intake has exactly one path: the MCP
+  tools (or the in-app chat panel, which calls the same ones). Alcohol and water have
+  no tools of their own; they're nutrients on an item. (The old `drinks` and day-level
+  `nutrition` tables are dormant: their rows fold into the intake log once,
+  automatically, on first start.)
 
 - **A closed exercise library.** The catalog is a fixed set the trainer draws on but
   never grows: ~870 movements pre-loaded from free-exercise-db, plus any you add yourself
@@ -183,7 +183,7 @@ Suggested posture for the **trainer project's** custom instructions (the drinkin
 belong with the journaling project, since the eating tools are on the
 journal connector):
 
-> When I mention food, `log_food` it onto
+> When I mention food, `log_intake` it onto
 > that day's eating section — estimate calories/protein only when I ask for numbers.
 > When I train: at the start of a session call `get_fitness_briefing` to see what's
 > recovered vs recently hit, my injuries, and my split, then recommend the day's work
@@ -413,20 +413,6 @@ Env: `ANTHROPIC_API_KEY` (required to enable), `CHAT_MODEL` (default
 auto-loads a git-ignored `.env` at the project root (a tiny zero-dep loader in
 `app.py`; a real shell/Coolify var still wins, a present-but-blank one yields to `.env`).
 
-### Direct intake entry — no AI
-
-Water and alcohol come in repeated small amounts, so they're tapped rather than
-described: each day's intake block shows a ring per nutrient, and the **water** and
-**drinks** rings open a quick-add. Saving POSTs to `/intake/add`, which logs an ITEM
-through `server.log_food` — the same row chat would create, not a day total, because
-there are no stored day totals. The modal lists that day's items for the nutrient, each
-with an × (`/intake/delete`), so a mis-tap is undone by removing it. Those two rings
-always render (dashed when unlogged) so there's a tap target before the first log; a day
-with nothing logged keeps a ghosted glass on its header as the way in. A day with intake
-but no entries still renders a bare day header, so an intake-only day — today included —
-is always reachable. Food and the other numbers are written through chat/MCP. Trends
-live on `/graphs`. No LLM.
-
 **Installable as a PWA.** The UI ships a web app manifest
 (`/manifest.webmanifest`) and a service worker (`/sw.js`), both generated
 per-request so their `start_url`/`scope`/icon paths carry the mount prefix
@@ -508,8 +494,8 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body`; pass `mentions` to reconcile who it references (adds/removes mention rows, keeps resolved links) |
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
 | `search_entries` | Full-text search for topics/events |
-| `log_food` | Log ONE thing consumed (meal, beer, glass of water) with whatever nutrients are known — calories, macros, sodium, fiber, standard drinks, water oz |
-| `get_nutrition` | Intake days back: each day's items *with ids* + summed totals, and per-nutrient averages (each over the days that carry it) |
+| `log_intake` | Log ONE thing consumed (meal, beer, glass of water) with whatever nutrients are known — calories, macros, sodium, fiber, standard drinks, water oz |
+| `get_intake` | Intake days back: each day's items *with ids* + summed totals, and per-nutrient averages (each over the days that carry it) |
 | `update_intake_item` | Correct one logged item by id — the day's totals re-derive themselves |
 | `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
 | `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
