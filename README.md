@@ -210,6 +210,7 @@ HTTP at `/mcp` (see the Dockerfile). On Coolify:
 
 1. New resource → from this repo (or Dockerfile). Coolify builds the image.
 2. Add a **persistent volume** mounted at `/data` so `journal.db` survives redeploys.
+   The OAuth state lives there too — see "Staying logged in across redeploys" below.
 3. Give it a domain; Coolify provisions HTTPS via Let's Encrypt automatically.
 4. **For the trainer, add a second domain** on the SAME Coolify application (Coolify
    accepts multiple domains per service) — e.g. `https://TRAINER-DOMAIN` — pointed at
