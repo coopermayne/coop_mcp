@@ -278,8 +278,9 @@ working.
   the MODEL's estimate, made in conversation; there is no food database or lookup in the
   server. The webapp shows a day's section under its entries on the journal feed
   (`data._attach_nutrition` + `macros.eating_block`), read-only — writes come through
-  chat/MCP, unlike the drink counter's stepper. Each targeted nutrient shows a small
-  progress ring above its number (`macros.nutrient_ring`), read against
+  chat/MCP, unlike the drink counter's stepper. Each targeted nutrient renders as a
+  small progress ring with the FIGURE INSIDE it and only the unit labelled below
+  (`macros.nutrient_ring`), read against
   `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY webapp constant, the `DRINK_LIMIT` pattern:
   the server stores no goals, so targets never enter the DB or a tool return. A
   `ceiling` target (sodium, calories) turns the ring clay once passed; a floor one
