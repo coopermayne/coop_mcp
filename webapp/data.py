@@ -277,10 +277,18 @@ def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) 
 # marks a number you're trying to stay UNDER (sodium, calories) rather than reach —
 # it only changes the ring's color once it's past the target. Calories use the middle
 # of the 2,200-2,400 band, since a ring can't show a range. A nutrient with no entry
-# here (carbs, fat) is tracked but untargeted and renders as a bare label.
+# here (fat) is tracked but untargeted and renders as a bare label.
+#
+# The macros are set so they add up to the calorie target rather than each being
+# picked on its own (150p + 250c + 75f = 2,275 kcal): protein is fixed by muscle
+# preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder — which
+# is also why carbs is NOT a ceiling. It's the flex macro, and calories already has
+# a ceiling ring to catch a genuine overshoot; a second warning color the moment
+# carbs pass 250 would be noise.
 NUTRIENT_TARGETS = {
     "calories":  {"target": 2300, "ceiling": True},
     "protein_g": {"target": 150,  "ceiling": False},
+    "carbs_g":   {"target": 250,  "ceiling": False},
     "sodium_mg": {"target": 2300, "ceiling": True},
     "fiber_g":   {"target": 30,   "ceiling": False},
 }
