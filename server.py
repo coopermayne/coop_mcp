@@ -90,8 +90,8 @@ class AllowlistMiddleware(Middleware):
 _auth = _build_auth()
 mcp = FastMCP("journal", auth=_auth, instructions="""\
 Single-user life log: a conversational journal (people are resolved to stable
-entities, not name strings) plus a drinking tracker and an eating log. The server
-only stores and matches — the judgment (which person a mention means) is yours.
+entities, not name strings) plus an eating log. The server only stores and matches —
+the judgment (which person a mention means) is yours.
 
 Three rules: capture never blocks — always save, leave ambiguous mentions pending
 for later; resolve mentions to person entities, don't normalize names in text (for a
@@ -133,6 +133,10 @@ Food is its own daily section, not a journal entry: when the user mentions eatin
 call log_food (it appends to that day's one eating section) instead of — or as well
 as — writing an entry about it. Macros are optional; estimate them when the user
 wants numbers, otherwise just record the food in words.
+
+Alcohol has NO tool here — a day's drinks are logged from the website's day-header
+counter. If drinks come up, capture whatever matters as a normal entry and leave the
+count alone; don't try to record it.
 
 Start a session with get_briefing to load people/journal context before acting.
 (Workouts/training live on a separate `trainer` MCP server.)""")
@@ -1544,14 +1548,13 @@ def delete_record(kind: str, id: int) -> dict:
 
     `kind` selects what `id` refers to:
       - "entry" — a journal entry (its mentions go too; FTS stays in sync).
-      - "drink" — one day's drink row (that day becomes sober again).
       - "nutrition" — one day's eating section (that day becomes unlogged).
-    Find ids with get_entry/search_entries, get_drink_summary(include_rows=True), or
-    log_food's return. (Workouts and sets are deleted via the trainer server's own
-    delete_record.)"""
-    if kind not in ("entry", "drink", "nutrition"):
+    Find ids with get_entry/search_entries or log_food's return. (Workouts and sets
+    are deleted via the trainer server's own delete_record; drinks aren't on any
+    connector — they're edited from the website's day-header counter.)"""
+    if kind not in ("entry", "nutrition"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['drink', 'entry', 'nutrition'] (use the trainer server "
+                         "['entry', 'nutrition'] (use the trainer server "
                          "for workout/set)"}
     return _delete_record(kind, id)
 
@@ -1942,10 +1945,17 @@ def _get_profile(conn: sqlite3.Connection) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Drinking tools
+# Drinking — NOT MCP tools.
+#
+# Drinks are logged entirely from the website: the journal feed's day-header
+# counter → stepper modal → POST /drinking/day, which calls these functions
+# directly. They carry no @mcp.tool() decorator on purpose, the same NON-tool
+# pattern as create_exercise/set_archived — a day's drinks are one number, faster
+# to tap than to describe, so putting them on a connector only costs every
+# conversation three tool schemas it will never use. The functions stay public and
+# fully documented because webapp/app.py is their caller.
 # --------------------------------------------------------------------------- #
 
-@mcp.tool()
 def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
                kind: Optional[str] = None, notes: Optional[str] = None) -> dict:
     """Log alcohol consumption for a day, in STANDARD-DRINK units.
@@ -2001,7 +2011,6 @@ def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
             "day_total": round(day_total, 2)}
 
 
-@mcp.tool()
 def get_drink_summary(days: int = 30, since: Optional[str] = None,
                       until: Optional[str] = None, include_rows: bool = False) -> dict:
     """Drinking trends over a window: per-day totals plus rolling stats.
@@ -2014,8 +2023,8 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
     (0 if the user drank today, null if never).
 
     Set `include_rows=True` to also get the individual drink rows WITH ids (`drinks`)
-    — needed when the user wants to FIX a logged drink ("last night was really 1, not
-    3"): find the `drink_id` here, then pass it to update_drink or delete_record.
+    — needed to FIX a logged drink: find the `drink_id` here, then pass it to
+    update_drink or _delete_record("drink", id).
 
     Args:
         days: Size of the trailing window in days (ignored if `since` is given).
@@ -2070,7 +2079,6 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
     return out
 
 
-@mcp.tool()
 def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
                  drink_date: Optional[str] = None, kind: Optional[str] = None,
                  notes: Optional[str] = None) -> dict:
@@ -2080,12 +2088,12 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
     Use this to fix a mistake in either direction — e.g. set `standard_drinks` to 1
     when the day was over-logged (log_drinks only adds, so corrections downward go
     through here), or to 0 to turn a mis-logged day into a CONFIRMED-sober one (the
-    row stays, recording that the day was accounted for; delete_record removes it
-    entirely, back to "never logged"), relabel `kind`, or move the day with `drink_date` (YYYY-MM-DD,
-    Pacific). Since a day has exactly one row, moving onto a day that already has one
-    is refused — edit that day instead. Find the `drink_id` with
-    get_drink_summary(include_rows=True). To remove a day entirely use
-    delete_record(kind="drink", id=...)."""
+    row stays, recording that the day was accounted for; deleting removes it
+    entirely, back to "never logged"), relabel `kind`, or move the day with
+    `drink_date` (YYYY-MM-DD, Pacific). Since a day has exactly one row, moving onto
+    a day that already has one is refused — edit that day instead. Find the
+    `drink_id` with get_drink_summary(include_rows=True). To remove a day entirely
+    use _delete_record("drink", id)."""
     if err := _bad_date(drink_date, "drink_date"):
         return err
     if standard_drinks is not None and standard_drinks < 0:

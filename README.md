@@ -123,15 +123,14 @@ single process routes that hostname to the trainer server at its root (connector
 With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
 `/trainer/mcp` on the main origin. See "Remote deployment" for the subdomain steps.
 
-- **Drinking.** `log_drinks` records standard drinks for a day (a beer/wine ≈ 1, a
-  strong cocktail ≈ 1.5); call it as often as needed. `get_drink_summary` gives daily
-  totals, averages, and the current sober streak. Sober days are normally just the
-  gaps, but you can log a day as **0** to mark it confirmed sober — that stores a row,
-  so the feed's counter shows "0" instead of an empty glass and you can tell "didn't
-  drink" from "didn't log". A 0 day still isn't a drinking day: it never counts in the
-  averages and never breaks the streak. To fix a mistake, `get_drink_summary(include_rows=True)` to find the row
-  id, then `update_drink` (corrections go either direction, unlike re-logging) or
-  `delete_record(kind="drink")`.
+- **Drinking — website only, NOT an MCP tool.** A day's drinks are one number, faster
+  to tap than to describe, so they're logged from the journal feed's day-header counter
+  (stepper modal → `POST /drinking/day`) and no connector carries a drink tool. The
+  counter has three states: never logged (empty glass), logged **0** (confirmed sober —
+  a real row, so you can tell "didn't drink" from "didn't log"), and logged with drinks.
+  A 0 day isn't a drinking day: it never counts in the averages and never breaks the
+  streak. `server.log_drinks` / `get_drink_summary` / `update_drink` still exist as
+  plain functions behind that route (same non-tool pattern as `create_exercise`).
 - **Eating.** A day has ONE eating section, the same daily shape as drinks. `log_food`
   appends what you ate to that day's running food list ("eggs and toast", later
   "chipotle bowl") and ADDS any nutrients passed with it; the numeric columns
@@ -178,11 +177,10 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   the `bodyweight_id` from the log return) and re-logging.
 
 Suggested posture for the **trainer project's** custom instructions (the drinking lines
-belong with the journaling project, since `log_drinks`/`get_drink_summary` are on the
+belong with the journaling project, since the eating tools are on the
 journal connector):
 
-> When I talk about drinking, convert it to standard drinks and `log_drinks`. When I
-> ask how I'm doing, use `get_drink_summary`. When I mention food, `log_food` it onto
+> When I mention food, `log_food` it onto
 > that day's eating section — estimate calories/protein only when I ask for numbers.
 > When I train: at the start of a session call `get_fitness_briefing` to see what's
 > recovered vs recently hit, my injuries, and my split, then recommend the day's work
@@ -483,8 +481,9 @@ in one Coolify project.
 ## Tools
 
 Split across two connectors. The **journal** server (`YOUR-DOMAIN/mcp`) carries the
-journal + drinking tools through `update_drink`, plus a `delete_record` scoped to
-`entry`/`drink`. The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
+journal + eating tools through `update_nutrition`, plus a `delete_record` scoped to
+`entry`/`nutrition`. (Drinks are deliberately NOT on any connector — see "Drinking"
+above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
 main origin when authless) carries `save_exercise` through `update_profile`, plus its
 own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 
@@ -503,9 +502,6 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body`; pass `mentions` to reconcile who it references (adds/removes mention rows, keeps resolved links) |
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
 | `search_entries` | Full-text search for topics/events |
-| `log_drinks` | Log standard drinks for a day (rows accumulate; sober days are gaps) |
-| `get_drink_summary` | Daily totals + rolling stats and sober streak; `include_rows=True` adds individual rows with ids for editing |
-| `update_drink` | Correct a logged drink in either direction (incl. downward) or move its day |
 | `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
 | `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
 | `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |

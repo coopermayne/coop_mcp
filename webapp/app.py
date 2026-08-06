@@ -1180,7 +1180,9 @@ async def drinking_set_day(request: Request):
         row = conn.execute("SELECT id FROM drinks WHERE drink_date=?", (d,)).fetchone()
     if body.get("clear"):
         if row:
-            server.delete_record(kind="drink", id=row["id"])
+            # _delete_record, not the delete_record TOOL — drinks aren't on the MCP
+            # surface any more, so the tool no longer accepts kind="drink".
+            server._delete_record("drink", row["id"])
         return JSONResponse({"date": d, "standard_drinks": 0, "logged": False})
     try:
         amount = float(body.get("standard_drinks"))
