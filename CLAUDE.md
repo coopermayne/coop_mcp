@@ -198,7 +198,12 @@ normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SH
 (show the logout control in the UI), and `BACKUP_TOKEN` (strong random token that unlocks
 the headless backup download at `GET /export/journal.db` for a cron `curl` — bearer /
 `X-Backup-Token` / `?token=`; unset = browser-session-only; see README "Backup &
-restore"). The web app auto-loads `.env` (see `.env.example`); shell-exported vars win.
+restore"), and `WIDGET_TOKEN` (unlocks `GET /api/today.json` — today's nutrient sums
+only — for an ambient display like the SwiftBar plugin in `scripts/swiftbar/`; a
+SEPARATE token from `BACKUP_TOKEN` on purpose, since it lives on every device that
+wants a glanceable figure while `BACKUP_TOKEN` downloads the whole journal; see README
+"Menu-bar macros"). The web app auto-loads `.env` (see `.env.example`); shell-exported
+vars win.
 
 ## Test
 
