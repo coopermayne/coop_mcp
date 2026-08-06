@@ -137,9 +137,16 @@
     <div class="flex flex-wrap items-end gap-x-4 gap-y-2 mt-2">
       {% for key in shown %}
       {% set goal = NUTRIENT_TARGETS.get(key) %}
-      <div class="flex flex-col items-center gap-1">
-        {% if goal %}{{ nutrient_ring(n[key], goal.target, goal.ceiling, units[key]) }}{% endif %}
+      <div class="flex flex-col items-center gap-0.5">
+        {# With a ring, the figure lives inside it and the label is just the unit;
+           without one (carbs, fat) the label carries the number itself, since
+           there's nothing above it to read. #}
+        {% if goal %}
+        {{ nutrient_ring(n[key], goal.target, goal.ceiling, units[key]) }}
+        <span class="text-[10px] text-gray-400">{{ units[key] }}</span>
+        {% else %}
         <span class="text-xs text-gray-500 tabular-nums">{{ n[key] | num }} <span class="text-gray-400">{{ units[key] }}</span></span>
+        {% endif %}
       </div>
       {% endfor %}
       {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
@@ -150,25 +157,36 @@
 {% endmacro %}
 
 {% macro nutrient_ring(value, target, ceiling, unit) %}
-{# One day's progress toward a nutrient target, as a small ring. Deliberately low
-   information: the arc is share-of-target, capped at a full circle so an
-   overshoot doesn't wrap around and read as a small number; the exact figure is
-   the label right below it. Color carries the only judgment — muted sage while
-   the day is within its target, muted clay once a CEILING nutrient (sodium,
-   calories) is past it. A floor nutrient (protein, fiber) never turns clay:
-   going over your protein target isn't a problem. Colors are two custom classes
-   (see base.html) so they flip with the theme like everything else. #}
+{# One day's progress toward a nutrient target: the figure sits INSIDE its own
+   ring, with only the unit as a label below — the number and its progress are one
+   object rather than two stacked ones. The arc is share-of-target, capped at a
+   full circle so an overshoot doesn't wrap around and read as a small number.
+   Color carries the only judgment — muted sage while the day is within its
+   target, muted clay once a CEILING nutrient (sodium, calories) is past it. A
+   floor nutrient (protein, fiber) never turns clay: going over your protein
+   target isn't a problem. Colors are custom classes (see base.html) so they flip
+   with the theme like everything else.
+
+   The font steps down as the figure gets longer (a 4-digit sodium reading has to
+   fit the same 33-unit inner diameter as a 2-digit fiber one), so nothing spills
+   over the stroke. #}
+{% set circ = 106.8 %}{# 2πr at r=17 — the dasharray works in path length, not degrees #}
 {% set pct = (value / target) if target else 0 %}
 {% set over = ceiling and pct > 1 %}
-{% set arc = (94.2 * (1 if pct > 1 else pct)) | round(1) %}
-<svg viewBox="0 0 36 36" class="w-8 h-8 shrink-0" role="img"
-     aria-label="{{ value | num }} {{ unit }} of {{ target | num }} target">
-  <circle cx="18" cy="18" r="15" fill="none" stroke-width="3" class="ring-track"/>
+{% set arc = (circ * (1 if pct > 1 else pct)) | round(1) %}
+{% set label = value | num %}
+{% set size = 15 if label|length <= 2 else (13 if label|length == 3 else (10.5 if label|length == 4 else 8.5)) %}
+<svg viewBox="0 0 40 40" class="w-9 h-9 shrink-0 text-gray-600" role="img"
+     aria-label="{{ label }} {{ unit }} of {{ target | num }} target">
+  <circle cx="20" cy="20" r="17" fill="none" stroke-width="2.5" class="ring-track"/>
   {% if arc > 0 %}
-  <circle cx="18" cy="18" r="15" fill="none" stroke-width="3" stroke-linecap="round"
-          stroke-dasharray="{{ arc }} 94.2" transform="rotate(-90 18 18)"
+  <circle cx="20" cy="20" r="17" fill="none" stroke-width="2.5" stroke-linecap="round"
+          stroke-dasharray="{{ arc }} {{ circ }}" transform="rotate(-90 20 20)"
           class="{{ 'ring-over' if over else 'ring-fill' }}"/>
   {% endif %}
+  <text x="20" y="20" text-anchor="middle" dominant-baseline="central"
+        font-size="{{ size }}" fill="currentColor"
+        style="font-variant-numeric: tabular-nums">{{ label }}</text>
 </svg>
 {% endmacro %}
 
