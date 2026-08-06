@@ -125,10 +125,18 @@
         {%- if label -%}
         {%- set head, _, tail = label.partition(' ') -%}
         {%- if not loop.first %} {% endif -%}
-        {# ml-1 on every item but the first widens the gap between one item and the
+        {# The WHOLE item carries its breakdown tooltip (item_detail), not just the
+           circled index: a 16px circle is too small a thing to rest a pointer on, and
+           the item's own words are what you're looking at when you wonder where the
+           calories came from. cursor-help is the only hint — a dotted underline on
+           every item would fight the prose.
+
+           ml-1 on every item but the first widens the gap between one item and the
            next index, so the run reads as a list rather than a sentence. #}
-        <span class="whitespace-nowrap{{ '' if loop.first else ' ml-1' }}">{{ index_circle(loop.index, item_detail(it, units)) }}{{ head }}</span>
-        {{- ' ' ~ tail if tail else '' -}}
+        <span class="cursor-help" title="{{ item_detail(it, units) }}">
+          {#- -#}<span class="whitespace-nowrap{{ '' if loop.first else ' ml-1' }}">{{ index_circle(loop.index) }}{{ head }}</span>
+          {#- -#}{{ ' ' ~ tail if tail else '' }}{#- -#}
+        </span>
         {%- endif -%}
       {%- endfor %}
     </p>
@@ -199,35 +207,33 @@
 </svg>
 {% endmacro %}
 
-{% macro index_circle(i, detail='') %}
+{% macro index_circle(i) %}
 {#- A food's index in the day, circled and inline. Sized just under the body text,
     nudged onto the text baseline with a negative vertical-align. Whitespace-
     stripped on both sides so the caller controls the (nowrap) gap to the word it
-    precedes.
-
-    `detail` (from item_detail) hangs that item's own numbers off the circle as a
-    hover tooltip: the rings show the day SUMMED, so this is the only place you can
-    see which item the calories came from — without putting a breakdown beside every
-    line and drowning the prose. -#}
+    precedes. -#}
 <span class="inline-flex items-center justify-center align-[-0.15em] w-[16px] h-[16px] mr-1
              rounded-full border border-gray-300 text-gray-400 text-[10px] leading-none tabular-nums"
-      {% if detail %}title="{{ detail }}"{% endif %} aria-hidden="true">{{ i }}</span>
+      aria-hidden="true">{{ i }}</span>
 {%- endmacro %}
 
 {% macro item_detail(it, units) %}
 {#- One intake item as a tooltip line: its text, then whatever nutrients it carries,
-    in the ring row's order. A nutrient it doesn't carry is absent (never 0 — the
-    same "unestimated ≠ zero" rule the rings follow), so an item logged in words
-    alone reduces to just its text plus any note. -#}
+    in the ring row's order. The rings show the day SUMMED, so this is the only place
+    an item's own numbers appear — without putting a breakdown beside every line and
+    drowning the prose. A nutrient it doesn't carry is absent (never 0 — the same
+    "unestimated ≠ zero" rule the rings follow), so an item logged in words alone
+    reduces to just its text plus any note. -#}
 {%- set parts = [] -%}
 {%- for key, u in units.items() -%}
   {%- if it.get(key) is not none -%}{% set _ = parts.append((it[key] | num) ~ ' ' ~ u.name) %}{%- endif -%}
 {%- endfor -%}
+{#- Text — numbers · note: the em dash separates the item from its breakdown, a
+    middot hangs the note off the end, so the three never read as one list. -#}
 {%- set pieces = [] -%}
 {%- if it.text %}{% set _ = pieces.append(it.text) %}{% endif -%}
 {%- if parts %}{% set _ = pieces.append(parts | join(', ')) %}{% endif -%}
-{%- if it.note %}{% set _ = pieces.append(it.note) %}{% endif -%}
-{{- pieces | join(' — ') -}}
+{{- pieces | join(' — ') }}{{ ' · ' ~ it.note if it.note else '' -}}
 {% endmacro %}
 
 {% macro note_button(text) %}
