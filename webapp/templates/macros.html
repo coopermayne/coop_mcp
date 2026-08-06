@@ -53,13 +53,14 @@
    compresses to one line each. #}
 <section id="day-{{ day.date }}"
          class="scroll-mt-20 border-t border-gray-200 first:border-t-0 first:pt-0
-                {{ 'mb-3 pt-3' if not day.entries else 'mb-10 pt-8' }}">
-  <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not day.entries else 'mb-4' }}">
+                {{ 'mb-3 pt-3' if not (day.entries or day.nutrition) else 'mb-10 pt-8' }}">
+  <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not (day.entries or day.nutrition) else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
     {{ drink_counter(day.date, day.drinks or 0) }}
   </div>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
+    {% if day.nutrition %}{{ eating_block(day.nutrition) }}{% endif %}
     {% if not day.entries and chat_enabled %}
     {# Nothing written that day. Offer the way in: opens the chat panel with the
        date prefilled (wired in _chat_panel.html) so the user can just start talking
@@ -86,6 +87,36 @@
   </svg>
   <span class="text-xs font-medium tabular-nums" data-drink-total>{{ total | num if total else '' }}</span>
 </button>
+{% endmacro %}
+
+{% macro eating_block(n) %}
+{# The day's ONE eating section (server.nutrition, appended to by log_food). Sits
+   below the day's notes, styled as an aside rather than a note — it's a daily
+   metric like the drink counter, not a journal entry. Macros render only when they
+   were actually estimated (NULL ones are simply absent from the dict), so a day
+   described only in words shows just the food list, with no phantom zeros. Read-
+   only here: updates come through chat/MCP. #}
+<div class="flex gap-2 sm:-ml-5 sm:gap-3">
+  <span class="shrink-0 pt-0.5 text-sm leading-relaxed text-transparent select-none" aria-hidden="true">›</span>
+  <div class="flex-1 border-l-2 border-gray-200 pl-3">
+    <p class="text-[10px] uppercase tracking-widest text-gray-400">Eating</p>
+    {% if n.summary %}<p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">{{ n.summary }}</p>{% endif %}
+    {# An UNESTIMATED macro is left out of the dict entirely (data._attach_nutrition
+       drops NULLs), so presence is a plain key test — and n.calories on a missing
+       key would be Undefined, which sails past `is not none` into the num filter. #}
+    {% set units = {'calories': 'cal', 'protein_g': 'g protein',
+                    'carbs_g': 'g carbs', 'fat_g': 'g fat'} %}
+    {% set shown = ['calories', 'protein_g', 'carbs_g', 'fat_g'] | select('in', n) | list %}
+    {% if shown %}
+    <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+      {% for key in shown %}
+      <span class="text-xs text-gray-500 tabular-nums">{{ n[key] | num }} <span class="text-gray-400">{{ units[key] }}</span></span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if n.notes %}<p class="text-xs text-gray-400 mt-1.5">{{ n.notes }}</p>{% endif %}
+  </div>
+</div>
 {% endmacro %}
 
 {% macro mini_calendar(months, day_load=False) %}
