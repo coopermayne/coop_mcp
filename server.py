@@ -374,6 +374,8 @@ CREATE TABLE IF NOT EXISTS nutrition (
     protein_g  REAL,
     carbs_g    REAL,
     fat_g      REAL,
+    sodium_mg  REAL,             -- not a macro, but tracked daily against a target
+    fiber_g    REAL,
     notes      TEXT,             -- how it felt / context, kept apart from the food list
     created_at TEXT NOT NULL
 );
@@ -665,6 +667,13 @@ def init_db() -> None:
             )
         conn.execute("DROP INDEX IF EXISTS idx_drinks_date")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date)")
+        # Sodium and fiber joined the eating log after it shipped. Existing rows stay
+        # NULL — the same "not estimated" state as any unfilled nutrient, so nothing
+        # needs back-filling.
+        ncols = [r["name"] for r in conn.execute("PRAGMA table_info(nutrition)")]
+        for col in ("sodium_mg", "fiber_g"):
+            if col not in ncols:
+                conn.execute(f"ALTER TABLE nutrition ADD COLUMN {col} REAL")
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -2087,14 +2096,14 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 # Eating tools
 # --------------------------------------------------------------------------- #
 
-# The macro columns, in the order they read back. One list so appending a macro
-# later doesn't mean editing four call sites.
-MACROS = ("calories", "protein_g", "carbs_g", "fat_g")
+# The numeric nutrient columns, in the order they read back. One list so adding a
+# nutrient later doesn't mean editing every accumulate/average/round site.
+NUTRIENTS = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g")
 
 
 def _nutrition_row(r) -> dict:
     out = {"food_date": r["food_date"], "summary": r["summary"], "notes": r["notes"]}
-    for m in MACROS:
+    for m in NUTRIENTS:
         if r[m] is not None:
             out[m] = round(r[m], 1)
     return out
@@ -2104,22 +2113,23 @@ def _nutrition_row(r) -> dict:
 def log_food(summary: str, food_date: Optional[str] = None,
              calories: Optional[float] = None, protein_g: Optional[float] = None,
              carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
+             sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
              notes: Optional[str] = None) -> dict:
     """Log what the user ate. A day has EXACTLY ONE eating section, so this ADDS to
     the day rather than creating a new record: `summary` is appended to the day's
     running food list ("eggs and toast" then "chipotle bowl" reads back as "eggs and
-    toast; chipotle bowl"), and any macros you pass are ADDED to that day's totals.
+    toast; chipotle bowl"), and any nutrients you pass are ADDED to that day's totals.
     Pass only the increment — the new food — not the day's running total.
 
     Keep `summary` the food itself, in the user's own terms, concise and concrete
     ("2 eggs, toast, black coffee"). Put how it went — cravings, feeling stuffed,
     skipped a meal on purpose — in `notes`.
 
-    Macros are OPTIONAL and stay NULL until someone fills them in. Estimate them
-    yourself when the user wants numbers tracked or asks how a day is adding up
-    (that judgment is yours — the server does no food lookup); leave them out when
-    they're just telling you what they ate. Don't pass 0 for "unknown" — a NULL day
-    reads as unestimated, a 0 day reads as a real zero.
+    The nutrient numbers are OPTIONAL and stay NULL until someone fills them in.
+    Estimate them yourself when the user wants numbers tracked or asks how a day is
+    adding up (that judgment is yours — the server does no food lookup); leave them
+    out when they're just telling you what they ate. Don't pass 0 for "unknown" — a
+    NULL day reads as unestimated, a 0 day reads as a real zero.
 
     To correct a day (over-logged, or a fix to the wording) use update_nutrition,
     which sets ABSOLUTE values. Read a day back with get_nutrition.
@@ -2131,6 +2141,8 @@ def log_food(summary: str, food_date: Optional[str] = None,
         protein_g: Optional grams of protein to ADD.
         carbs_g: Optional grams of carbs to ADD.
         fat_g: Optional grams of fat to ADD.
+        sodium_mg: Optional milligrams of sodium to ADD.
+        fiber_g: Optional grams of fiber to ADD.
         notes: Optional context/how it felt, appended to the day's notes.
     """
     if err := _bad_date(food_date, "food_date"):
@@ -2138,7 +2150,8 @@ def log_food(summary: str, food_date: Optional[str] = None,
     summary = (summary or "").strip()
     if not summary:
         return {"error": "summary is required — say what was eaten"}
-    add = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g}
+    add = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
+           "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g}
     for k, v in add.items():
         if v is not None and v < 0:
             return {"error": f"{k} must not be negative, got {v}"}
@@ -2148,20 +2161,21 @@ def log_food(summary: str, food_date: Optional[str] = None,
             "SELECT * FROM nutrition WHERE food_date=?", (d,)).fetchone()
         if existing:
             merged = {m: existing[m] if add[m] is None
-                      else (existing[m] or 0) + add[m] for m in MACROS}
+                      else (existing[m] or 0) + add[m] for m in NUTRIENTS}
             conn.execute(
                 "UPDATE nutrition SET summary=?, notes=?, "
-                + ", ".join(f"{m}=?" for m in MACROS) + " WHERE id=?",
+                + ", ".join(f"{m}=?" for m in NUTRIENTS) + " WHERE id=?",
                 (_merge_notes(existing["summary"], summary),
                  _merge_notes(existing["notes"], notes),
-                 *(merged[m] for m in MACROS), existing["id"]),
+                 *(merged[m] for m in NUTRIENTS), existing["id"]),
             )
             rid = existing["id"]
         else:
+            cols = ("food_date", "summary", "notes", *NUTRIENTS, "created_at")
             rid = conn.execute(
-                "INSERT INTO nutrition(food_date, summary, notes, "
-                + ", ".join(MACROS) + ", created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (d, summary, notes, *(add[m] for m in MACROS), now()),
+                "INSERT INTO nutrition(" + ", ".join(cols) + ") VALUES ("
+                + ",".join("?" * len(cols)) + ")",
+                (d, summary, notes, *(add[m] for m in NUTRIENTS), now()),
             ).lastrowid
         row = conn.execute("SELECT * FROM nutrition WHERE id=?", (rid,)).fetchone()
     return {"nutrition_id": rid, **_nutrition_row(row)}
@@ -2176,8 +2190,11 @@ def get_nutrition(days: int = 14, since: Optional[str] = None,
     when correcting a day with update_nutrition (which replaces, so you need the
     current text/numbers first). Days with no row simply weren't logged and are
     omitted — they are NOT zero-calorie days. `averages` are over the logged days
-    that actually carry that macro, so a handful of estimated days don't get diluted
-    by the days that were only described in words.
+    that actually carry that nutrient, so a handful of estimated days don't get
+    diluted by the days that were only described in words — which also means each
+    average has its own denominator (a week with protein on 7 days and sodium on 2
+    averages sodium over those 2). Use `logged_days` and the per-day rows to see how
+    much of the window a number really covers before calling it a weekly average.
 
     Args:
         days: Size of the trailing window in days (ignored if `since` is given).
@@ -2196,7 +2213,7 @@ def get_nutrition(days: int = 14, since: Optional[str] = None,
             "ORDER BY food_date DESC", (since, until),
         ).fetchall()
     averages = {}
-    for m in MACROS:
+    for m in NUTRIENTS:
         vals = [r[m] for r in rows if r[m] is not None]
         if vals:
             averages[m] = round(sum(vals) / len(vals), 1)
@@ -2214,6 +2231,7 @@ def get_nutrition(days: int = 14, since: Optional[str] = None,
 def update_nutrition(food_date: str, summary: Optional[str] = None,
                      calories: Optional[float] = None, protein_g: Optional[float] = None,
                      carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
+                     sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
                      notes: Optional[str] = None) -> dict:
     """Correct one day's eating section. Only the args you pass are written, and they
     are ABSOLUTE — they REPLACE what's there (unlike log_food, which appends/adds).
@@ -2221,7 +2239,7 @@ def update_nutrition(food_date: str, summary: Optional[str] = None,
     Use it to rewrite a day's food list, fix an over-estimate, or tidy the notes.
     Because `summary` replaces the whole day's text, read the day first with
     get_nutrition and write back the full corrected list, not just the changed part.
-    Setting a macro to 0 means a real zero; to remove a day entirely use
+    Setting a nutrient to 0 means a real zero; to remove a day entirely use
     delete_record(kind="nutrition", id=...) — get the id from log_food's return, or
     just rewrite the day.
 
@@ -2232,13 +2250,16 @@ def update_nutrition(food_date: str, summary: Optional[str] = None,
         protein_g: Replacement day total (grams).
         carbs_g: Replacement day total (grams).
         fat_g: Replacement day total (grams).
+        sodium_mg: Replacement day total (milligrams).
+        fiber_g: Replacement day total (grams).
         notes: Replacement notes for the day.
     """
     if err := _bad_date(food_date, "food_date"):
         return err
     fields = {"summary": summary, "notes": notes, "calories": calories,
-              "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g}
-    for m in MACROS:
+              "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
+              "sodium_mg": sodium_mg, "fiber_g": fiber_g}
+    for m in NUTRIENTS:
         if fields[m] is not None and fields[m] < 0:
             return {"error": f"{m} must not be negative, got {fields[m]}"}
     sets = {k: v for k, v in fields.items() if v is not None}

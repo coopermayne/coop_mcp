@@ -101,12 +101,12 @@
   <div class="flex-1 border-l-2 border-gray-200 pl-3">
     <p class="text-[10px] uppercase tracking-widest text-gray-400">Eating</p>
     {% if n.summary %}<p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">{{ n.summary }}</p>{% endif %}
-    {# An UNESTIMATED macro is left out of the dict entirely (data._attach_nutrition
+    {# An UNESTIMATED nutrient is left out of the dict entirely (data._attach_nutrition
        drops NULLs), so presence is a plain key test — and n.calories on a missing
        key would be Undefined, which sails past `is not none` into the num filter. #}
-    {% set units = {'calories': 'cal', 'protein_g': 'g protein',
-                    'carbs_g': 'g carbs', 'fat_g': 'g fat'} %}
-    {% set shown = ['calories', 'protein_g', 'carbs_g', 'fat_g'] | select('in', n) | list %}
+    {% set units = {'calories': 'cal', 'protein_g': 'g protein', 'carbs_g': 'g carbs',
+                    'fat_g': 'g fat', 'sodium_mg': 'mg sodium', 'fiber_g': 'g fiber'} %}
+    {% set shown = units | select('in', n) | list %}
     {% if shown %}
     <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
       {% for key in shown %}

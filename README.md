@@ -131,10 +131,11 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   `delete_record(kind="drink")`.
 - **Eating.** A day has ONE eating section, the same daily shape as drinks. `log_food`
   appends what you ate to that day's running food list ("eggs and toast", later
-  "chipotle bowl") and ADDS any macros passed with it; the macro columns
-  (calories/protein/carbs/fat) are optional and stay NULL until estimated, so a day
-  described only in words never reads as zero calories. `get_nutrition` reads days back
-  with per-macro averages over the days that carry them; `update_nutrition(food_date=…)`
+  "chipotle bowl") and ADDS any nutrients passed with it; the numeric columns
+  (calories, protein/carbs/fat, sodium, fiber) are optional and stay NULL until
+  estimated, so a day described only in words never reads as zero calories.
+  `get_nutrition` reads days back with per-nutrient averages over the days that carry
+  them (each average has its own denominator); `update_nutrition(food_date=…)`
   replaces a day's values (read first — `summary` overwrites the whole list), and
   `delete_record(kind="nutrition")` drops a day. The estimating is the model's job:
   there's no food database in the server. The day's section renders under its entries

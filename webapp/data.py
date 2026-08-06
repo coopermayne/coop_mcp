@@ -280,7 +280,7 @@ def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = Tru
     than rendering an empty "Eating —". Same window/bare-day rules as
     `_attach_drinks`: a food-only day is inserted inside the loaded window so it's
     still reachable, and a kind-filtered feed skips those insertions."""
-    cols = ("summary", "notes", "calories", "protein_g", "carbs_g", "fat_g")
+    cols = ("summary", "notes", *server.NUTRIENTS)
     with server.db() as conn:
         rows = conn.execute(
             "SELECT food_date, " + ", ".join(cols) + " FROM nutrition "
