@@ -246,12 +246,19 @@ working.
   (REAL), `kind`, `notes`. `log_drinks` upserts: the first log of a day creates the
   row, later logs accumulate onto it (`standard_drinks` add up, `kind` merges into a
   deduped list via `_merge_kinds`) — so it takes the increment, not the running total;
-  `update_drink` sets absolutes (corrections/overwrites). Sober days aren't stored — a
-  day is sober if it has no row. `get_drink_summary` aggregates (daily totals, sober
-  streak) in SQL. The webapp has NO drinking page: a day's total is shown and edited from
-  the **journal feed's day header** (a right-aligned counter → stepper modal → `POST
-  /drinking/day`, which writes the day's ABSOLUTE total — update_drink on an existing row,
-  log_drinks on a new one, delete at 0). `data.list_days` hangs the total on each day and
+  `update_drink` sets absolutes (corrections/overwrites). Sober days generally aren't
+  stored — a day with no row is sober — but a row of **0 IS allowed and meaningful**:
+  it's a day CONFIRMED sober, versus one merely never logged, and the counter shows a
+  real "0" for it. Aggregates treat the two identically (a 0 row is not a drinking day
+  and can't be the streak's "last drink" — both queries filter `standard_drinks > 0`);
+  the distinction exists only so the UI can say "I checked this day". `get_drink_summary`
+  aggregates (daily totals, sober streak) in SQL. The webapp has NO drinking page: a
+  day's total is shown and edited from the **journal feed's day header** (a right-aligned
+  counter → stepper modal → `POST /drinking/day`, which writes the day's ABSOLUTE total —
+  update_drink on an existing row, log_drinks on a new one; saving 0 KEEPS the row, and
+  the modal's separate **Clear** button — `{clear: true}` — is the only way back to
+  unlogged). `data.list_days` hangs the total AND a `drinks_logged` flag on each day (the
+  total alone can't tell 0-logged from unlogged) and
   inserts a bare day block for a drink-only day so it's still reachable — and, on the
   unfiltered feed, for EVERY otherwise-empty day in the loaded window (`_fill_empty_days`,
   today back to the oldest loaded day, capped): a quiet day still needs to be tappable to
