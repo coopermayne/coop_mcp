@@ -284,9 +284,15 @@ working.
   empty solid ring would read as "0% of goal" rather than "no goal set". Items render
   as a NUMBERED list flowing inline, each index glued to its item's first word so a
   wrap can't strand it; a tapped top-up has no text, so it's named from what it
-  carries ("16oz water"). Item notes aren't shown inline — a circled "i"
-  (`macros.note_button`) at the end of the ring row carries them and opens the
-  display-only modal in `journal.html`.
+  carries ("16oz water"). Three things a rendered day can't say for itself — an
+  item's OWN nutrients (the rings show the day summed), a ring's TARGET (an arc can
+  only imply it), and the day's item NOTES — are all one CLICK away, into a single
+  display-only modal in `journal.html`. Each click target carries its whole payload
+  as JSON in `data-detail` (`{kicker, title, rows, note}`), so the modal needs no
+  fetch and no lookup, and one delegated handler serves all three. Hover just firms
+  the text/figure to black — no tooltips, no underlines, nothing that would fight
+  the prose. The circled "i" (`macros.note_button`) at the end of the ring row is
+  the notes' target.
 - `nutrition` — LEGACY, dormant. The first shape of the intake log: one row per day,
   with a "; "-joined summary string and stored day totals. Superseded by
   `intake_items` (see above) because a stored total can't be corrected without

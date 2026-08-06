@@ -84,41 +84,95 @@
 {% endif %}
 </div>
 
-{# Item-notes reader. Opened by the circled "i" on a day's Intake block
-   (m.note_button), which carries the text itself — so this is display-only, with no
-   fetch and nothing to save. The feed has no write path at all now: food, drinks and
-   water are logged through the MCP tools (or the chat panel, which calls the same
-   ones), so the browser only ever reads. Outside data-journal-feed with a delegated
-   handler, so a chat-driven feed refresh can't blow it away mid-read. #}
-<div data-note-modal hidden
+{# Intake detail reader — ONE modal for all three things on a day's Intake block: an
+   item (its own nutrients, which the summed rings can't show), a nutrient ring (its
+   target, which an arc can only imply), and the circled "i" (the day's notes). Each
+   carries its whole payload in `data-detail` as JSON — {kicker, title, rows, note} —
+   so opening one is display-only, with no fetch and nothing to look up. The feed has
+   no write path at all now: food, drinks and water are logged through the MCP tools
+   (or the chat panel, which calls the same ones), so the browser only ever reads.
+   Outside data-journal-feed with a delegated handler, so a chat-driven feed refresh
+   can't blow it away mid-read. #}
+<div data-detail-modal hidden
      class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/30"
-     role="dialog" aria-modal="true" aria-labelledby="note-modal-title">
+     role="dialog" aria-modal="true" aria-labelledby="detail-modal-title">
   <div class="w-full max-w-sm bg-white border border-gray-200 rounded-[6px] shadow-xl px-6 py-5"
-       data-note-card>
-    <p id="note-modal-title" class="text-[10px] uppercase tracking-widest text-gray-400">Notes</p>
-    <p class="text-[15px] text-gray-800 leading-relaxed mt-2 whitespace-pre-line" data-note-text></p>
+       data-detail-card>
+    <p data-detail-kicker class="text-[10px] uppercase tracking-widest text-gray-400"></p>
+    <p id="detail-modal-title" data-detail-title
+       class="text-[15px] text-gray-800 leading-relaxed mt-1"></p>
+    {# Rows are label-left / figure-right with a hairline between, so a breakdown reads
+       as a small table without drawing one. #}
+    <dl data-detail-rows class="mt-4 text-[13px]"></dl>
+    <p data-detail-note
+       class="mt-4 text-[13px] text-gray-500 leading-relaxed whitespace-pre-line"></p>
     <div class="flex justify-end mt-5">
-      <button type="button" data-note-close
+      <button type="button" data-detail-close
               class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Close</button>
     </div>
   </div>
 </div>
 <script>
   (function () {
-    var modal = document.querySelector('[data-note-modal]');
+    var modal = document.querySelector('[data-detail-modal]');
     if (!modal) return;
-    var text = modal.querySelector('[data-note-text]');
+    var kicker = modal.querySelector('[data-detail-kicker]');
+    var title  = modal.querySelector('[data-detail-title]');
+    var rows   = modal.querySelector('[data-detail-rows]');
+    var note   = modal.querySelector('[data-detail-note]');
     function close() { modal.hidden = true; }
-    document.addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-note-btn]');
-      if (!btn) return;
-      e.preventDefault();
-      text.textContent = btn.dataset.note || '';
+
+    function open(el) {
+      var d;
+      try { d = JSON.parse(el.dataset.detail); } catch (err) { return; }
+      kicker.textContent = d.kicker || '';
+      title.textContent = d.title || '';
+      title.hidden = !d.title;
+      rows.textContent = '';
+      (d.rows || []).forEach(function (r, i) {
+        var row = document.createElement('div');
+        row.className = 'flex justify-between gap-4 py-1.5' +
+                        (i ? ' border-t border-gray-100' : '');
+        var dt = document.createElement('dt');
+        dt.className = 'text-gray-500';
+        dt.textContent = r.label;
+        var dd = document.createElement('dd');
+        dd.className = 'text-gray-800 tabular-nums';
+        dd.textContent = r.value;
+        row.appendChild(dt); row.appendChild(dd); rows.appendChild(row);
+      });
+      // An item logged in words alone carries no numbers — say so rather than
+      // showing an empty gap where a breakdown would be.
+      if (!(d.rows || []).length && d.empty) {
+        var p = document.createElement('p');
+        p.className = 'text-gray-400 italic';
+        p.textContent = d.empty;
+        rows.appendChild(p);
+      }
+      rows.hidden = !rows.childNodes.length;
+      note.textContent = d.note || '';
+      note.hidden = !d.note;
       modal.hidden = false;
+    }
+
+    document.addEventListener('click', function (e) {
+      var el = e.target.closest('[data-detail]');
+      if (!el) return;
+      e.preventDefault();
+      open(el);
     });
-    modal.querySelector('[data-note-close]').addEventListener('click', close);
+    // role="button" spans (the intake items, which are spans so long ones can wrap
+    // mid-line) need the keyboard activation a real button would have given them.
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var el = e.target.closest && e.target.closest('[data-detail]');
+      if (!el) return;
+      e.preventDefault();
+      open(el);
+    });
+    modal.querySelector('[data-detail-close]').addEventListener('click', close);
     modal.addEventListener('click', function (e) {  // backdrop dismisses
-      if (!e.target.closest('[data-note-card]')) close();
+      if (!e.target.closest('[data-detail-card]')) close();
     });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !modal.hidden) close();

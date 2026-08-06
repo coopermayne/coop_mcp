@@ -100,18 +100,18 @@
        key would be Undefined, which sails past `is not none` into the num filter.
 
        Per nutrient: the unit that rides with the FIGURE inside the ring, the short
-       label under it, and the spoken name — used both for the ring's aria-label and
-       in the hover tooltips (an item's breakdown, a ring's target). Declared before
-       the item list because both halves read it. #}
+       label under it, the spoken name for the ring's aria-label, and the Title Case
+       name the detail modal uses. Declared before the item list because both halves
+       read it. #}
     {% set units = {
-        'calories':  {'suffix': '',   'short': 'cal',    'name': 'calories'},
-        'protein_g': {'suffix': 'g',  'short': 'prot',   'name': 'g protein'},
-        'carbs_g':   {'suffix': 'g',  'short': 'carbs',  'name': 'g carbs'},
-        'fat_g':     {'suffix': 'g',  'short': 'fat',    'name': 'g fat'},
-        'sodium_mg': {'suffix': 'mg', 'short': 'sod',    'name': 'mg sodium'},
-        'fiber_g':   {'suffix': 'g',  'short': 'fib',    'name': 'g fiber'},
-        'water_oz':  {'suffix': 'oz', 'short': 'water',  'name': 'oz water'},
-        'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks'},
+        'calories':  {'suffix': '',   'short': 'cal',    'name': 'calories',  'label': 'Calories'},
+        'protein_g': {'suffix': 'g',  'short': 'prot',   'name': 'g protein', 'label': 'Protein'},
+        'carbs_g':   {'suffix': 'g',  'short': 'carbs',  'name': 'g carbs',   'label': 'Carbs'},
+        'fat_g':     {'suffix': 'g',  'short': 'fat',    'name': 'g fat',     'label': 'Fat'},
+        'sodium_mg': {'suffix': 'mg', 'short': 'sod',    'name': 'mg sodium', 'label': 'Sodium'},
+        'fiber_g':   {'suffix': 'g',  'short': 'fib',    'name': 'g fiber',   'label': 'Fiber'},
+        'water_oz':  {'suffix': 'oz', 'short': 'water',  'name': 'oz water',  'label': 'Water'},
+        'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks', 'label': 'Alcohol'},
     } %}
     {% if n['items'] %}
     <p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">
@@ -124,16 +124,33 @@
         {%- else %}{% set label = '' %}{% endif -%}
         {%- if label -%}
         {%- set head, _, tail = label.partition(' ') -%}
+        {# The item's own numbers, for the modal. The rings show the day SUMMED, so
+           this is the only place you can see WHICH item the calories came from — and
+           a nutrient the item doesn't carry is absent, never 0, the same
+           "unestimated ≠ zero" rule the rings follow. Built as a row list here
+           (rather than in a macro, which can only return a string) and handed to the
+           modal as JSON. #}
+        {%- set rows = [] -%}
+        {%- for key, u in units.items() -%}
+          {%- if it.get(key) is not none -%}
+          {%- set _ = rows.append({'label': u.label,
+                                   'value': (it[key] | num) ~ (' ' ~ u.suffix if u.suffix else '')}) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- set payload = {'kicker': 'Intake item', 'title': label, 'rows': rows,
+                           'empty': 'Nothing estimated for this one.', 'note': it.note} -%}
         {%- if not loop.first %} {% endif -%}
-        {# The WHOLE item carries its breakdown tooltip (item_detail), not just the
-           circled index: a 16px circle is too small a thing to rest a pointer on, and
-           the item's own words are what you're looking at when you wonder where the
-           calories came from. cursor-help is the only hint — a dotted underline on
-           every item would fight the prose.
+        {# The WHOLE item is the click target (not just the circled index — 16px is too
+           small a thing to aim at), opening the detail modal with its own numbers. The
+           only hint is the text firming to black on hover: a dotted underline or a
+           border on every item would fight the prose. Rendered as a span rather than a
+           button so a long item still WRAPS mid-line; role/tabindex put it back on the
+           keyboard, and the delegated handler in journal.html takes Enter/Space.
 
            ml-1 on every item but the first widens the gap between one item and the
            next index, so the run reads as a list rather than a sentence. #}
-        <span class="cursor-help" title="{{ item_detail(it, units) }}">
+        <span role="button" tabindex="0" data-detail='{{ payload | tojson }}'
+              class="cursor-pointer hover:text-black transition-colors">
           {#- -#}<span class="whitespace-nowrap{{ '' if loop.first else ' ml-1' }}">{{ index_circle(loop.index) }}{{ head }}</span>
           {#- -#}{{ ' ' ~ tail if tail else '' }}{#- -#}
         </span>
@@ -184,12 +201,27 @@
 {% set figure = ((value | num) ~ unit.suffix) if logged else '' %}
 {% set size = 15 if figure|length <= 3 else (13 if figure|length == 4 else (11.5 if figure|length == 5 else 10)) %}
 {% set spoken = ((value | num) ~ ' ' ~ unit.name) if logged else (unit.name ~ ' not logged') %}
-<svg viewBox="0 0 56 56" class="w-14 h-14 shrink-0 text-gray-600" role="img"
+{% set u = (' ' ~ unit.suffix) if unit.suffix else '' %}
+{# The target is the one thing the ring can only show as a proportion — an arc can't
+   say "of 2,300mg" — so the whole ring is a click target that spells it out in the
+   detail modal. Rows are built here and handed over as JSON, the same shape an
+   intake item uses. `gap` is signed: what's left vs. how far past. #}
+{% set rows = [{'label': 'Logged', 'value': ((value | num) ~ u) if logged else '—'}] %}
+{% set _ = rows.append({'label': 'Target', 'value': ((goal.target | num) ~ u) if goal else 'None set'}) %}
+{% if goal and logged %}
+  {% set gap = (goal.target - value) | round(1) %}
+  {% set _ = rows.append({'label': 'Remaining' if gap >= 0 else 'Over by',
+                          'value': ((gap if gap >= 0 else -gap) | num) ~ u}) %}
+  {% set _ = rows.append({'label': 'Of target', 'value': ((pct * 100) | round | int) ~ '%'}) %}
+{% endif %}
+{% set payload = {
+    'kicker': 'Nutrient', 'title': unit.label, 'rows': rows,
+    'note': ('A ceiling — the ring turns clay once the day is past it.' if goal and goal.ceiling
+             else ('A floor — going over is fine, the ring stays sage.' if goal
+                   else 'No target set for this one, so the ring draws a dashed track and no arc.')) } %}
+<svg viewBox="0 0 56 56" class="w-14 h-14 shrink-0 text-gray-600 cursor-pointer hover:text-black transition-colors"
+     role="button" tabindex="0" data-detail='{{ payload | tojson }}'
      aria-label="{{ spoken }}{{ ' of %s target' % (goal.target | num) if goal else '' }}">
-  {# The target is the one thing the ring shows only as a proportion — an arc can't
-     say "of 2,300mg". An SVG <title> child is the tooltip (the aria-label above is
-     what a screen reader reads, so this is hover-only). #}
-  <title>{{ spoken }} · {{ ('target ' ~ (goal.target | num) ~ (' max' if goal.ceiling else '')) if goal else 'no target set' }}</title>
   <circle cx="28" cy="28" r="24" fill="none" stroke-width="3" class="ring-track"
           {% if not goal or not logged %}stroke-dasharray="2 3.5"{% endif %}/>
   {% if arc > 0 %}
@@ -217,36 +249,16 @@
       aria-hidden="true">{{ i }}</span>
 {%- endmacro %}
 
-{% macro item_detail(it, units) %}
-{#- One intake item as a tooltip line: its text, then whatever nutrients it carries,
-    in the ring row's order. The rings show the day SUMMED, so this is the only place
-    an item's own numbers appear — without putting a breakdown beside every line and
-    drowning the prose. A nutrient it doesn't carry is absent (never 0 — the same
-    "unestimated ≠ zero" rule the rings follow), so an item logged in words alone
-    reduces to just its text plus any note. -#}
-{%- set parts = [] -%}
-{%- for key, u in units.items() -%}
-  {%- if it.get(key) is not none -%}{% set _ = parts.append((it[key] | num) ~ ' ' ~ u.name) %}{%- endif -%}
-{%- endfor -%}
-{#- Text — numbers · note: the em dash separates the item from its breakdown, a
-    middot hangs the note off the end, so the three never read as one list. -#}
-{%- set pieces = [] -%}
-{%- if it.text %}{% set _ = pieces.append(it.text) %}{% endif -%}
-{%- if parts %}{% set _ = pieces.append(parts | join(', ')) %}{% endif -%}
-{{- pieces | join(' — ') }}{{ ' · ' ~ it.note if it.note else '' -}}
-{% endmacro %}
-
 {% macro note_button(text) %}
 {# Circled "i" — the day's eating notes, one tap away instead of on the page. Sits
    at the end of the nutrient row, bottom-aligned with the rings: `self-end` drops it
    to the foot of the row and mb-[4px] takes off the padding between the svg box's
-   edge and the drawn circle (r=24 in a 56 box), so its bottom sits on theirs. The
-   text rides on the button as a
-   data attribute so the modal needs no lookup (same trick as the drink counter);
-   the handler is delegated in journal.html so it survives a chat-driven feed
-   re-render. #}
-<button type="button" data-note-btn data-note="{{ text }}"
-        title="Notes on this day's eating" aria-label="Show notes on this day's eating"
+   edge and the drawn circle (r=24 in a 56 box), so its bottom sits on theirs. Feeds
+   the SAME detail modal the items and rings open (one modal, one delegated handler in
+   journal.html, so a chat-driven feed re-render can't break any of them) — just with
+   no rows, only the note. #}
+<button type="button" aria-label="Show notes on this day's eating"
+        data-detail='{{ {"kicker": "Notes", "title": "This day's eating", "rows": [], "note": text} | tojson }}'
         class="shrink-0 self-end mb-[4px] w-[15px] h-[15px] rounded-full border border-gray-300 text-gray-400
                text-[10px] leading-none font-serif italic flex items-center justify-center
                hover:border-black hover:text-black transition-colors">i</button>
