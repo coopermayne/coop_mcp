@@ -97,11 +97,14 @@
    day described only in words shows just the food list, with no phantom zeros.
    Read-only here: updates come through chat/MCP.
 
-   The day's foods were appended one at a time, so they read as a numbered list
-   (data._attach_nutrition splits them back out) — a circled index per thing eaten
-   is easier to scan than one semicolon-run sentence. The day's notes hide behind a
-   circled "i" that opens a modal (wired in journal.html): they're context you want
-   occasionally, not on every day of the feed. #}
+   The day's foods were appended one at a time (data._attach_nutrition splits them
+   back out), and each gets a circled index — but they FLOW as one paragraph rather
+   than one line each: the numbers alone make the list scannable, and a food log is
+   usually a few short phrases that would waste a line apiece. Each number is glued
+   to its item's first word in a nowrap span, so a wrap never strands an index at
+   the end of a line; the rest of the item wraps freely. The day's notes hide behind
+   a circled "i" that opens a modal (wired in journal.html): they're context you
+   want occasionally, not on every day of the feed. #}
 <div class="flex gap-2 sm:-ml-5 sm:gap-3">
   <span class="shrink-0 pt-0.5 text-sm leading-relaxed text-transparent select-none" aria-hidden="true">›</span>
   <div class="flex-1 border-l-2 border-gray-200 pl-3">
@@ -110,16 +113,16 @@
       {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
     </p>
     {% if n['items'] %}
-    <ol class="mt-1 space-y-0.5">
-      {% for item in n['items'] %}
-      <li class="flex gap-2 text-[15px] text-gray-800 leading-relaxed">
-        <span class="shrink-0 mt-[3px] w-[17px] h-[17px] rounded-full border border-gray-300 text-gray-400
-                     text-[10px] leading-none flex items-center justify-center tabular-nums"
-              aria-hidden="true">{{ loop.index }}</span>
-        <span class="flex-1">{{ item }}</span>
-      </li>
-      {% endfor %}
-    </ol>
+    <p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">
+      {%- for item in n['items'] %}
+        {%- set head, _, tail = item.partition(' ') -%}
+        {%- if not loop.first %} {% endif -%}
+        {# ml-1 on every item but the first widens the gap between one food and the
+           next index, so the run reads as a list rather than a sentence. #}
+        <span class="whitespace-nowrap{{ '' if loop.first else ' ml-1' }}">{{ index_circle(loop.index) }}{{ head }}</span>
+        {{- ' ' ~ tail if tail else '' -}}
+      {%- endfor %}
+    </p>
     {% endif %}
     {# An UNESTIMATED nutrient is left out of the dict entirely (data._attach_nutrition
        drops NULLs), so presence is a plain key test — and n.calories on a missing
@@ -137,6 +140,16 @@
   </div>
 </div>
 {% endmacro %}
+
+{% macro index_circle(i) %}
+{#- A food's index in the day, circled and inline. Sized just under the body text,
+    nudged onto the text baseline with a negative vertical-align. Whitespace-
+    stripped on both sides so the caller controls the (nowrap) gap to the word it
+    precedes. -#}
+<span class="inline-flex items-center justify-center align-[-0.15em] w-[16px] h-[16px] mr-1
+             rounded-full border border-gray-300 text-gray-400 text-[10px] leading-none tabular-nums"
+      aria-hidden="true">{{ i }}</span>
+{%- endmacro %}
 
 {% macro note_button(text) %}
 {# Circled "i" — the day's eating notes, one tap away instead of on the page. The
