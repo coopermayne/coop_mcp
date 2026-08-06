@@ -92,15 +92,35 @@
 {% macro eating_block(n) %}
 {# The day's ONE eating section (server.nutrition, appended to by log_food). Sits
    below the day's notes, styled as an aside rather than a note — it's a daily
-   metric like the drink counter, not a journal entry. Macros render only when they
-   were actually estimated (NULL ones are simply absent from the dict), so a day
-   described only in words shows just the food list, with no phantom zeros. Read-
-   only here: updates come through chat/MCP. #}
+   metric like the drink counter, not a journal entry. Nutrients render only when
+   they were actually estimated (NULL ones are simply absent from the dict), so a
+   day described only in words shows just the food list, with no phantom zeros.
+   Read-only here: updates come through chat/MCP.
+
+   The day's foods were appended one at a time, so they read as a numbered list
+   (data._attach_nutrition splits them back out) — a circled index per thing eaten
+   is easier to scan than one semicolon-run sentence. The day's notes hide behind a
+   circled "i" that opens a modal (wired in journal.html): they're context you want
+   occasionally, not on every day of the feed. #}
 <div class="flex gap-2 sm:-ml-5 sm:gap-3">
   <span class="shrink-0 pt-0.5 text-sm leading-relaxed text-transparent select-none" aria-hidden="true">›</span>
   <div class="flex-1 border-l-2 border-gray-200 pl-3">
-    <p class="text-[10px] uppercase tracking-widest text-gray-400">Eating</p>
-    {% if n.summary %}<p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">{{ n.summary }}</p>{% endif %}
+    <p class="text-[10px] uppercase tracking-widest text-gray-400 flex items-center gap-1.5">
+      Eating
+      {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
+    </p>
+    {% if n['items'] %}
+    <ol class="mt-1 space-y-0.5">
+      {% for item in n['items'] %}
+      <li class="flex gap-2 text-[15px] text-gray-800 leading-relaxed">
+        <span class="shrink-0 mt-[3px] w-[17px] h-[17px] rounded-full border border-gray-300 text-gray-400
+                     text-[10px] leading-none flex items-center justify-center tabular-nums"
+              aria-hidden="true">{{ loop.index }}</span>
+        <span class="flex-1">{{ item }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
     {# An UNESTIMATED nutrient is left out of the dict entirely (data._attach_nutrition
        drops NULLs), so presence is a plain key test — and n.calories on a missing
        key would be Undefined, which sails past `is not none` into the num filter. #}
@@ -114,9 +134,20 @@
       {% endfor %}
     </div>
     {% endif %}
-    {% if n.notes %}<p class="text-xs text-gray-400 mt-1.5">{{ n.notes }}</p>{% endif %}
   </div>
 </div>
+{% endmacro %}
+
+{% macro note_button(text) %}
+{# Circled "i" — the day's eating notes, one tap away instead of on the page. The
+   text rides on the button as a data attribute so the modal needs no lookup (same
+   trick as the drink counter); the handler is delegated in journal.html so it
+   survives a chat-driven feed re-render. #}
+<button type="button" data-note-btn data-note="{{ text }}"
+        title="Notes on this day's eating" aria-label="Show notes on this day's eating"
+        class="shrink-0 w-[15px] h-[15px] rounded-full border border-gray-300 text-gray-400
+               text-[10px] leading-none font-serif italic flex items-center justify-center
+               hover:border-black hover:text-black transition-colors">i</button>
 {% endmacro %}
 
 {% macro mini_calendar(months, day_load=False) %}
