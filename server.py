@@ -341,7 +341,12 @@ END;
 -- ----------------------------------------------------------------------- --
 -- Drinking tracker. EXACTLY ONE row per day (drink_date is unique): the first
 -- log of the day creates it, later logs accumulate onto it (standard_drinks add
--- up, kinds merge into a deduped list). Days with no row are sober days.
+-- up, kinds merge into a deduped list).
+--
+-- A row with standard_drinks = 0 is meaningful: it's a day CONFIRMED sober,
+-- distinct from a day with no row, which merely wasn't logged. Aggregates treat
+-- both as sober (a 0 row is not a drinking day and doesn't break a streak) — the
+-- difference is only that the UI can show "0" instead of an empty glass.
 -- Aggregation (daily totals, streaks) is deterministic SQL.
 -- ----------------------------------------------------------------------- --
 CREATE TABLE IF NOT EXISTS drinks (
@@ -1953,19 +1958,25 @@ def log_drinks(standard_drinks: float, drink_date: Optional[str] = None,
     A day has EXACTLY ONE row. The first call of the day creates it; later calls
     for the same day accumulate onto it — `standard_drinks` ADD up and `kind`
     merges into a deduped list (a beer then a wine logs as 2.0, kind "beer, wine").
-    So pass only the increment, not the running total. Days with no row are sober;
-    to correct a day down (or overwrite it) use update_drink, which sets absolutes.
+    So pass only the increment, not the running total. To correct a day down (or
+    overwrite it) use update_drink, which sets absolutes.
+
+    Pass `standard_drinks=0` to record a day CONFIRMED sober ("I didn't drink
+    today"). That's different from a day with no row, which just means nothing was
+    logged; both count as sober everywhere it matters (streaks, averages), so the 0
+    is purely a record that the day was accounted for.
 
     Args:
-        standard_drinks: Standard drinks to ADD for this day (the increment).
+        standard_drinks: Standard drinks to ADD for this day (the increment); 0
+            marks the day sober without adding anything.
         drink_date: Day consumed, YYYY-MM-DD. Defaults to today.
         kind: Optional label, e.g. "beer", "wine", "cocktail".
         notes: Optional context, e.g. "dinner with Hallie".
     """
     if err := _bad_date(drink_date, "drink_date"):
         return err
-    if standard_drinks <= 0:
-        return {"error": f"standard_drinks must be positive, got {standard_drinks}"}
+    if standard_drinks < 0:
+        return {"error": f"standard_drinks can't be negative, got {standard_drinks}"}
     d = drink_date or today()
     with db() as conn:
         existing = conn.execute(
@@ -1996,8 +2007,11 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
     """Drinking trends over a window: per-day totals plus rolling stats.
 
     Use the default `days` window, or pass an explicit `since`/`until` range. Sober
-    days (no logged drinks) are counted, not stored. `current_sober_streak` is the
-    number of days since the last drink (0 if the user drank today, null if never).
+    days are counted, not stored — except a day explicitly logged as 0, which does
+    have a row (it means "confirmed sober" rather than "not logged"); it shows in
+    `daily` with total 0 but is NOT a drinking day and doesn't touch the streak.
+    `current_sober_streak` is the number of days since the last day with drinks
+    (0 if the user drank today, null if never).
 
     Set `include_rows=True` to also get the individual drink rows WITH ids (`drinks`)
     — needed when the user wants to FIX a logged drink ("last night was really 1, not
@@ -2022,7 +2036,10 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
                GROUP BY drink_date ORDER BY drink_date DESC""",
             (since, until),
         ).fetchall()
-        last = conn.execute("SELECT MAX(drink_date) AS d FROM drinks").fetchone()["d"]
+        # A 0 row is a confirmed-sober day, so it must not count as "last drink".
+        last = conn.execute(
+            "SELECT MAX(drink_date) AS d FROM drinks WHERE standard_drinks > 0"
+        ).fetchone()["d"]
         row_list = None
         if include_rows:
             rr = conn.execute(
@@ -2037,7 +2054,7 @@ def get_drink_summary(days: int = 30, since: Optional[str] = None,
     daily = [{"date": r["drink_date"], "total": r["total"]} for r in rows]
     window_days = date.fromisoformat(until).toordinal() - date.fromisoformat(since).toordinal() + 1
     total = round(sum(d["total"] for d in daily), 2)
-    drinking_days = len(daily)
+    drinking_days = sum(1 for d in daily if d["total"] > 0)  # a 0 row isn't one
     out = {
         "since": since, "until": until, "window_days": window_days,
         "daily": daily,
@@ -2062,15 +2079,17 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 
     Use this to fix a mistake in either direction — e.g. set `standard_drinks` to 1
     when the day was over-logged (log_drinks only adds, so corrections downward go
-    through here), relabel `kind`, or move the day with `drink_date` (YYYY-MM-DD,
+    through here), or to 0 to turn a mis-logged day into a CONFIRMED-sober one (the
+    row stays, recording that the day was accounted for; delete_record removes it
+    entirely, back to "never logged"), relabel `kind`, or move the day with `drink_date` (YYYY-MM-DD,
     Pacific). Since a day has exactly one row, moving onto a day that already has one
     is refused — edit that day instead. Find the `drink_id` with
     get_drink_summary(include_rows=True). To remove a day entirely use
     delete_record(kind="drink", id=...)."""
     if err := _bad_date(drink_date, "drink_date"):
         return err
-    if standard_drinks is not None and standard_drinks <= 0:
-        return {"error": f"standard_drinks must be positive, got {standard_drinks}"}
+    if standard_drinks is not None and standard_drinks < 0:
+        return {"error": f"standard_drinks can't be negative, got {standard_drinks}"}
     fields = {"standard_drinks": standard_drinks, "drink_date": drink_date,
               "kind": kind, "notes": notes}
     sets = {k: v for k, v in fields.items() if v is not None}

@@ -245,7 +245,10 @@ def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) 
 
     The journal day header is where drinks are read and edited now (there's no
     separate drinking page), so every rendered day carries a `drinks` total —
-    0.0 on a sober/unlogged day.
+    0.0 on a sober/unlogged day — plus `drinks_logged`, true when the day HAS a
+    row. The pair distinguishes a day explicitly logged as 0 (confirmed sober,
+    counter shows "0") from one never logged at all (empty glass); the total alone
+    can't, since both are 0.
 
     With `bare_days`, a day that has drinks but NO entries is inserted as an
     empty day block, so a drink-only day (notably today, before anything is
@@ -263,11 +266,12 @@ def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) 
         ).fetchall()
     totals = {r["drink_date"]: r["total"] for r in rows}
     for day in days:
+        day["drinks_logged"] = day["date"] in totals
         day["drinks"] = totals.pop(day["date"], 0.0)
     if not bare_days or not totals:
         return
     for d, total in totals.items():
-        days.append({"date": d, "entries": [], "drinks": total})
+        days.append({"date": d, "entries": [], "drinks": total, "drinks_logged": True})
     days.sort(key=lambda x: x["date"], reverse=True)
 
 

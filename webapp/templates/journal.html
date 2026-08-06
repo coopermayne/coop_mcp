@@ -110,6 +110,10 @@
     <div class="flex items-center gap-2 mt-5">
       <button type="button" data-drink-cancel
               class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Cancel</button>
+      {# Saving 0 now RECORDS the day as sober, so "unlog it" needs its own way out.
+         Only offered on a day that actually has a row. #}
+      <button type="button" data-drink-clear
+              class="px-3 py-2 text-gray-400 text-xs hover:text-black transition-colors">Clear</button>
       <button type="button" data-drink-save
               class="ml-auto px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 disabled:opacity-40 transition-colors">Save</button>
     </div>
@@ -128,6 +132,7 @@
     var dateEl = modal.querySelector('[data-drink-modal-date]');
     var errEl = modal.querySelector('[data-drink-error]');
     var save = modal.querySelector('[data-drink-save]');
+    var clear = modal.querySelector('[data-drink-clear]');
     var current = null;  // the counter button being edited
 
     function fmt(n) { return String(Math.round(n * 100) / 100); }
@@ -142,6 +147,8 @@
       amt.value = fmt(t);
       dateEl.textContent = longDate(btn.dataset.date);
       errEl.hidden = true;
+      // "Clear" only makes sense on a day that has a row to remove.
+      clear.hidden = btn.dataset.logged !== '1';
       modal.hidden = false;
       // Not on touch: the keyboard popping up would cover the stepper.
       if (!window.matchMedia('(pointer: coarse)').matches) amt.focus({ preventScroll: true });
@@ -165,9 +172,12 @@
       });
     });
     amt.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSave(); });
-    save.addEventListener('click', doSave);
+    save.addEventListener('click', function () { doSave(); });
+    // Clear removes the row entirely — back to "never logged", which saving 0 no
+    // longer does (0 now means "confirmed sober").
+    clear.addEventListener('click', function () { doSave(true); });
 
-    function doSave() {
+    function doSave(clearIt) {
       if (!current) return;
       var value = Math.max(0, parseFloat(amt.value) || 0);
       var btn = current;
@@ -176,17 +186,21 @@
       fetch(base + '/drinking/day', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: btn.dataset.date, standard_drinks: value })
+        body: JSON.stringify(clearIt ? { date: btn.dataset.date, clear: true }
+                                     : { date: btn.dataset.date, standard_drinks: value })
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw j; return j; }); })
         .then(function (j) {
-          var t = j.standard_drinks || 0;
+          // The counter's look follows whether the day HAS a row, not whether the
+          // number is non-zero — a logged 0 is a real state and shows its "0".
+          var t = j.standard_drinks || 0, on = !!j.logged;
           btn.dataset.total = t;
-          btn.querySelector('[data-drink-total]').textContent = t ? fmt(t) : '';
-          btn.classList.toggle('text-gray-500', !!t);
-          btn.classList.toggle('hover:text-black', !!t);
-          btn.classList.toggle('text-gray-200', !t);
-          btn.classList.toggle('hover:text-gray-500', !t);
+          btn.dataset.logged = on ? '1' : '0';
+          btn.querySelector('[data-drink-total]').textContent = on ? fmt(t) : '';
+          btn.classList.toggle('text-gray-500', on);
+          btn.classList.toggle('hover:text-black', on);
+          btn.classList.toggle('text-gray-200', !on);
+          btn.classList.toggle('hover:text-gray-500', !on);
           close();
         })
         .catch(function (j) {

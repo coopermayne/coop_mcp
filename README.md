@@ -125,8 +125,11 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
 
 - **Drinking.** `log_drinks` records standard drinks for a day (a beer/wine ≈ 1, a
   strong cocktail ≈ 1.5); call it as often as needed. `get_drink_summary` gives daily
-  totals, averages, and the current sober streak. Sober days aren't stored — they're
-  the gaps. To fix a mistake, `get_drink_summary(include_rows=True)` to find the row
+  totals, averages, and the current sober streak. Sober days are normally just the
+  gaps, but you can log a day as **0** to mark it confirmed sober — that stores a row,
+  so the feed's counter shows "0" instead of an empty glass and you can tell "didn't
+  drink" from "didn't log". A 0 day still isn't a drinking day: it never counts in the
+  averages and never breaks the streak. To fix a mistake, `get_drink_summary(include_rows=True)` to find the row
   id, then `update_drink` (corrections go either direction, unlike re-logging) or
   `delete_record(kind="drink")`.
 - **Eating.** A day has ONE eating section, the same daily shape as drinks. `log_food`

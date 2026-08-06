@@ -56,7 +56,7 @@
                 {{ 'mb-3 pt-3' if not (day.entries or day.nutrition) else 'mb-10 pt-8' }}">
   <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not (day.entries or day.nutrition) else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
-    {{ drink_counter(day.date, day.drinks or 0) }}
+    {{ drink_counter(day.date, day.drinks or 0, day.drinks_logged) }}
   </div>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
@@ -73,19 +73,24 @@
 </section>
 {% endmacro %}
 
-{% macro drink_counter(day_date, total) %}
-{# The day header's drink control: glass + count, or a faint glass alone when the
-   day is sober. Opens the edit modal (wired in journal.html); the button carries
-   the date + current total so the modal needs no lookup. #}
+{% macro drink_counter(day_date, total, logged=False) %}
+{# The day header's drink control, in three states — the day was never logged
+   (faint glass, no number), logged as 0 (a real "0", so a confirmed-sober day is
+   visibly different from one nobody touched), or logged with drinks (glass +
+   count). Opens the edit modal (wired in journal.html); the button carries the
+   date, current total, and whether a row exists, so the modal needs no lookup.
+   `logged` comes from data._attach_nutrition's sibling _attach_drinks — the total
+   alone can't tell 0-logged from unlogged. #}
 <button type="button" data-drink-btn data-date="{{ day_date }}" data-total="{{ total }}"
+        data-logged="{{ 1 if logged else 0 }}"
         title="Drinks on this day" aria-label="Edit drinks for {{ day_date | long_date }}"
         class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 -mr-1.5 rounded-[4px] transition-colors
-               {{ 'text-gray-500 hover:text-black' if total else 'text-gray-200 hover:text-gray-500' }}">
+               {{ 'text-gray-500 hover:text-black' if logged else 'text-gray-200 hover:text-gray-500' }}">
   <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <path d="M8 22h8M7 10h10M12 15v7"/><path d="M12 15a5 5 0 0 0 5-5c0-2-.5-4-2-8H9c-1.5 4-2 6-2 8a5 5 0 0 0 5 5Z"/>
   </svg>
-  <span class="text-xs font-medium tabular-nums" data-drink-total>{{ total | num if total else '' }}</span>
+  <span class="text-xs font-medium tabular-nums" data-drink-total>{{ total | num if logged else '' }}</span>
 </button>
 {% endmacro %}
 
