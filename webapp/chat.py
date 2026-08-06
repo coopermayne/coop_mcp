@@ -2,7 +2,7 @@
 In-app AI chat: the web app as an MCP *client*.
 
 This is the one place the web app writes *prose* (the journal). Browse pages
-(`app.py`) stay read-only; water/alcohol have their own tap-to-log path (no AI).
+(`app.py`) stay read-only — including intake, whose only write path is these tools.
 Here an Anthropic-powered agent loop drives the SAME `@mcp.tool()` functions that
 Claude Desktop calls over the connector — in-process, no MCP transport. The split
 that governs the whole project holds: the model does the judgment ("which Tom?"),
@@ -46,9 +46,9 @@ _JOURNAL_BLURB = (
     "journal page — the user is talking to you directly on their phone or laptop. "
     "Be concise and warm. After you capture something, say briefly what you "
     "recorded. Use the tools to both capture entries and answer recall questions "
-    "about people and past days. Food, alcohol and water are logged with log_food — one "
-    "call per item — though the user can also tap the water/drinks rings in the feed "
-    "behind this panel to add one without you."
+    "about people and past days. Food, alcohol and water are logged with log_intake, one "
+    "call per item — this panel and the connector are the only ways in, so if the user "
+    "mentions eating or drinking, log it."
 )
 _TRAINER_BLURB = (
     "\n\nYou are running inside the trainer's own web app, on the /trainer page — the "
@@ -344,7 +344,7 @@ def _maybe_rollover(key: tuple) -> None:
 # label the tool chips the UI shows, never to gate execution.
 _WRITE_TOOLS = {
     "add_journal_entry", "update_entry", "save_person", "link_mentions",
-    "merge_people", "delete_record", "log_food", "update_intake_item",
+    "merge_people", "delete_record", "log_intake", "update_intake_item",
     "log_workout", "update_workout", "update_set", "save_exercise",
     "log_bodyweight", "update_profile",
     "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",

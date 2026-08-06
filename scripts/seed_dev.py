@@ -231,7 +231,7 @@ DRINKS = [
 ]
 for dd, n, kind, notes in DRINKS:
     # Alcohol is a nutrient on the intake row now — same path as food.
-    server.log_food(item=kind, food_date=dd, standard_drinks=n, note=notes)
+    server.log_intake(item=kind, food_date=dd, standard_drinks=n, note=notes)
 print(f"drinks logged: {len(DRINKS)}")
 
 

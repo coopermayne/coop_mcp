@@ -123,11 +123,9 @@ LOCK_TOLERANCE = float(os.environ.get("JOURNAL_LOCK_TOLERANCE", "0.15") or "0.15
 
 # Journal-only paths the lock guards (relative to the mount prefix). Everything
 # else — trainer, library, auth, static, the lock screen itself — passes
-# straight through. /intake/* is in scope because the water/drinks quick-add is part
-# of the journal feed.
+# straight through.
 LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
-LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/",
-                     "/intake/")
+LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/")
 
 app = FastAPI(title="Journal")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
@@ -1156,80 +1154,6 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
                                   + quote_plus(terms))
     code = 404 if isinstance(info, dict) and info.get("error") else 200
     return JSONResponse(info, status_code=code)
-
-
-@app.post("/intake/add")
-async def intake_add(request: Request):
-    """Log ONE item from the feed's tappable rings — the water/drinks quick-add.
-
-    Body: {date, key: "water_oz"|"standard_drinks", amount: float}. This is the SAME
-    path the model uses: it inserts an item row through server.log_food, so a tapped
-    "+16oz" is the same kind of fact as "I had a glass of water" in chat. Nothing here
-    sets a day total — totals are summed from items, always.
-
-    Returns {date, key, total, items} so the ring can redraw and the modal can list
-    what's on the day."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    d = (body.get("date") or "").strip() or server.today()
-    key = body.get("key") or "standard_drinks"
-    # Only the two the UI can add — never an arbitrary column from the client.
-    if key not in ("standard_drinks", "water_oz"):
-        return JSONResponse({"error": f"{key} isn't loggable here"}, status_code=400)
-    try:
-        amount = float(body.get("amount"))
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "amount must be a number"}, status_code=400)
-    res = server.log_food(food_date=d, **{key: amount})
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(_intake_day(d, key))
-
-
-@app.post("/intake/delete")
-async def intake_delete(request: Request):
-    """Remove one logged item (the × beside an entry in the quick-add modal). Body:
-    {date, key, item_id}. The day's totals re-derive from what's left."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    d = (body.get("date") or "").strip() or server.today()
-    key = body.get("key") or "standard_drinks"
-    try:
-        item_id = int(body.get("item_id"))
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "item_id must be an integer"}, status_code=400)
-    res = server._delete_record("intake_item", item_id)
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(_intake_day(d, key))
-
-
-@app.get("/intake/day")
-async def intake_day(request: Request):
-    """The day's items for ONE nutrient + its total — what the quick-add modal opens
-    with. Query: ?date=YYYY-MM-DD&key=water_oz."""
-    from fastapi.responses import JSONResponse
-    d = (request.query_params.get("date") or "").strip() or server.today()
-    key = request.query_params.get("key") or "standard_drinks"
-    if key not in ("standard_drinks", "water_oz"):
-        return JSONResponse({"error": f"{key} isn't loggable here"}, status_code=400)
-    return JSONResponse(_intake_day(d, key))
-
-
-def _intake_day(d: str, key: str) -> dict:
-    """One day's items that carry `key`, plus the summed total. Shared by the three
-    /intake routes so they all answer in the same shape."""
-    with server.db() as conn:
-        rows = conn.execute(
-            f"SELECT id, item, {key} AS amount FROM intake_items "
-            f"WHERE food_date=? AND {key} IS NOT NULL ORDER BY position, id",
-            (d,),
-        ).fetchall()
-    return {
-        "date": d, "key": key,
-        "total": round(sum(r["amount"] for r in rows), 1) if rows else None,
-        "items": [{"id": r["id"], "text": r["item"], "amount": r["amount"]} for r in rows],
-    }
 
 
 # --------------------------------------------------------------------------- #
