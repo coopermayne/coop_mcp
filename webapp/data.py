@@ -202,6 +202,7 @@ def list_days(limit_entries: int = 120, since: str | None = None,
     # the feed is complete and every drink day belongs on it.
     floor = since or (oldest if has_more else None)
     _attach_drinks(days, floor, bare_days=kind is None)
+    _attach_nutrition(days, floor, bare_days=kind is None)
     if kind is None:
         _fill_empty_days(days)
     return {"days": days, "total": total, "oldest": oldest,
@@ -267,6 +268,38 @@ def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) 
         return
     for d, total in totals.items():
         days.append({"date": d, "entries": [], "drinks": total})
+    days.sort(key=lambda x: x["date"], reverse=True)
+
+
+def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
+    """Hang each day's eating section onto the feed's day blocks, in place.
+
+    A day gets a `nutrition` dict (summary, notes, and whichever macros were
+    actually estimated) only when one was logged — days with none carry nothing,
+    so the template can just test truthiness and the block stays absent rather
+    than rendering an empty "Eating —". Same window/bare-day rules as
+    `_attach_drinks`: a food-only day is inserted inside the loaded window so it's
+    still reachable, and a kind-filtered feed skips those insertions."""
+    cols = ("summary", "notes", "calories", "protein_g", "carbs_g", "fat_g")
+    with server.db() as conn:
+        rows = conn.execute(
+            "SELECT food_date, " + ", ".join(cols) + " FROM nutrition "
+            + ("WHERE food_date >= ? " if floor else "")
+            + "ORDER BY food_date",
+            (floor,) if floor else (),
+        ).fetchall()
+    by_date = {
+        r["food_date"]: {c: r[c] for c in cols if r[c] is not None}
+        for r in rows
+    }
+    for day in days:
+        n = by_date.pop(day["date"], None)
+        if n:
+            day["nutrition"] = n
+    if not bare_days or not by_date:
+        return
+    for d, n in by_date.items():
+        days.append({"date": d, "entries": [], "drinks": 0.0, "nutrition": n})
     days.sort(key=lambda x: x["date"], reverse=True)
 
 

@@ -90,8 +90,8 @@ class AllowlistMiddleware(Middleware):
 _auth = _build_auth()
 mcp = FastMCP("journal", auth=_auth, instructions="""\
 Single-user life log: a conversational journal (people are resolved to stable
-entities, not name strings) plus a drinking tracker. The server only stores and
-matches — the judgment (which person a mention means) is yours.
+entities, not name strings) plus a drinking tracker and an eating log. The server
+only stores and matches — the judgment (which person a mention means) is yours.
 
 Three rules: capture never blocks — always save, leave ambiguous mentions pending
 for later; resolve mentions to person entities, don't normalize names in text (for a
@@ -128,6 +128,11 @@ on Pacific time. get_briefing returns `now` (current Pacific date/time) with
 `date`/`yesterday`/`tomorrow` precomputed: use those EXACT strings for "today"/
 "yesterday"/"tomorrow" rather than computing or shifting dates yourself, and resolve
 any bare day reference against them before defaulting or saving.
+
+Food is its own daily section, not a journal entry: when the user mentions eating,
+call log_food (it appends to that day's one eating section) instead of — or as well
+as — writing an entry about it. Macros are optional; estimate them when the user
+wants numbers, otherwise just record the food in words.
 
 Start a session with get_briefing to load people/journal context before acting.
 (Workouts/training live on a separate `trainer` MCP server.)""")
@@ -348,6 +353,31 @@ CREATE TABLE IF NOT EXISTS drinks (
     created_at      TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
+
+-- ----------------------------------------------------------------------- --
+-- Eating log. Same daily shape as drinks: EXACTLY ONE row per day
+-- (food_date is unique) — a day's eating is ONE section, not a list of meal
+-- rows, because the user describes food in passing prose ("eggs, then a
+-- chipotle bowl") and per-item logging would be more bookkeeping than it's
+-- worth. `summary` is the running text of what was eaten (log_food appends to
+-- it); the macro columns are OPTIONAL — filled in only when the numbers are
+-- actually known, NULL (not 0) when they aren't, so an unestimated day never
+-- reads as a zero-calorie day. No LLM here either: the model turns "a chipotle
+-- bowl" into calories/protein if it wants numbers; the server just stores and
+-- sums what it's given.
+-- ----------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS nutrition (
+    id         INTEGER PRIMARY KEY,
+    food_date  TEXT NOT NULL,    -- YYYY-MM-DD (Pacific) the food was eaten
+    summary    TEXT,             -- running text of what was eaten that day
+    calories   REAL,             -- optional day totals; NULL = not estimated
+    protein_g  REAL,
+    carbs_g    REAL,
+    fat_g      REAL,
+    notes      TEXT,             -- how it felt / context, kept apart from the food list
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nutrition_date ON nutrition(food_date);
 
 -- ----------------------------------------------------------------------- --
 -- Personal trainer. `exercises` is a catalog of stable exercise ENTITIES
@@ -1468,8 +1498,8 @@ def _delete_record(kind: str, id: int) -> dict:
     """Shared delete implementation behind both servers' delete_record tools. Maps
     `kind` to its table, deletes the row, and (for sets) renumbers the remaining
     set_index so it stays contiguous."""
-    tables = {"entry": "entries", "drink": "drinks", "workout": "workouts",
-              "set": "sets", "weight": "body_weight"}
+    tables = {"entry": "entries", "drink": "drinks", "nutrition": "nutrition",
+              "workout": "workouts", "set": "sets", "weight": "body_weight"}
     table = tables.get(kind)
     if not table:
         return {"error": f"unknown kind {kind!r}; use one of {sorted(tables)}"}
@@ -1501,11 +1531,14 @@ def delete_record(kind: str, id: int) -> dict:
     `kind` selects what `id` refers to:
       - "entry" — a journal entry (its mentions go too; FTS stays in sync).
       - "drink" — one day's drink row (that day becomes sober again).
-    Find ids with get_entry/search_entries or get_drink_summary(include_rows=True).
-    (Workouts and sets are deleted via the trainer server's own delete_record.)"""
-    if kind not in ("entry", "drink"):
+      - "nutrition" — one day's eating section (that day becomes unlogged).
+    Find ids with get_entry/search_entries, get_drink_summary(include_rows=True), or
+    log_food's return. (Workouts and sets are deleted via the trainer server's own
+    delete_record.)"""
+    if kind not in ("entry", "drink", "nutrition"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['drink', 'entry'] (use the trainer server for workout/set)"}
+                         "['drink', 'entry', 'nutrition'] (use the trainer server "
+                         "for workout/set)"}
     return _delete_record(kind, id)
 
 
@@ -2048,6 +2081,181 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(f"UPDATE drinks SET {cols} WHERE id=?", (*sets.values(), drink_id))
     return {"drink_id": drink_id, "updated": list(sets)}
+
+
+# --------------------------------------------------------------------------- #
+# Eating tools
+# --------------------------------------------------------------------------- #
+
+# The macro columns, in the order they read back. One list so appending a macro
+# later doesn't mean editing four call sites.
+MACROS = ("calories", "protein_g", "carbs_g", "fat_g")
+
+
+def _nutrition_row(r) -> dict:
+    out = {"food_date": r["food_date"], "summary": r["summary"], "notes": r["notes"]}
+    for m in MACROS:
+        if r[m] is not None:
+            out[m] = round(r[m], 1)
+    return out
+
+
+@mcp.tool()
+def log_food(summary: str, food_date: Optional[str] = None,
+             calories: Optional[float] = None, protein_g: Optional[float] = None,
+             carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
+             notes: Optional[str] = None) -> dict:
+    """Log what the user ate. A day has EXACTLY ONE eating section, so this ADDS to
+    the day rather than creating a new record: `summary` is appended to the day's
+    running food list ("eggs and toast" then "chipotle bowl" reads back as "eggs and
+    toast; chipotle bowl"), and any macros you pass are ADDED to that day's totals.
+    Pass only the increment — the new food — not the day's running total.
+
+    Keep `summary` the food itself, in the user's own terms, concise and concrete
+    ("2 eggs, toast, black coffee"). Put how it went — cravings, feeling stuffed,
+    skipped a meal on purpose — in `notes`.
+
+    Macros are OPTIONAL and stay NULL until someone fills them in. Estimate them
+    yourself when the user wants numbers tracked or asks how a day is adding up
+    (that judgment is yours — the server does no food lookup); leave them out when
+    they're just telling you what they ate. Don't pass 0 for "unknown" — a NULL day
+    reads as unestimated, a 0 day reads as a real zero.
+
+    To correct a day (over-logged, or a fix to the wording) use update_nutrition,
+    which sets ABSOLUTE values. Read a day back with get_nutrition.
+
+    Args:
+        summary: The food to append for this day, e.g. "chipotle bowl, chips".
+        food_date: Day eaten, YYYY-MM-DD (Pacific). Defaults to today.
+        calories: Optional calories to ADD for this food.
+        protein_g: Optional grams of protein to ADD.
+        carbs_g: Optional grams of carbs to ADD.
+        fat_g: Optional grams of fat to ADD.
+        notes: Optional context/how it felt, appended to the day's notes.
+    """
+    if err := _bad_date(food_date, "food_date"):
+        return err
+    summary = (summary or "").strip()
+    if not summary:
+        return {"error": "summary is required — say what was eaten"}
+    add = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g}
+    for k, v in add.items():
+        if v is not None and v < 0:
+            return {"error": f"{k} must not be negative, got {v}"}
+    d = food_date or today()
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM nutrition WHERE food_date=?", (d,)).fetchone()
+        if existing:
+            merged = {m: existing[m] if add[m] is None
+                      else (existing[m] or 0) + add[m] for m in MACROS}
+            conn.execute(
+                "UPDATE nutrition SET summary=?, notes=?, "
+                + ", ".join(f"{m}=?" for m in MACROS) + " WHERE id=?",
+                (_merge_notes(existing["summary"], summary),
+                 _merge_notes(existing["notes"], notes),
+                 *(merged[m] for m in MACROS), existing["id"]),
+            )
+            rid = existing["id"]
+        else:
+            rid = conn.execute(
+                "INSERT INTO nutrition(food_date, summary, notes, "
+                + ", ".join(MACROS) + ", created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (d, summary, notes, *(add[m] for m in MACROS), now()),
+            ).lastrowid
+        row = conn.execute("SELECT * FROM nutrition WHERE id=?", (rid,)).fetchone()
+    return {"nutrition_id": rid, **_nutrition_row(row)}
+
+
+@mcp.tool()
+def get_nutrition(days: int = 14, since: Optional[str] = None,
+                  until: Optional[str] = None) -> dict:
+    """Read back the eating log: one section per day, newest first, plus averages.
+
+    Use this before commenting on how someone's been eating, and to READ-BEFORE-WRITE
+    when correcting a day with update_nutrition (which replaces, so you need the
+    current text/numbers first). Days with no row simply weren't logged and are
+    omitted — they are NOT zero-calorie days. `averages` are over the logged days
+    that actually carry that macro, so a handful of estimated days don't get diluted
+    by the days that were only described in words.
+
+    Args:
+        days: Size of the trailing window in days (ignored if `since` is given).
+        since: Start date YYYY-MM-DD (inclusive).
+        until: End date YYYY-MM-DD (inclusive). Defaults to today.
+    """
+    if err := _bad_date(since, "since") or _bad_date(until, "until"):
+        return err
+    until = until or today()
+    if since is None:
+        since = date.fromordinal(
+            date.fromisoformat(until).toordinal() - max(days, 1) + 1).isoformat()
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM nutrition WHERE food_date BETWEEN ? AND ? "
+            "ORDER BY food_date DESC", (since, until),
+        ).fetchall()
+    averages = {}
+    for m in MACROS:
+        vals = [r[m] for r in rows if r[m] is not None]
+        if vals:
+            averages[m] = round(sum(vals) / len(vals), 1)
+    window_days = (date.fromisoformat(until).toordinal()
+                   - date.fromisoformat(since).toordinal() + 1)
+    return {
+        "since": since, "until": until, "window_days": window_days,
+        "logged_days": len(rows),
+        "days": [_nutrition_row(r) for r in rows],
+        "averages": averages,
+    }
+
+
+@mcp.tool()
+def update_nutrition(food_date: str, summary: Optional[str] = None,
+                     calories: Optional[float] = None, protein_g: Optional[float] = None,
+                     carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
+                     notes: Optional[str] = None) -> dict:
+    """Correct one day's eating section. Only the args you pass are written, and they
+    are ABSOLUTE — they REPLACE what's there (unlike log_food, which appends/adds).
+
+    Use it to rewrite a day's food list, fix an over-estimate, or tidy the notes.
+    Because `summary` replaces the whole day's text, read the day first with
+    get_nutrition and write back the full corrected list, not just the changed part.
+    Setting a macro to 0 means a real zero; to remove a day entirely use
+    delete_record(kind="nutrition", id=...) — get the id from log_food's return, or
+    just rewrite the day.
+
+    Args:
+        food_date: The day to correct, YYYY-MM-DD (Pacific).
+        summary: Replacement text for the whole day's food.
+        calories: Replacement day total.
+        protein_g: Replacement day total (grams).
+        carbs_g: Replacement day total (grams).
+        fat_g: Replacement day total (grams).
+        notes: Replacement notes for the day.
+    """
+    if err := _bad_date(food_date, "food_date"):
+        return err
+    fields = {"summary": summary, "notes": notes, "calories": calories,
+              "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g}
+    for m in MACROS:
+        if fields[m] is not None and fields[m] < 0:
+            return {"error": f"{m} must not be negative, got {fields[m]}"}
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return {"food_date": food_date, "updated": []}
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id FROM nutrition WHERE food_date=?", (food_date,)).fetchone()
+        if not row:
+            return {"error": f"no eating section logged for {food_date}; "
+                             "use log_food to start the day"}
+        conn.execute(
+            "UPDATE nutrition SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?",
+            (*sets.values(), row["id"]),
+        )
+        cur = conn.execute("SELECT * FROM nutrition WHERE id=?", (row["id"],)).fetchone()
+    return {"nutrition_id": row["id"], "updated": list(sets), **_nutrition_row(cur)}
 
 
 # --------------------------------------------------------------------------- #

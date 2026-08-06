@@ -260,6 +260,20 @@ working.
   colored against a 2-drink guideline (green at/under, red over, dashed limit line) —
   `DRINK_LIMIT` in `webapp/static/graphs.js`, a display-only threshold; the server stores
   no goal.
+- `nutrition` — the eating log, one row per day (`food_date` unique — the drinks
+  pattern, not the entries pattern): a day's eating is ONE section, deliberately not a
+  list of meal/food-item rows, because food gets described in passing prose and per-item
+  logging is more bookkeeping than it's worth. `summary` is the running text of what was
+  eaten — `log_food` APPENDS to it (and ADDS any macros passed), `update_nutrition`
+  (keyed by DATE, since a day has one row) sets absolutes for corrections. The macro
+  columns (`calories`, `protein_g`, `carbs_g`, `fat_g`) are OPTIONAL and stay NULL until
+  someone fills them in, so a day described only in words is "unestimated", never a
+  zero-calorie day — `get_nutrition`'s averages are taken over the days that actually
+  carry each macro. Same split as everywhere: turning "a chipotle bowl" into calories is
+  the MODEL's estimate, made in conversation; there is no food database or lookup in the
+  server. The webapp shows a day's section under its entries on the journal feed
+  (`data._attach_nutrition` + `macros.eating_block`), read-only — writes come through
+  chat/MCP, unlike the drink counter's stepper.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's

@@ -349,7 +349,7 @@ def _maybe_rollover(key: tuple) -> None:
 # label the tool chips the UI shows, never to gate execution.
 _WRITE_TOOLS = {
     "add_journal_entry", "update_entry", "save_person", "link_mentions",
-    "merge_people", "delete_record",
+    "merge_people", "delete_record", "log_food", "update_nutrition",
     "log_workout", "update_workout", "update_set", "save_exercise",
     "log_bodyweight", "update_profile",
     "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",

@@ -129,6 +129,16 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   the gaps. To fix a mistake, `get_drink_summary(include_rows=True)` to find the row
   id, then `update_drink` (corrections go either direction, unlike re-logging) or
   `delete_record(kind="drink")`.
+- **Eating.** A day has ONE eating section, the same daily shape as drinks. `log_food`
+  appends what you ate to that day's running food list ("eggs and toast", later
+  "chipotle bowl") and ADDS any macros passed with it; the macro columns
+  (calories/protein/carbs/fat) are optional and stay NULL until estimated, so a day
+  described only in words never reads as zero calories. `get_nutrition` reads days back
+  with per-macro averages over the days that carry them; `update_nutrition(food_date=…)`
+  replaces a day's values (read first — `summary` overwrites the whole list), and
+  `delete_record(kind="nutrition")` drops a day. The estimating is the model's job:
+  there's no food database in the server. The day's section renders under its entries
+  on the journal feed.
 - **A closed exercise library.** The catalog is a fixed set the trainer draws on but
   never grows: ~870 movements pre-loaded from free-exercise-db, plus any you add yourself
   through the AI **+ Add an exercise** panel at `/trainer/library` (describe a movement and
@@ -168,7 +178,8 @@ belong with the journaling project, since `log_drinks`/`get_drink_summary` are o
 journal connector):
 
 > When I talk about drinking, convert it to standard drinks and `log_drinks`. When I
-> ask how I'm doing, use `get_drink_summary`.
+> ask how I'm doing, use `get_drink_summary`. When I mention food, `log_food` it onto
+> that day's eating section — estimate calories/protein only when I ask for numbers.
 > When I train: at the start of a session call `get_fitness_briefing` to see what's
 > recovered vs recently hit, my injuries, and my split, then recommend the day's work
 > within those. Explain unfamiliar lifts from the catalog (`exercises`); before
