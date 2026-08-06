@@ -102,16 +102,19 @@
    than one line each: the numbers alone make the list scannable, and a food log is
    usually a few short phrases that would waste a line apiece. Each number is glued
    to its item's first word in a nowrap span, so a wrap never strands an index at
-   the end of a line; the rest of the item wraps freely. The day's notes hide behind
-   a circled "i" that opens a modal (wired in journal.html): they're context you
-   want occasionally, not on every day of the feed. #}
+   the end of a line; the rest of the item wraps freely.
+
+   Each targeted nutrient (data.NUTRIENT_TARGETS) gets a small progress ring above
+   its existing number, which becomes the ring's label — the ring answers "how did
+   the day land against the target" at a glance, the number stays for the exact
+   figure. Untargeted ones (carbs, fat) keep the bare label, so the row aligns on
+   its bottom edge rather than pretending they have a goal. The day's notes hide
+   behind a circled "i" at the END of that row, opening a modal (wired in
+   journal.html): they're context you want occasionally, not on every day. #}
 <div class="flex gap-2 sm:-ml-5 sm:gap-3">
   <span class="shrink-0 pt-0.5 text-sm leading-relaxed text-transparent select-none" aria-hidden="true">›</span>
   <div class="flex-1 border-l-2 border-gray-200 pl-3">
-    <p class="text-[10px] uppercase tracking-widest text-gray-400 flex items-center gap-1.5">
-      Eating
-      {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
-    </p>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400">Eating</p>
     {% if n['items'] %}
     <p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">
       {%- for item in n['items'] %}
@@ -130,15 +133,43 @@
     {% set units = {'calories': 'cal', 'protein_g': 'g protein', 'carbs_g': 'g carbs',
                     'fat_g': 'g fat', 'sodium_mg': 'mg sodium', 'fiber_g': 'g fiber'} %}
     {% set shown = units | select('in', n) | list %}
-    {% if shown %}
-    <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+    {% if shown or n.notes %}
+    <div class="flex flex-wrap items-end gap-x-4 gap-y-2 mt-2">
       {% for key in shown %}
-      <span class="text-xs text-gray-500 tabular-nums">{{ n[key] | num }} <span class="text-gray-400">{{ units[key] }}</span></span>
+      {% set goal = NUTRIENT_TARGETS.get(key) %}
+      <div class="flex flex-col items-center gap-1">
+        {% if goal %}{{ nutrient_ring(n[key], goal.target, goal.ceiling, units[key]) }}{% endif %}
+        <span class="text-xs text-gray-500 tabular-nums">{{ n[key] | num }} <span class="text-gray-400">{{ units[key] }}</span></span>
+      </div>
       {% endfor %}
+      {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
     </div>
     {% endif %}
   </div>
 </div>
+{% endmacro %}
+
+{% macro nutrient_ring(value, target, ceiling, unit) %}
+{# One day's progress toward a nutrient target, as a small ring. Deliberately low
+   information: the arc is share-of-target, capped at a full circle so an
+   overshoot doesn't wrap around and read as a small number; the exact figure is
+   the label right below it. Color carries the only judgment — muted sage while
+   the day is within its target, muted clay once a CEILING nutrient (sodium,
+   calories) is past it. A floor nutrient (protein, fiber) never turns clay:
+   going over your protein target isn't a problem. Colors are two custom classes
+   (see base.html) so they flip with the theme like everything else. #}
+{% set pct = (value / target) if target else 0 %}
+{% set over = ceiling and pct > 1 %}
+{% set arc = (94.2 * (1 if pct > 1 else pct)) | round(1) %}
+<svg viewBox="0 0 36 36" class="w-8 h-8 shrink-0" role="img"
+     aria-label="{{ value | num }} {{ unit }} of {{ target | num }} target">
+  <circle cx="18" cy="18" r="15" fill="none" stroke-width="3" class="ring-track"/>
+  {% if arc > 0 %}
+  <circle cx="18" cy="18" r="15" fill="none" stroke-width="3" stroke-linecap="round"
+          stroke-dasharray="{{ arc }} 94.2" transform="rotate(-90 18 18)"
+          class="{{ 'ring-over' if over else 'ring-fill' }}"/>
+  {% endif %}
+</svg>
 {% endmacro %}
 
 {% macro index_circle(i) %}
@@ -152,13 +183,15 @@
 {%- endmacro %}
 
 {% macro note_button(text) %}
-{# Circled "i" — the day's eating notes, one tap away instead of on the page. The
-   text rides on the button as a data attribute so the modal needs no lookup (same
-   trick as the drink counter); the handler is delegated in journal.html so it
-   survives a chat-driven feed re-render. #}
+{# Circled "i" — the day's eating notes, one tap away instead of on the page. Sits
+   at the end of the nutrient row, so it's baseline-aligned with the labels there
+   (mb-[3px] drops it onto their optical line). The text rides on the button as a
+   data attribute so the modal needs no lookup (same trick as the drink counter);
+   the handler is delegated in journal.html so it survives a chat-driven feed
+   re-render. #}
 <button type="button" data-note-btn data-note="{{ text }}"
         title="Notes on this day's eating" aria-label="Show notes on this day's eating"
-        class="shrink-0 w-[15px] h-[15px] rounded-full border border-gray-300 text-gray-400
+        class="shrink-0 mb-[3px] w-[15px] h-[15px] rounded-full border border-gray-300 text-gray-400
                text-[10px] leading-none font-serif italic flex items-center justify-center
                hover:border-black hover:text-black transition-colors">i</button>
 {% endmacro %}

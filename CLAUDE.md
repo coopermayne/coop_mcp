@@ -278,11 +278,18 @@ working.
   the MODEL's estimate, made in conversation; there is no food database or lookup in the
   server. The webapp shows a day's section under its entries on the journal feed
   (`data._attach_nutrition` + `macros.eating_block`), read-only — writes come through
-  chat/MCP, unlike the drink counter's stepper. `summary` renders as a NUMBERED list,
+  chat/MCP, unlike the drink counter's stepper. Each targeted nutrient shows a small
+  progress ring above its number (`macros.nutrient_ring`), read against
+  `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY webapp constant, the `DRINK_LIMIT` pattern:
+  the server stores no goals, so targets never enter the DB or a tool return. A
+  `ceiling` target (sodium, calories) turns the ring clay once passed; a floor one
+  (protein, fiber) doesn't, and an untargeted nutrient (carbs, fat) renders as a bare
+  label with no ring. `summary` renders as a NUMBERED list,
   not the raw string: `_attach_nutrition` splits it back on the "; " that log_food
-  joined with, recovering one item per thing eaten. The day's `notes` aren't shown
-  inline — a circled "i" (`macros.note_button`) carries the text and opens the
-  display-only modal in `journal.html`.
+  joined with, recovering one item per thing eaten (they flow inline, each index
+  glued to its item's first word so a wrap can't strand it). The day's `notes` aren't
+  shown inline — a circled "i" (`macros.note_button`) at the end of the nutrient row
+  carries the text and opens the display-only modal in `journal.html`.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's

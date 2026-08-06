@@ -209,6 +209,10 @@ for _name, _fn in [
 ]:
     templates.env.filters[_name] = _fn
 
+# The eating block's rings read against these; a global (not a per-route context var)
+# because the macro is reached through day_block, several call frames from the route.
+templates.env.globals["NUTRIENT_TARGETS"] = data.NUTRIENT_TARGETS
+
 
 def link_people_md(body: str, people: list[dict], base: str) -> str:
     """Return the entry body as Markdown with each resolved person's name turned into
