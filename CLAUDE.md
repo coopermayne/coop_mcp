@@ -278,14 +278,15 @@ working.
   the MODEL's estimate, made in conversation; there is no food database or lookup in the
   server. The webapp shows a day's section under its entries on the journal feed
   (`data._attach_nutrition` + `macros.eating_block`), read-only — writes come through
-  chat/MCP, unlike the drink counter's stepper. Each targeted nutrient renders as a
-  small progress ring with the FIGURE INSIDE it and only the unit labelled below
+  chat/MCP, unlike the drink counter's stepper. Each nutrient renders as a ring with
+  BOTH the figure (unit included: "1400mg") and a short label ("sod") inside it
   (`macros.nutrient_ring`), read against
   `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY webapp constant, the `DRINK_LIMIT` pattern:
   the server stores no goals, so targets never enter the DB or a tool return. A
   `ceiling` target (sodium, calories) turns the ring clay once passed; a floor one
-  (protein, fiber) doesn't, and an untargeted nutrient (carbs, fat) renders as a bare
-  label with no ring. `summary` renders as a NUMBERED list,
+  (protein, carbs, fiber) doesn't, and an untargeted nutrient (fat) draws a DASHED
+  track with no arc — an empty solid ring would read as "0% of goal" rather than "no
+  goal set". `summary` renders as a NUMBERED list,
   not the raw string: `_attach_nutrition` splits it back on the "; " that log_food
   joined with, recovering one item per thing eaten (they flow inline, each index
   glued to its item's first word so a wrap can't strand it). The day's `notes` aren't

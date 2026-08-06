@@ -16,9 +16,17 @@ COPY scripts ./scripts
 # Remote mode. DB lives on a mounted volume so it survives redeploys. One process serves
 # the journal MCP (+ read-only UI at /app) on PUBLIC_URL and, when TRAINER_PUBLIC_URL is
 # set, the trainer MCP on that second host (each with its own root OAuth).
+# FASTMCP_HOME is load-bearing for redeploys. FastMCP's OAuth proxy keeps its client
+# registrations and upstream token sets in an encrypted file store under
+# `settings.home`, which defaults to a per-user data dir INSIDE the container — wiped
+# on every deploy, so Claude's connector loses its registration and has to re-auth
+# each time. Pointing it at the same persistent volume as the DB makes the auth state
+# outlive a redeploy. (The store's subdirectory is keyed off the Google client secret,
+# so it stays stable across restarts but rotates if you rotate the secret.)
 ENV MCP_TRANSPORT=http \
     PORT=8000 \
-    JOURNAL_DB=/data/journal.db
+    JOURNAL_DB=/data/journal.db \
+    FASTMCP_HOME=/data/fastmcp
 
 EXPOSE 8000
 

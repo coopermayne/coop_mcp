@@ -61,6 +61,8 @@
        ceiling one (sodium, calories) is past it. The track is a hair darker than
        a hairline border so a barely-started ring still reads as a ring. */
     .ring-track { stroke: #ececea; }
+    /* The short name under the figure — quieter than the number it labels. */
+    .ring-sublabel { fill: #9ca3af; text-transform: uppercase; letter-spacing: .06em; }
     .ring-fill  { stroke: #8ba58f; }
     .ring-over  { stroke: #bb8a80; }
     button.badge { cursor: pointer; }
@@ -164,6 +166,7 @@
     /* Rings: the track drops to the dark border tone; the hues lift slightly so
        they hold against #0a0a0a without gaining saturation. */
     html[data-theme="dark"] .ring-track { stroke: #262626; }
+    html[data-theme="dark"] .ring-sublabel { fill: #737373; }
     html[data-theme="dark"] .ring-fill  { stroke: #7d9a83; }
     html[data-theme="dark"] .ring-over  { stroke: #b58179; }
     html[data-theme="dark"] .person-link              { text-decoration-color: #404040; }
