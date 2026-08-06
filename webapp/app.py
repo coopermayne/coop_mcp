@@ -1147,7 +1147,7 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
     movement (and any saved video_link)."""
     from fastapi.responses import JSONResponse
     from urllib.parse import quote_plus
-    info = server.exercises(exercise_id=exercise_id)
+    info = server.find_exercises(exercise_id=exercise_id)
     if isinstance(info, dict) and not info.get("error"):
         terms = ((info.get("name") or "") + " proper form technique").strip()
         info["youtube_search"] = ("https://www.youtube.com/results?search_query="

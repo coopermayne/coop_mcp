@@ -73,7 +73,7 @@ _TRAINER_BLURB = (
     "Technique questions: answer with a clear, specific walkthrough — setup, the "
     "movement, tempo, what it should feel like, and the common mistakes to avoid — "
     "drawing on the exercise's saved technique_notes/common_mistakes/cautions (via the "
-    "exercises tool) and your own knowledge. If you give durable cues for an exercise, "
+    "find_exercises tool) and your own knowledge. If you give durable cues for an exercise, "
     "consider saving them with save_exercise so they're there next time."
 )
 

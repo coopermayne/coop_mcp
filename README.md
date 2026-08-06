@@ -193,8 +193,8 @@ journal connector):
 > set-by-set during the workout (reuse the returned `workout_id` so it stays one
 > session). If I correct something afterward, use `get_exercise_history` to find the
 > `set_id`, then `update_set` or `delete_record`. The exercise library is closed — program
-> only movements it already holds (`exercises(muscle=…, rotation_only=True)` to pick,
-> `exercises(similar_to=…)` for swaps); if a name doesn't resolve it comes back under
+> only movements it already holds (`find_exercises(muscle=…, rotation_only=True)` to pick,
+> `find_exercises(similar_to=…)` for swaps); if a name doesn't resolve it comes back under
 > `unmatched`/`candidates`, so use one of those or tell me to add the movement on the
 > library page. Keep existing entries coached with `save_exercise` (muscles in their three
 > emphasis tiers, equipment, technique, a form gif/video). Capture anything I mention about how it went in the session
@@ -513,14 +513,14 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `get_entry` | Fetch one entry, including the verbatim `raw_body` on demand |
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body`; pass `mentions` to reconcile who it references (adds/removes mention rows, keeps resolved links) |
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
-| `search_entries` | Full-text search for topics/events |
+| `search_entries` | Full-text search for topics/events. Plain words are tokenized and quoted before hitting FTS5 (so apostrophes/punctuation are safe, terms ANDed); `raw_query=True` passes FTS5 syntax through for OR/NEAR/prefix\* |
 | `log_intake` | Log ONE thing consumed (meal, beer, glass of water) with whatever nutrients are known — calories, macros, sodium, fiber, standard drinks, water oz |
 | `get_intake` | Intake days back: each day's items *with ids* + summed totals, and per-nutrient averages (each over the days that carry it) |
 | `update_intake_item` | Correct one logged item by id — the day's totals re-derive themselves |
 | `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
 | `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
 | `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |
-| `exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`/`hearted_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
+| `find_exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`/`hearted_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
 | `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; names resolve against the closed catalog, unmatched ones come back under `unmatched`/`candidates` (never auto-created) |
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `append_note` adds a line without clobbering earlier notes |
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
