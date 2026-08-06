@@ -271,6 +271,21 @@ def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) 
     days.sort(key=lambda x: x["date"], reverse=True)
 
 
+# Daily targets the eating block's rings read against. DISPLAY-ONLY, the same shape
+# as graphs.js's DRINK_LIMIT: the server stores no goals (all coaching judgment lives
+# in the conversation), so these are a webapp constant, not a settings row. `ceiling`
+# marks a number you're trying to stay UNDER (sodium, calories) rather than reach —
+# it only changes the ring's color once it's past the target. Calories use the middle
+# of the 2,200-2,400 band, since a ring can't show a range. A nutrient with no entry
+# here (carbs, fat) is tracked but untargeted and renders as a bare label.
+NUTRIENT_TARGETS = {
+    "calories":  {"target": 2300, "ceiling": True},
+    "protein_g": {"target": 150,  "ceiling": False},
+    "sodium_mg": {"target": 2300, "ceiling": True},
+    "fiber_g":   {"target": 30,   "ceiling": False},
+}
+
+
 def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
     """Hang each day's eating section onto the feed's day blocks, in place.
 
