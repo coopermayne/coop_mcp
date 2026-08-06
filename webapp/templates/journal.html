@@ -84,12 +84,11 @@
 {% endif %}
 </div>
 
-{# Intake stepper — the one editable-in-the-browser part of a day's intake row.
-   Opened by a tappable ring (water or drinks) in the day's block, or by the ghosted
-   glass on a day with nothing logged at all. Writes an ABSOLUTE value for ONE column
-   through /drinking/day; Clear sets it back to NULL (unlogged). The step size and
-   label follow the nutrient — half-drinks vs 8oz of water — off the button's
-   data-key. Food and the other nutrients are written through chat/MCP, not here.
+{# Water/drinks quick-add. Tapping either ring (or the ghosted glass on an empty
+   day) opens this; Save LOGS AN ITEM — the same kind of row "I had a beer" creates in
+   chat — rather than setting a day total, because there are no stored day totals to
+   set. The day's existing items for that nutrient are listed underneath so a mis-tap
+   can be removed. Step size follows the nutrient: half-drinks, 8oz of water.
    Lives outside data-journal-feed so a chat-driven feed refresh can't blow it away
    mid-edit; the button handler is delegated for the same reason. #}
 <div data-drink-modal hidden
@@ -109,23 +108,22 @@
     </div>
     <p class="text-[10px] uppercase tracking-widest text-gray-400 text-center mt-2" data-drink-unit></p>
     <p class="text-xs text-red-600 text-center mt-3" data-drink-error hidden></p>
+    {# Today's items for this nutrient — the undo path for a mis-tap, and the only
+       place the individual top-ups are visible. #}
+    <div class="mt-4 border-t border-gray-100 pt-3 empty:hidden" data-drink-items></div>
     <div class="flex items-center gap-2 mt-5">
       <button type="button" data-drink-cancel
-              class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Cancel</button>
-      {# Saving 0 RECORDS the day (sober / no water), so "unlog it" needs its own way
-         out. Only offered when the column actually has a value. #}
-      <button type="button" data-drink-clear
-              class="px-3 py-2 text-gray-400 text-xs hover:text-black transition-colors">Clear</button>
+              class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Close</button>
       <button type="button" data-drink-save
-              class="ml-auto px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 disabled:opacity-40 transition-colors">Save</button>
+              class="ml-auto px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 disabled:opacity-40 transition-colors">Add</button>
     </div>
   </div>
 </div>
 <script>
-  // Tappable ring / ghost glass → modal → absolute save of ONE nutrient. No
-  // framework; the click handler is delegated off document so it survives the chat
-  // panel's feed re-render, and the saved value is drawn straight back onto the ring
-  // (no page reload, so the reading position is kept).
+  // Tappable ring / ghost glass → quick-add → one logged ITEM. No framework; the
+  // click handler is delegated off document so it survives the chat panel's feed
+  // re-render, and the new day total is drawn straight back onto the ring (no page
+  // reload, so the reading position is kept).
   (function () {
     var modal = document.querySelector('[data-drink-modal]');
     if (!modal) return;
@@ -134,14 +132,15 @@
     var dateEl = modal.querySelector('[data-drink-modal-date]');
     var unitEl = modal.querySelector('[data-drink-unit]');
     var errEl = modal.querySelector('[data-drink-error]');
+    var listEl = modal.querySelector('[data-drink-items]');
     var save = modal.querySelector('[data-drink-save]');
-    var clear = modal.querySelector('[data-drink-clear]');
-    var current = null;  // the ring/counter button being edited
+    var current = null;  // the ring/counter button that opened us
 
-    // Per-nutrient stepper behavior: drinks move in halves, water by the glass.
+    // Per-nutrient behavior: drinks move in halves and default to one, water moves
+    // and defaults to a glass.
     var NUTRIENTS = {
-      standard_drinks: { step: 0.5, label: 'standard drinks', suffix: '' },
-      water_oz:        { step: 8,   label: 'fl oz of water',  suffix: 'oz' }
+      standard_drinks: { step: 0.5, start: 1,  label: 'standard drinks', suffix: '' },
+      water_oz:        { step: 8,   start: 16, label: 'fl oz of water',  suffix: 'oz' }
     };
     var CIRC = 150.8;  // must match macros.nutrient_ring
 
@@ -152,23 +151,55 @@
       return new Date(+p[0], +p[1] - 1, +p[2])
         .toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
     }
+
     function open(btn) {
       current = btn;
       var c = conf(btn);
-      amt.value = fmt(parseFloat(btn.dataset.total) || 0);
+      amt.value = fmt(c.start);   // the amount to ADD, not the day's total
       amt.step = c.step;
-      unitEl.textContent = c.label;
+      unitEl.textContent = 'add ' + c.label;
       dateEl.textContent = longDate(btn.dataset.date);
       modal.querySelectorAll('[data-drink-step]').forEach(function (b) {
         b.dataset.drinkStep = (b.getAttribute('aria-label') === 'More' ? 1 : -1) * c.step;
       });
       errEl.hidden = true;
-      clear.hidden = btn.dataset.logged !== '1';
+      listEl.innerHTML = '';
       modal.hidden = false;
-      // Not on touch: the keyboard popping up would cover the stepper.
+      load();
       if (!window.matchMedia('(pointer: coarse)').matches) amt.focus({ preventScroll: true });
     }
     function close() { modal.hidden = true; current = null; }
+
+    function load() {
+      if (!current) return;
+      fetch(base + '/intake/day?date=' + encodeURIComponent(current.dataset.date)
+            + '&key=' + encodeURIComponent(current.dataset.key))
+        .then(function (r) { return r.json(); })
+        .then(render)
+        .catch(function () { /* the list is a convenience; adding still works */ });
+    }
+
+    // Render the day's items for this nutrient, each with an × that deletes it.
+    function render(j) {
+      if (!current) return;
+      var c = conf(current);
+      listEl.innerHTML = '';
+      (j.items || []).forEach(function (it) {
+        var row = document.createElement('div');
+        row.className = 'flex items-center justify-between gap-2 py-1 text-xs text-gray-500';
+        var label = document.createElement('span');
+        label.textContent = (it.text ? it.text + ' · ' : '') + fmt(it.amount) + c.suffix;
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'shrink-0 text-gray-300 hover:text-black transition-colors px-1';
+        del.setAttribute('aria-label', 'Remove this');
+        del.textContent = '×';
+        del.addEventListener('click', function () { remove(it.id); });
+        row.appendChild(label); row.appendChild(del);
+        listEl.appendChild(row);
+      });
+      paint(current, j.total);
+    }
 
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-drink-btn]');
@@ -186,59 +217,62 @@
         amt.value = fmt(Math.max(0, (parseFloat(amt.value) || 0) + parseFloat(b.dataset.drinkStep)));
       });
     });
-    amt.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSave(); });
-    save.addEventListener('click', function () { doSave(); });
-    // Clear nulls the column — back to "never logged", which saving 0 no longer does
-    // (0 means confirmed sober / no water).
-    clear.addEventListener('click', function () { doSave(true); });
+    amt.addEventListener('keydown', function (e) { if (e.key === 'Enter') add(); });
+    save.addEventListener('click', add);
 
-    // Redraw a ring in place: arc length, over/under color, and the figure text.
-    // The ghost glass on an empty day has no <svg>, so it just gets its number.
-    function paint(btn, value, logged) {
-      btn.dataset.total = value || 0;
+    // Redraw a ring in place from the day's new total: arc length, over/under color,
+    // and the figure. Returns false when the element isn't a ring (the ghost glass on
+    // an empty day), so the caller can reload instead — that day's block changes shape.
+    function paint(btn, total) {
+      var logged = total !== null && total !== undefined;
+      btn.dataset.total = logged ? total : 0;
       btn.dataset.logged = logged ? '1' : '0';
       var arc = btn.querySelector('[data-ring-arc]');
       var fig = btn.querySelector('[data-ring-figure]');
-      if (!fig) return true;  // not a ring — caller reloads instead
+      if (!fig) return false;
       var target = parseFloat(btn.dataset.target) || 0;
-      var pct = target ? (value || 0) / target : 0;
+      var pct = target ? (total || 0) / target : 0;
       if (arc) {
         arc.setAttribute('stroke-dasharray', (CIRC * Math.min(pct, 1)).toFixed(1) + ' ' + CIRC);
         var over = btn.dataset.ceiling === '1' && pct > 1;
         arc.classList.toggle('ring-over', over);
         arc.classList.toggle('ring-fill', !over);
       }
-      var c = conf(btn);
-      fig.textContent = logged ? fmt(value || 0) + c.suffix : '';
-      return false;
+      fig.textContent = logged ? fmt(total) + conf(btn).suffix : '';
+      return true;
     }
 
-    function doSave(clearIt) {
-      if (!current) return;
-      var value = Math.max(0, parseFloat(amt.value) || 0);
+    function send(url, body) {
       var btn = current;
       save.disabled = true;
       errEl.hidden = true;
-      fetch(base + '/drinking/day', {
+      return fetch(base + url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(clearIt ? { date: btn.dataset.date, key: btn.dataset.key, clear: true }
-                                     : { date: btn.dataset.date, key: btn.dataset.key, amount: value })
+        body: JSON.stringify(body)
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw j; return j; }); })
         .then(function (j) {
-          // A ring with no arc yet (first log of the day) can't be drawn in place,
-          // and neither can the ghost glass — the day's whole block changes shape.
-          // Reload the feed region in those cases; otherwise repaint and stay put.
-          var needsReload = paint(btn, j.amount, j.logged) || !btn.querySelector('[data-ring-arc]');
-          close();
-          if (needsReload) window.location.reload();
+          render(j);
+          // A ring with no arc yet (first log of the day) can't be drawn in place, and
+          // neither can the ghost glass — the day's whole block changes shape.
+          if (!btn.querySelector('[data-ring-arc]')) { close(); window.location.reload(); }
         })
         .catch(function (j) {
           errEl.textContent = (j && j.error) || 'Could not save.';
           errEl.hidden = false;
         })
         .finally(function () { save.disabled = false; });
+    }
+
+    function add() {
+      if (!current) return;
+      var value = Math.max(0, parseFloat(amt.value) || 0);
+      send('/intake/add', { date: current.dataset.date, key: current.dataset.key, amount: value });
+    }
+    function remove(id) {
+      if (!current) return;
+      send('/intake/delete', { date: current.dataset.date, key: current.dataset.key, item_id: id });
     }
   })();
 </script>

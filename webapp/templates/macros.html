@@ -55,9 +55,9 @@
                 {{ 'mb-3 pt-3' if not (day.entries or day.nutrition) else 'mb-10 pt-8' }}">
   <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not (day.entries or day.nutrition) else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
-    {# The glass is only the WAY IN on a day with no intake row at all. Once a day
-       has one, its drinks live in the eating block's ring — never both, so the
-       same number is never shown twice. #}
+    {# The glass is only the WAY IN on a day with nothing logged. Once the day has
+       items, drinks live in the block's ring — never both, so the same number is
+       never shown twice. #}
     {% if not day.nutrition %}{{ drink_counter(day.date) }}{% endif %}
   </div>
   <div class="space-y-3">
@@ -76,11 +76,11 @@
 {% endmacro %}
 
 {% macro drink_counter(day_date) %}
-{# Way in on a day with NOTHING logged — no intake row, so there's no eating block
-   and no drinks ring to tap. A ghosted glass on the date line, opening the same
-   stepper (wired in journal.html) and writing the same nutrition column; the first
-   save creates the day's row, after which the block's ring takes over and this
-   disappears. Always the empty state by construction, so it takes no total. #}
+{# Way in on a day with NOTHING logged — no items, so there's no intake block and no
+   ring to tap. A ghosted glass on the date line, opening the same quick-add (wired in
+   journal.html) and logging the same kind of item; once the day has anything, the
+   block's rings take over and this disappears. Always the empty state by
+   construction, so it takes no total. #}
 <button type="button" data-drink-btn data-date="{{ day_date }}" data-key="standard_drinks"
         data-total="0" data-logged="0" data-target="2" data-ceiling="1"
         title="Drinks on this day" aria-label="Log drinks for {{ day_date | long_date }}"
@@ -94,25 +94,24 @@
 {% endmacro %}
 
 {% macro eating_block(n, day_date) %}
-{# The day's ONE intake section (server.nutrition, appended to by log_food) — food,
-   alcohol and water together, since they're all daily intake numbers with targets
-   and there's no reason for three parallel shapes. Styled as an aside rather than a
-   note: it's a daily metric, not a journal entry. Nutrients render only when they
-   were actually estimated (NULL ones are simply absent from the dict), so a day
-   described only in words shows just the food list, with no phantom zeros — EXCEPT
-   water and alcohol, which always show (dashed when unlogged) because they're the
-   two you top up through the day and need a tap target before the first log.
+{# The day's intake — every item logged that day (server.intake_items), food,
+   alcohol and water alike, since a beer and a sandwich are the same kind of fact.
+   Styled as an aside rather than a note: it's a daily metric, not a journal entry.
+   The rings show the day's SUMMED totals; a nutrient no item carries is simply
+   absent, so a day described only in words has no phantom zeros — EXCEPT water and
+   alcohol, which always render (dashed when unlogged) because they're the two you
+   top up through the day and need a tap target before the first log.
 
-   The day's foods were appended one at a time (data._attach_nutrition splits them
-   back out), and each gets a circled index — but they FLOW as one paragraph rather
-   than one line each: the numbers alone make the list scannable, and a food log is
-   usually a few short phrases that would waste a line apiece. Each number is glued
-   to its item's first word in a nowrap span, so a wrap never strands an index at
-   the end of a line; the rest of the item wraps freely.
+   Items get a circled index each but FLOW as one paragraph rather than one line
+   each: the numbers alone make the list scannable, and intake is usually a few
+   short phrases that would waste a line apiece. Each index is glued to its item's
+   first word in a nowrap span, so a wrap never strands one at the end of a line;
+   the rest of the item wraps freely.
 
-   Each nutrient is a ring (data.NUTRIENT_TARGETS supplies the goal) with its figure
-   and short label inside. Water and drinks are TAPPABLE — they open the stepper —
-   the rest are display only, written through chat/MCP. The day's notes hide behind a
+   Each nutrient is a ring (data.NUTRIENT_TARGETS supplies the goal) with its summed
+   figure and short label inside. Water and drinks are TAPPABLE — they open the
+   quick-add, which logs another ITEM (never a day total) and can delete one — the
+   rest are display only, written through chat/MCP. The day's notes hide behind a
    circled "i" at the END of that row, opening a modal (wired in journal.html):
    they're context you want occasionally, not on every day. #}
 <div class="flex gap-2 sm:-ml-5 sm:gap-3">
@@ -121,13 +120,21 @@
     <p class="text-[10px] uppercase tracking-widest text-gray-400">Intake</p>
     {% if n['items'] %}
     <p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">
-      {%- for item in n['items'] %}
-        {%- set head, _, tail = item.partition(' ') -%}
+      {%- for it in n['items'] %}
+        {# A tapped top-up has no text of its own, so name it from what it carries:
+           "16oz water", "1 drink". Anything logged in chat has real text. #}
+        {%- if it.text %}{% set label = it.text %}
+        {%- elif it.get('water_oz') %}{% set label = (it.water_oz | num) ~ 'oz water' %}
+        {%- elif it.get('standard_drinks') %}{% set label = (it.standard_drinks | num) ~ ' drink' ~ ('' if it.standard_drinks == 1 else 's') %}
+        {%- else %}{% set label = '' %}{% endif -%}
+        {%- if label -%}
+        {%- set head, _, tail = label.partition(' ') -%}
         {%- if not loop.first %} {% endif -%}
-        {# ml-1 on every item but the first widens the gap between one food and the
+        {# ml-1 on every item but the first widens the gap between one item and the
            next index, so the run reads as a list rather than a sentence. #}
         <span class="whitespace-nowrap{{ '' if loop.first else ' ml-1' }}">{{ index_circle(loop.index) }}{{ head }}</span>
         {{- ' ' ~ tail if tail else '' -}}
+        {%- endif -%}
       {%- endfor %}
     </p>
     {% endif %}

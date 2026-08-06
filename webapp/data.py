@@ -264,39 +264,48 @@ NUTRIENT_TARGETS = {
 
 
 def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
-    """Hang each day's eating section onto the feed's day blocks, in place.
+    """Hang each day's intake — its items and their summed totals — onto the feed's
+    day blocks, in place.
 
-    A day gets a `nutrition` dict (summary, notes, and whichever nutrients were
-    actually estimated) only when one was logged — days with none carry nothing,
-    so the template can just test truthiness and the block stays absent rather
-    than rendering an empty "Eating —". This is the ONLY intake attach now: alcohol
-    and water are nutrients on this row, so the old, separate `_attach_drinks` is
-    gone. A day with intake but no entries is inserted inside the loaded window so
-    it's still reachable, and a kind-filtered feed skips those insertions.
+    A day gets a `nutrition` dict only when something was logged; days with none carry
+    nothing, so the template just tests truthiness. Totals are SUMMED here from the
+    item rows (server.intake_items) rather than read from a stored column: the sum is
+    the only version that can't drift from the items shown beside it. A nutrient no
+    item carries is absent, not 0 — "unestimated" is a different fact from zero.
 
-    Also splits `summary` back into the `items` it was built from: log_food appends
-    each new food with "; " (server._merge_notes), so splitting on that separator
-    recovers one entry per thing eaten, which the feed renders as a numbered list."""
-    cols = ("summary", "notes", *server.NUTRIENTS)
+    A day with intake but no entries is inserted inside the loaded window so it's still
+    reachable, and a kind-filtered feed skips those insertions."""
     with server.db() as conn:
         rows = conn.execute(
-            "SELECT food_date, " + ", ".join(cols) + " FROM nutrition "
+            "SELECT * FROM intake_items "
             + ("WHERE food_date >= ? " if floor else "")
-            + "ORDER BY food_date",
+            + "ORDER BY food_date, position, id",
             (floor,) if floor else (),
         ).fetchall()
-    by_date = {}
+    by_date: dict = {}
     for r in rows:
-        n = {c: r[c] for c in cols if r[c] is not None}
-        n["items"] = [s.strip() for s in (n.get("summary") or "").split("; ") if s.strip()]
-        by_date[r["food_date"]] = n
+        by_date.setdefault(r["food_date"], []).append(r)
+    built = {}
+    for d, items in by_date.items():
+        n = {m: round(sum(x[m] for x in items if x[m] is not None), 1)
+             for m in server.NUTRIENTS
+             if any(x[m] is not None for x in items)}
+        n["items"] = [
+            {"id": r["id"], "text": r["item"], "note": r["note"],
+             # Which nutrients this item carries — lets the stepper list just the
+             # water (or drink) items when you tap that ring.
+             **{m: r[m] for m in server.NUTRIENTS if r[m] is not None}}
+            for r in items
+        ]
+        n["notes"] = "; ".join(r["note"] for r in items if r["note"]) or None
+        built[d] = n
     for day in days:
-        n = by_date.pop(day["date"], None)
+        n = built.pop(day["date"], None)
         if n:
             day["nutrition"] = n
-    if not bare_days or not by_date:
+    if not bare_days or not built:
         return
-    for d, n in by_date.items():
+    for d, n in built.items():
         days.append({"date": d, "entries": [], "nutrition": n})
     days.sort(key=lambda x: x["date"], reverse=True)
 

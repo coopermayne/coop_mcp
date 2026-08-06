@@ -242,52 +242,59 @@ working.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
-- `drinks` — LEGACY, dormant. Alcohol moved onto the `nutrition` row (see below);
+- `drinks` — LEGACY, dormant. Alcohol is an intake item now (see `intake_items`);
   this table and `server.log_drinks`/`get_drink_summary`/`update_drink` are kept only
   as the fold-in migration's source and the one copy of the per-day `kind`
-  ("beer, wine"), which nutrition has no column for. Nothing reads it any more.
-- `nutrition` — the INTAKE log: food, alcohol and water, one row per day (`food_date`
-  unique). A day's intake is ONE section, deliberately not a list of meal/food-item
-  rows, because food gets described in passing prose and per-item logging is more
-  bookkeeping than it's worth. Alcohol (`standard_drinks`) and water (`water_oz`) are
-  columns here rather than tables of their own — they're daily intake numbers with
-  targets, exactly like the macros, so ONE shape carries all three and NULL-vs-0 does
-  the unlogged-vs-confirmed-none work natively (what the old `drinks` table needed a
-  row-exists trick for). `summary` is the running text of what was
-  eaten — `log_food` APPENDS to it (and ADDS any macros passed), `update_nutrition`
-  (keyed by DATE, since a day has one row) sets absolutes for corrections. The numeric
-  columns (`NUTRIENTS` — calories, protein/carbs/fat, plus `sodium_mg`, `fiber_g`,
-  `standard_drinks` and `water_oz`, which aren't macros but are tracked against daily
-  targets) are OPTIONAL and stay NULL
-  until someone fills them in, so a day described only in words is "unestimated", never
-  a zero-calorie day — `get_nutrition`'s averages are taken over the days that actually
-  carry each nutrient, so each average has its OWN denominator (returned alongside
-  `logged_days` so the model can see how much of the window a number covers). The
-  `NUTRIENTS` tuple drives every accumulate/average/render site, so adding another
-  nutrient is one tuple entry + an `ALTER TABLE` in `init_db` + a unit label in
-  `macros.eating_block`. Same split as everywhere: turning "a chipotle bowl" into calories is
-  the MODEL's estimate, made in conversation; there is no food database or lookup in the
-  server. The webapp shows a day's section under its entries on the journal feed
-  (`data._attach_nutrition` + `macros.eating_block`), read-only — writes come through
-  chat/MCP — EXCEPT alcohol and water, whose rings are tappable and open the stepper
-  modal (`POST /drinking/day` → `server.set_day_nutrient`, one column, absolute value;
-  Clear sets it back to NULL and drops the row if that empties it). Those two always
-  render, dashed when unlogged, since they're topped up through the day and need a tap
-  target before the first log; a day with NO intake row at all still shows the ghosted
-  glass on its header (`macros.drink_counter`) as the way in. Each nutrient renders as a ring with
-  BOTH the figure (unit included: "1400mg") and a short label ("sod") inside it
-  (`macros.nutrient_ring`), read against
-  `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY webapp constant, the `DRINK_LIMIT` pattern:
-  the server stores no goals, so targets never enter the DB or a tool return. A
-  `ceiling` target (sodium, calories, alcohol) turns the ring clay once passed; a floor one
-  (protein, carbs, fiber, water) doesn't, and an untargeted nutrient (fat) draws a
-  DASHED track with no arc — an empty solid ring would read as "0% of goal" rather than "no
-  goal set". `summary` renders as a NUMBERED list,
-  not the raw string: `_attach_nutrition` splits it back on the "; " that log_food
-  joined with, recovering one item per thing eaten (they flow inline, each index
-  glued to its item's first word so a wrap can't strand it). The day's `notes` aren't
-  shown inline — a circled "i" (`macros.note_button`) at the end of the nutrient row
-  carries the text and opens the display-only modal in `journal.html`.
+  ("beer, wine"), which the item rows have no column for. Nothing reads it.
+- `intake_items` — the INTAKE log: **one row per thing consumed**. A sandwich is a
+  row, a beer is a row, a 12oz glass of water is a row — food, alcohol and water are
+  the same kind of fact, so they share one table, one tool path, and one set of
+  columns. There is no per-nutrient special case anywhere above this table.
+  `log_food` inserts ONE item (the model calls it once per thing; `position` is the
+  server-assigned order within the day, the same append as entries' `day_position`);
+  `update_intake_item` edits one by id; `delete_record(kind="intake_item")` removes
+  one.
+  **Day totals are DERIVED, never stored** (`SUM ... GROUP BY food_date`). That's the
+  load-bearing decision: a stored total drifts from the items it claims to summarize,
+  and correcting one item would mean re-deriving the day by hand — i.e. asking an LLM
+  to do arithmetic. With sums, "that bowl was 600, not 1100" is one UPDATE and every
+  total follows. The nutrient columns (`NUTRIENTS` — calories, protein/carbs/fat,
+  `sodium_mg`, `fiber_g`, `standard_drinks`, `water_oz`) are per-item and OPTIONAL,
+  staying NULL until filled in, so a day described only in words is "unestimated",
+  never a zero-calorie day; a nutrient no item carries is ABSENT from the day's
+  totals rather than 0. `get_nutrition`'s averages are per nutrient over the days
+  that carry it, so each has its OWN denominator (returned with `logged_days`). The
+  `NUTRIENTS` tuple drives every sum/average/render site, so adding a nutrient is one
+  tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
+  Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
+  estimate, made in conversation; there is no food database in the server.
+  The webapp shows a day's items and its summed rings under that day's entries on the
+  journal feed (`data._attach_nutrition` + `macros.eating_block`). Read-only —
+  EXCEPT the water and alcohol rings, which are tappable and open the quick-add:
+  `POST /intake/add` logs ANOTHER ITEM through `server.log_food` (the same row chat
+  would create — the UI has no privileged "set the day total" path, because no such
+  total exists), and the modal lists that day's items for the nutrient each with an ×
+  (`POST /intake/delete`). Those two always render, dashed when unlogged, since
+  they're topped up through the day and need a tap target before the first log; a day
+  with nothing logged still shows the ghosted glass on its header
+  (`macros.drink_counter`) as the way in. Each nutrient renders as a ring with BOTH
+  its summed figure (unit included: "1400mg") and a short label ("sod") inside it
+  (`macros.nutrient_ring`), read against `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY
+  webapp constant, the `DRINK_LIMIT` pattern: the server stores no goals, so targets
+  never enter the DB or a tool return. A `ceiling` target (sodium, calories, alcohol)
+  turns the ring clay once passed; a floor one (protein, carbs, fiber, water)
+  doesn't, and an untargeted nutrient (fat) draws a DASHED track with no arc — an
+  empty solid ring would read as "0% of goal" rather than "no goal set". Items render
+  as a NUMBERED list flowing inline, each index glued to its item's first word so a
+  wrap can't strand it; a tapped top-up has no text, so it's named from what it
+  carries ("16oz water"). Item notes aren't shown inline — a circled "i"
+  (`macros.note_button`) at the end of the ring row carries them and opens the
+  display-only modal in `journal.html`.
+- `nutrition` — LEGACY, dormant. The first shape of the intake log: one row per day,
+  with a "; "-joined summary string and stored day totals. Superseded by
+  `intake_items` (see above) because a stored total can't be corrected without
+  arithmetic. Its rows fold into `intake_items` once, one item per day, on the first
+  `init_db` after this change; the table is kept, not dropped.
 - `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
   `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
   `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's
