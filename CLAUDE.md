@@ -102,7 +102,31 @@ There is no exercise-selection or progression logic in the server either.
   image.
 - **Tool docstrings are the model-facing contract.** Claude reads them to decide when to
   ask vs. link vs. queue (e.g. the score thresholds). If you change a tool's behavior,
-  update its docstring in the same edit — it's not just documentation.
+  update its docstring in the same edit — it's not just documentation. Two things split
+  off from the prose, though, and shouldn't drift back into it:
+  - **STRUCTURE lives in the schema, not the docstring.** The nested payloads
+    (`MentionLink`, `LoggedExercise`/`LoggedSet`, `PlannedExercise`/`PlannedSet`) are
+    TypedDicts, so FastMCP emits real nested JSON Schema and a typo'd or mistyped key is
+    rejected by the CLIENT with the exact field path — instead of, as before, sailing
+    through a `list[dict]` and silently no-op'ing in the loop. Docstrings describe
+    JUDGMENT (what a good target is, when to split an entry); the schema describes shape.
+    Add a field to a payload = add it to the TypedDict, not to the prose. The one
+    deliberate exception is `update_contact`'s blob, which stays free-form `dict`: it's
+    extensible by design, and a TypedDict would emit `additionalProperties: false`.
+    Value-RANGE checks (rpe 1-10, no negative reps) stay in `_bad_set` — JSON Schema
+    bounds wouldn't produce the actionable error text the model needs.
+  - **Each rule is stated ONCE, in its owner.** Server `instructions` hold cross-tool
+    policy (the three capture rules, Pacific dates, the rotation policy, the signed-weight
+    convention); a tool's docstring holds its own mechanics. Where both wanted to say it,
+    the other side now points at the owner rather than restating it — restating is how
+    the two drift apart.
+- **Tool annotations are declared, not defaulted.** Every tool carries one of four
+  annotation sets — `READ_ONLY`, `WRITE`, `WRITE_IDEMPOTENT`, `DESTRUCTIVE` — so a client
+  can tell `get_briefing` from `delete_record` without reading prose. This matters because
+  the MCP default for `destructiveHint` is TRUE: an unannotated tool looks dangerous.
+  `openWorldHint` is False everywhere (one local SQLite file, no network — the no-LLM rule
+  showing up in the protocol). They're advisory metadata; the real guard is
+  `AllowlistMiddleware`.
 
 ## Files
 
@@ -238,7 +262,12 @@ working.
   the server — it just stores the flag). Thoughts stay in the journal feed and FTS, but
   are EXCLUDED from per-person views (`get_person_history`, `get_related_people`) so the
   CRM spine stays a record of real interactions. The webapp `/journal` feed filters on
-  it (All / Thoughts / Log via `?kind=`). FTS5 mirror `entries_fts`.
+  it (All / Thoughts / Log via `?kind=`). FTS5 mirror `entries_fts`. `search_entries`
+  does NOT hand the model's words straight to `MATCH` — FTS5 parses that as query
+  SYNTAX, so an apostrophe or a `?` ("Tom's", "how was my week?") is a syntax error,
+  not a search. `_fts_query` tokenizes and quotes each term into a literal (terms
+  ANDed); `raw_query=True` opts back into real FTS5 syntax (OR/NEAR/prefix*) and
+  returns any syntax error as a correctable `{"error": …}` rather than raising.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
@@ -332,7 +361,7 @@ working.
   never a FastMCP tool, so the journal/trainer servers still can't grow the catalog; only
   the authenticated user, through the website, can. The model-facing `save_exercise` only
   *enriches* existing rows or toggles `in_rotation`.
-  `exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
+  `find_exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
   mechanic). **Archiving** (`archived=1`) is a SOFT delete — the library page's "remove"
   control (`server.set_archived`, another NON-tool, website-only path; it also clears
   `in_rotation`). An archived movement is invisible everywhere the catalog is *discovered*

@@ -28,6 +28,9 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import jellyfish
+# typing_extensions, NOT typing: pydantic (which generates the tool schemas) refuses a
+# typing.TypedDict on Python < 3.12, and the local venv is 3.11 while the image is 3.12.
+from typing_extensions import NotRequired, TypedDict
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token
@@ -41,6 +44,99 @@ ALLOWED_EMAILS = {
     for e in os.environ.get("JOURNAL_ALLOWED_EMAILS", "").split(",")
     if e.strip()
 }
+
+
+# --------------------------------------------------------------------------- #
+# Tool payload shapes
+#
+# The nested arguments a few tools take (a batch of mention links, a workout's
+# exercises and their sets) are declared as TypedDicts rather than bare `dict`, so
+# FastMCP generates a REAL nested JSON Schema for them instead of an opaque
+# {"type": "object"}. That moves the shape out of prose and into the contract: the
+# client validates key names and types before the call is made, a typo'd or missing
+# field is caught there rather than silently no-op'ing in the loop below, and the
+# docstrings no longer have to spell out every field (they describe judgment —
+# what a good target is — while the schema describes structure).
+#
+# NotRequired marks the genuinely optional keys. These are structural types only;
+# VALUE-range checks (rpe 1-10, no negative reps) stay in _bad_set, since JSON
+# Schema bounds wouldn't produce the actionable error text the model needs.
+#
+# Deliberately NOT typed: update_contact's `contact` blob. It's free-form by
+# design (arbitrary top-level keys — emails, phones, addresses, websites, whatever
+# comes up — shallow-merged), and a TypedDict would emit additionalProperties:false
+# and reject exactly the extensibility that's the point of that column.
+# --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+# Tool annotations
+#
+# MCP behavior hints, so a client can tell a lookup from a deletion WITHOUT reading
+# the docstring — that's what drives whether it asks the user before running a call.
+# Every tool declares one of these four; without them a spec-following client must
+# assume the worst (destructiveHint defaults to TRUE), so `get_briefing` and
+# `delete_record` would look equally dangerous.
+#
+# openWorldHint is False everywhere: this server touches one local SQLite file and
+# nothing else — no network, no external service. That's the architectural no-LLM
+# rule showing up in the protocol.
+#
+# NOTE: hints are advisory metadata, NOT enforcement. The real guard is
+# AllowlistMiddleware; nothing here restricts what a tool can do.
+# --------------------------------------------------------------------------- #
+
+READ_ONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
+# A write whose repeat CHANGES things — calling it twice logs two entries.
+WRITE = {"destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+# A write that settles on a value — calling it twice leaves the same state.
+WRITE_IDEMPOTENT = {"destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+# Removes or overwrites data that can't be recovered from the call itself.
+DESTRUCTIVE = {"destructiveHint": True, "idempotentHint": True, "openWorldHint": False}
+
+
+class MentionLink(TypedDict):
+    """One resolution in a link_mentions batch: pin a mention to a person, or drop it."""
+    mention_id: int
+    person_id: NotRequired[int]
+    learn_alias: NotRequired[bool]
+    dismiss: NotRequired[bool]
+
+
+class LoggedSet(TypedDict):
+    """One set that was actually performed. Lifts use weight_lbs/reps; cardio uses
+    duration_seconds/distance_miles. weight_lbs is SIGNED (negative = assisted)."""
+    weight_lbs: NotRequired[Optional[float]]
+    reps: NotRequired[Optional[int]]
+    rpe: NotRequired[Optional[float]]
+    duration_seconds: NotRequired[Optional[int]]
+    distance_miles: NotRequired[Optional[float]]
+    note: NotRequired[Optional[str]]
+
+
+class LoggedExercise(TypedDict):
+    """One exercise of a completed session: a catalog name plus the sets performed."""
+    name: str
+    sets: NotRequired[list[LoggedSet]]
+
+
+class PlannedSet(TypedDict):
+    """One PROGRAMMED set — the targets the user works toward, actuals filled in later
+    by complete_set."""
+    target_weight_lbs: NotRequired[Optional[float]]
+    target_reps: NotRequired[Optional[int]]
+    target_rpe: NotRequired[Optional[float]]
+    note: NotRequired[Optional[str]]
+
+
+class PlannedExercise(TypedDict):
+    """One exercise in a plan. Either give an explicit `sets` list, or use the
+    shorthand `set_count` (+ the target_* fields) to expand N identical sets."""
+    name: str
+    sets: NotRequired[list[PlannedSet]]
+    set_count: NotRequired[int]
+    target_weight_lbs: NotRequired[Optional[float]]
+    target_reps: NotRequired[Optional[int]]
+    target_rpe: NotRequired[Optional[float]]
 
 
 def _build_auth(public_url: Optional[str] = None):
@@ -101,27 +197,21 @@ group word itself as a mention); and one note per topic — split unrelated thre
 the same conversation into separate entries so their people don't cross-contaminate
 later lookups.
 
-A day's entries display in the order saved, but people recount a day out of sequence.
-After capturing (or adding to) a day whose entries aren't in the order events happened,
-call reorder_entries to put that day in chronological order — and use it whenever the
-user asks to move an entry earlier/later within its day.
+Two habits that keep the log worth having, each owned by the tool that does it —
+its docstring has the details, so follow them there rather than improvising:
+  - ORDER: entries append in the order you save them, but people recount a day out of
+    sequence. Finish a day with reorder_entries when the save order isn't the order
+    things happened.
+  - PROFILES: each person's `summary` is their rolling profile of durable KEY FACTS —
+    and, since there is no relationship graph, the ONLY place relationships live.
+    Update it AT LINK TIME (see link_mentions); nothing does it automatically. Lean on
+    these summaries — get_briefing surfaces them — to resolve relational references
+    like "her parents" or "his brother" to the right people.
 
-Every entry has a `kind`: "log" (the default — a record of an interaction, event, or
-fact about someone) or "thought" (a personal reflection/musing not anchored to a
-specific interaction). Classify each entry as you capture it; thoughts stay in the
-journal feed but are kept out of per-person history. See add_journal_entry for how to
-tell them apart.
-
-Each person's `summary` is their rolling profile — the durable KEY FACTS about them:
-relationships (parents, partner/spouse, kids, siblings, BY NAME — there is no
-relationship graph, so this is the only place they live), employment, school,
-birthday/fixed dates, where they live, major life events. Keep it current AT LINK
-TIME: whenever you link a mention to a person, check whether the entry revealed a
-new key fact and, if so, fold it in (read-before-write via get_person_history, then
-save_person) — nothing updates summaries automatically. Lean on these summaries
-(get_briefing surfaces them) to resolve relational references like "her parents" or
-"his brother" to the right people. Keep them a compact profile of stable facts, not a
-diary.
+Every entry is classified `kind`: "log" (an interaction/event/fact — the default) or
+"thought" (a personal reflection). Thoughts stay in the feed and in search but are kept
+out of per-person history, so the CRM view stays real interactions. add_journal_entry
+tells them apart.
 
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
 on Pacific time. get_briefing returns `now` (current Pacific date/time) with
@@ -129,12 +219,10 @@ on Pacific time. get_briefing returns `now` (current Pacific date/time) with
 "yesterday"/"tomorrow" rather than computing or shifting dates yourself, and resolve
 any bare day reference against them before defaulting or saving.
 
-Intake is its own log, not a journal entry: when the user mentions eating or
-drinking, call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls) —
-instead of, or as well as, writing an entry about it. Food, alcohol and water are all
-items; nutrient numbers are optional, so estimate them when the user wants numbers
-and otherwise just record what it was. Corrections go through update_intake_item by
-id: the day's totals are summed from the items, so you never recompute a day.
+Intake is its own log, not a journal entry: when the user mentions eating or drinking,
+call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls) — instead of, or
+as well as, writing an entry about it. Corrections go through update_intake_item by id;
+day totals are summed from the items, so you never recompute a day yourself.
 
 Start a session with get_briefing to load people/journal context before acting.
 (Workouts/training live on a separate `trainer` MCP server.)""")
@@ -203,11 +291,11 @@ The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROT
     free-exercise-db (via scripts/import_exercises.py), each carrying muscles, equipment,
     a demo image, and step-by-step technique. It's a reference the user searches/browses
     at /trainer/library. Almost any movement you mention is already here with full data —
-    look it up with `exercises` rather than re-deriving it.
+    look it up with `find_exercises` rather than re-deriving it.
   - HEARTED SUPERSET (hearted): the user's bench of FAVORITE movements — a curated shortlist
     bigger than the rotation. It's where the rotation is drawn from: every few months the
     user swaps some of the rotation out for other hearted lifts. List it with
-    exercises(hearted_only=True); add/remove with set_hearted. Heart a movement the user
+    find_exercises(hearted_only=True); add/remove with set_hearted. Heart a movement the user
     likes even when it's not currently programmed, so it's on the bench for the next swap.
   - ROTATION: the small subset (in_rotation, the user keeps it to ~10-14) they're ACTIVELY
     training, so progress on each lift is easy to track. The rotation is DELIBERATELY small and
@@ -221,7 +309,7 @@ The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROT
     vague "sounds good" about the workout is NOT permission to grow the rotation — ask
     plainly). Prefer working with what's already there; if you must propose an addition, pull
     from the hearted superset first (surface candidates from the wider library with
-    exercises(muscle=…)). Adding to the rotation hearts it too. Logging a movement the user
+    find_exercises(muscle=…)). Adding to the rotation hearts it too. Logging a movement the user
     actually did hearts it automatically (onto the favorites bench) but does NOT add it to the
     rotation — the rotation only ever grows on an explicit set_rotation request or via the
     website, so it stays exactly the size the user chose; when it does drift past ~14 (e.g.
@@ -910,7 +998,7 @@ def _next_day_position(conn, entry_date: str) -> int:
     return n + 1
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def add_journal_entry(body: str, raw_body: Optional[str] = None,
                       mentions: Optional[list[str]] = None,
                       entry_date: Optional[str] = None,
@@ -947,15 +1035,11 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     split only genuinely separate events/threads. The entries are independent —
     there is no shared conversation id and they aren't cross-linked.
 
-    CHRONOLOGICAL ORDER. Each new entry is appended to the END of its day, so a day's
-    entries display in the order you SAVE them. People recount a day out of order (the
-    evening phone call mentioned last actually happened mid-afternoon). When you capture
-    several entries for one day — or add an entry to a day that already has some — and
-    they aren't in the order the events actually happened, finish by calling
-    reorder_entries(entry_date, [ids earliest-first]) so the day reads chronologically.
-    Make your best guess at the timeline from context; if the user is explicit ("put the
-    gym before dinner"), follow that. Skip the reorder call when the save order already
-    matches the timeline.
+    CHRONOLOGICAL ORDER. This APPENDS to the end of its day, so a day reads in the
+    order you SAVE — and people recount a day out of order (the evening phone call
+    mentioned last actually happened mid-afternoon). After capturing several entries
+    for one day, or adding to a day that already has some, call reorder_entries to lay
+    the day out chronologically. Skip it when the save order already matches.
 
     Write `body` as a clean, structured, concise journal entry in MARKDOWN:
     organize the free-association into readable prose, keep the substance and the
@@ -993,11 +1077,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
       - No candidate >= 0.6: likely a new person. Ask, then save_person (no
         person_id) and link — or leave it pending if the user says they'll explain
         later.
-    Whenever you link, also keep that person's profile current: if the entry
-    revealed a durable KEY FACT about them (a relationship, employment, school,
-    birthday, where they live, a major life event), fold it into their summary
-    (read-before-write via get_person_history) — see link_mentions. Skip transient
-    details; the summary is a profile, not a log.
+    Whenever you link, also keep that person's summary current — see link_mentions,
+    which owns that rule.
 
     Args:
         body: The cleaned journal entry, written as Markdown (paragraphs split by
@@ -1040,8 +1121,8 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
             "mentions": results}
 
 
-@mcp.tool()
-def link_mentions(links: list[dict]) -> dict:
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+def link_mentions(links: list[MentionLink]) -> dict:
     """Resolve pending mentions to people.
 
     KEEP THE PROFILE CURRENT. Whenever you link a mention, glance at that person's
@@ -1056,15 +1137,14 @@ def link_mentions(links: list[dict]) -> dict:
     updates them automatically.
 
     Args:
-        links: list of {"mention_id": int, "person_id": int, "learn_alias": bool,
-            "dismiss": bool}.
-            Set learn_alias True to store the mention's surface form as an alias on
-            that person, so the same word (including a recurring transcription
-            error) auto-matches next time.
-            Set "dismiss": True (instead of a person_id) to DROP a mention that
-            shouldn't resolve to anyone — a bare group word that slipped in, or
-            transcription noise. The mention leaves the pending queue for good;
-            the entry itself is untouched.
+        links: One entry per mention you're resolving.
+            `learn_alias` stores the mention's surface form as an alias on that
+            person, so the same word (including a recurring transcription error)
+            auto-matches next time — set it whenever the form wasn't already exact.
+            `dismiss` (instead of a person_id) DROPS a mention that shouldn't
+            resolve to anyone — a bare group word that slipped in, or transcription
+            noise. The mention leaves the pending queue for good; the entry itself
+            is untouched.
     """
     linked, dismissed, skipped = [], [], []
     with db() as conn:
@@ -1156,7 +1236,7 @@ def dismiss_mention_web(mention_id: int) -> dict:
     return {"ok": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] = None,
                 role: Optional[str] = None, notes: Optional[str] = None,
                 summary: Optional[str] = None,
@@ -1237,7 +1317,7 @@ def save_person(person_id: Optional[int] = None, canonical_name: Optional[str] =
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_contact(person_id: int, contact: dict) -> dict:
     """Merge contact details into a person's CONTACT blob (free-form JSON) and return
     the merged result. This is the home for everything vCard-ish — emails, phones,
@@ -1270,7 +1350,7 @@ def update_contact(person_id: int, contact: dict) -> dict:
     return {"person_id": person_id, "contact": current}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_pending_mentions(limit: int = 50) -> dict:
     """The resolution queue: mentions the user hasn't pinned to a person yet.
     Each comes with its context snippet and fresh candidate matches so you can
@@ -1295,7 +1375,7 @@ def list_pending_mentions(limit: int = 50) -> dict:
     return {"pending": out, "count": len(out)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_people(query: Optional[str] = None,
                 group: Optional[str] = None) -> dict:
     """Compact registry of known people (id, name, role, groups, alias count,
@@ -1326,7 +1406,7 @@ def list_people(query: Optional[str] = None,
     return {"people": people, "count": len(people)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_person_history(person_id: int, limit: int = 50,
                        since: Optional[str] = None,
                        max_chars: int = 600) -> dict:
@@ -1375,17 +1455,33 @@ def get_person_history(person_id: int, limit: int = 50,
             "aliases": aliases, "entries": entries, "count": len(entries)}
 
 
-@mcp.tool()
-def search_entries(query: str, limit: int = 20, max_chars: int = 400) -> dict:
+@mcp.tool(annotations=READ_ONLY)
+def search_entries(query: str, limit: int = 20, max_chars: int = 400,
+                   raw_query: bool = False) -> dict:
     """Full-text search over entry bodies (FTS5). Use for topics/events, not for
-    people — use get_person_history for people."""
+    people — use get_person_history for people.
+
+    Pass `query` as PLAIN WORDS ("chipotle bowl", "Tom's birthday"). It's tokenized
+    and each term is quoted before it reaches FTS5, so apostrophes, question marks
+    and stray punctuation are safe and every term must appear (AND). Set
+    `raw_query=True` to pass FTS5 syntax through verbatim instead — for OR, NEAR(),
+    prefix* or "quoted phrases"; a syntax error then comes back as an error you can
+    correct rather than a crash."""
+    match = query if raw_query else _fts_query(query)
+    if not match.strip():
+        return {"results": [], "count": 0,
+                "note": f"no searchable terms in {query!r}"}
     with db() as conn:
-        rows = conn.execute(
-            """SELECT e.id, e.entry_date, e.body, e.kind
-               FROM entries_fts f JOIN entries e ON e.id = f.rowid
-               WHERE entries_fts MATCH ? ORDER BY rank LIMIT ?""",
-            (query, limit),
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                """SELECT e.id, e.entry_date, e.body, e.kind
+                   FROM entries_fts f JOIN entries e ON e.id = f.rowid
+                   WHERE entries_fts MATCH ? ORDER BY rank LIMIT ?""",
+                (match, limit),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            return {"error": f"invalid FTS5 search syntax in {match!r}: {exc}. "
+                             "Retry with plain words and raw_query=False."}
     return {"results": [
         {"entry_id": r["id"], "entry_date": r["entry_date"], "kind": r["kind"],
          "body": _truncate(r["body"], max_chars)} for r in rows
@@ -1395,6 +1491,24 @@ def search_entries(query: str, limit: int = 20, max_chars: int = 400) -> dict:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def _fts_query(q: str) -> str:
+    """Turn a natural-language query into a safe FTS5 MATCH expression.
+
+    FTS5 parses MATCH as *query syntax*, so the punctuation ordinary phrasing carries
+    is a syntax ERROR, not a search: "Tom's" trips on the apostrophe, "how was my
+    week?" on the '?', a lone "AND" on the dangling operator. Handing the model's
+    words straight to MATCH therefore raises OperationalError on completely reasonable
+    searches. So: split out word characters (keeping apostrophes inside a token) and
+    wrap each token in double quotes, which makes it a literal FTS5 phrase — every
+    operator and every piece of punctuation stops being syntax. Nothing needs
+    escaping, because the one character that IS special inside a double-quoted FTS5
+    string is the double quote, and the token pattern can't produce one. Terms are
+    ANDed, FTS5's default. Callers wanting real FTS5 syntax (OR, NEAR, prefix*) opt
+    out via search_entries(raw_query=True).
+    """
+    return " ".join(f'"{t}"' for t in re.findall(r"[\w']+", q or ""))
+
 
 def _snippet(body: str, surface: str, window: int = 60) -> str:
     i = body.lower().find(surface.lower())
@@ -1443,7 +1557,7 @@ def _get_contact(conn: sqlite3.Connection, person_id: int) -> dict:
     return v if isinstance(v, dict) else {}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_entry(entry_id: int, include_raw: bool = True) -> dict:
     """Fetch one full entry. Set include_raw to also return the verbatim original
     (raw_body) — the hidden fallback record kept in case the cleaned version
@@ -1463,7 +1577,7 @@ def get_entry(entry_id: int, include_raw: bool = True) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_entry(entry_id: int, entry_date: Optional[str] = None,
                  body: Optional[str] = None, raw_body: Optional[str] = None,
                  mentions: Optional[list[str]] = None,
@@ -1553,7 +1667,7 @@ def update_entry(entry_id: int, entry_date: Optional[str] = None,
         return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def reorder_entries(entry_date: str, ordered_entry_ids: list[int]) -> dict:
     """Set the chronological order of a day's entries — the order they read top-to-bottom
     in the journal (earliest event first).
@@ -1623,7 +1737,7 @@ def _delete_record(kind: str, id: int) -> dict:
     return {"kind": kind, "id": id, "deleted": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_record(kind: str, id: int) -> dict:
     """Permanently delete one journal-side record. Irreversible — confirm first.
 
@@ -1640,7 +1754,7 @@ def delete_record(kind: str, id: int) -> dict:
     return _delete_record(kind, id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def merge_people(survivor_person_id: int, loser_person_id: int) -> dict:
     """Merge two person records that turn out to be the same human — e.g. if "Tom"
     and "Tom Smith" were created before they were linked. All of the loser's
@@ -1709,7 +1823,7 @@ def merge_people(survivor_person_id: int, loser_person_id: int) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_related_people(person_id: int, limit: int = 10) -> dict:
     """Emergent network: people most often mentioned in the same entries as this
     person, ranked by shared-entry count. No tagging required — this is derived
@@ -1733,7 +1847,7 @@ def get_related_people(person_id: int, limit: int = 10) -> dict:
     ]}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_briefing(recent_entries: int = 5, recent_days: Optional[int] = None) -> dict:
     """One-call session context. Returns the people roster (id, name, role, groups,
     short summary), the pending-mention count, the list of groups, and the most
@@ -2233,7 +2347,7 @@ def _day_totals(rows) -> dict:
     return totals
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE)
 def log_intake(item: str = "", food_date: Optional[str] = None,
              calories: Optional[float] = None, protein_g: Optional[float] = None,
              carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
@@ -2313,7 +2427,7 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     return {**_item_row(row), "day_totals": _day_totals(rows)}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_intake(days: int = 14, since: Optional[str] = None,
                   until: Optional[str] = None, include_items: bool = True) -> dict:
     """Read the intake log back: per day, its items (with ids) and summed totals.
@@ -2371,7 +2485,7 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_intake_item(item_id: int, item: Optional[str] = None,
                        food_date: Optional[str] = None,
                        calories: Optional[float] = None, protein_g: Optional[float] = None,
@@ -2513,7 +2627,7 @@ def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
                        + (["aka"] if aliases is not None else [])}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
                   category: Optional[str] = None, equipment: Optional[str] = None,
                   muscles: Optional[list[str]] = None,
@@ -2648,7 +2762,7 @@ def set_archived(exercise_id: int, archived: bool = True) -> dict:
     return {"exercise_id": row["id"], "name": row["name"], "archived": bool(archived)}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
                  in_rotation: bool = True) -> dict:
     """Add an exercise to (or remove it from) the user's ROTATION — the small curated pool
@@ -2688,7 +2802,7 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
             "in_rotation": bool(cur["in_rotation"]), "hearted": bool(cur["hearted"])}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def set_hearted(name: Optional[str] = None, exercise_id: Optional[int] = None,
                 hearted: bool = True) -> dict:
     """Add an exercise to (or remove it from) the user's HEARTED superset — their bench of
@@ -2723,12 +2837,12 @@ def set_hearted(name: Optional[str] = None, exercise_id: Optional[int] = None,
             "in_rotation": bool(cur["in_rotation"]), "hearted": bool(cur["hearted"])}
 
 
-@trainer_mcp.tool()
-def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
-              muscle: Optional[str] = None, equipment: Optional[str] = None,
-              category: Optional[str] = None, rotation_only: bool = False,
-              hearted_only: bool = False,
-              similar_to: Optional[str] = None) -> dict:
+@trainer_mcp.tool(annotations=READ_ONLY)
+def find_exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                   muscle: Optional[str] = None, equipment: Optional[str] = None,
+                   category: Optional[str] = None, rotation_only: bool = False,
+                   hearted_only: bool = False,
+                   similar_to: Optional[str] = None) -> dict:
     """Read the exercise catalog — one full record, a filtered list, or swap peers.
 
     ONE record — pass `name` or `exercise_id` to get a movement in full: muscle emphasis
@@ -2820,8 +2934,8 @@ def exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
 # Trainer: logging + retrieval
 # --------------------------------------------------------------------------- #
 
-@trainer_mcp.tool()
-def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
+@trainer_mcp.tool(annotations=WRITE)
+def log_workout(exercises: list[LoggedExercise], workout_date: Optional[str] = None,
                 focus: Optional[str] = None, feeling: Optional[str] = None,
                 notes: Optional[str] = None, workout_id: Optional[int] = None) -> dict:
     """Record a training session — the whole thing in one call, or set-by-set as it
@@ -2835,40 +2949,31 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     numbering per exercise. focus/feeling/notes on an append call are ignored — set
     them on the first call or with update_workout.
 
-    Each item in `exercises` is:
-        {
-          "name": "Leg Press",
-          "sets": [
-            {"weight_lbs": 180, "reps": 10, "rpe": 7, "note": ""},
-            {"weight_lbs": 180, "reps": 10, "rpe": 8},
-            {"weight_lbs": 180, "reps": 8,  "rpe": 9.5, "note": "last one was a grind"}
-          ]
-        }
+    A typical item is {"name": "Leg Press", "sets": [{"weight_lbs": 180, "reps": 10,
+    "rpe": 7}, {"weight_lbs": 180, "reps": 8, "rpe": 9.5, "note": "a grind"}]} — the
+    full field list is in the schema.
     Names resolve against the CLOSED catalog (fuzzily, so a near-spelling lands on the
     right lift). The model never invents an exercise: a name that doesn't match an
     existing one is SKIPPED and returned under `unmatched` with its closest `candidates`
     — re-log it under one of those, or have the user add the movement on the library page
     (the only way the catalog grows). The matched exercises still log (and get hearted onto
     the favorites bench — but are NOT added to the rotation, which grows only on an explicit
-    set_rotation request), so capture isn't lost. weight_lbs is null for cardio. For lifts it is
-    SIGNED added/removed load, not total: 0 (or null) = plain bodyweight, a positive
-    number = weight added (a +25 weighted pull-up, a dumbbell), and a NEGATIVE number =
-    assistance, the load a band/machine took OFF (an assisted pull-up at -20). So an
-    assisted→bodyweight→weighted progression is one number line climbing -20 → 0 → +20;
-    log the negatives as the user gives them and read the trend toward 0 as getting
-    stronger. rpe is 1-10 perceived exertion (10 = couldn't do another rep): it's how you
-    judge whether to add weight next time. Returns the logged exercises (with the
-    catalog's canonical names) and any `unmatched`.
+    set_rotation request), so capture isn't lost. weight_lbs follows the SIGNED
+    added/removed-load convention (see this server's instructions) and is null for cardio;
+    rpe is 1-10 perceived exertion (10 = couldn't do another rep), which is how you judge
+    whether to add weight next time. Returns the logged exercises (with the catalog's
+    canonical names) and any `unmatched`.
 
-    CARDIO (running, walking, rowing, cycling): log it as an exercise too — give it
-    `muscles: []` (so it's a true cardio entry, not counted in muscle recency) and
-    use a set per bout with `duration_seconds` and/or `distance_miles` instead of
+    CARDIO (running, walking, rowing, cycling): log it as an exercise too — pick the
+    cardio movement from the catalog (those rows carry no muscles, so they stay out of
+    muscle recency and are summarized as cardio instead) and use a set per bout with
+    `duration_seconds` and/or `distance_miles` instead of
     weight/reps. A 30-minute, 3.2-mile run is one set
     {"duration_seconds": 1800, "distance_miles": 3.2, "rpe": 6}. weight_lbs/reps stay
     null. Intervals can be one set each. Pass durations in SECONDS (25 min = 1500).
 
     Args:
-        exercises: The exercises performed, each with its sets (see shape above).
+        exercises: The exercises performed, each with the sets performed.
         workout_date: Day trained, YYYY-MM-DD. Defaults to today.
         focus: Session focus, e.g. "Legs", "Arms", "Cardio".
         feeling: Overall how it felt / energy / soreness.
@@ -2937,7 +3042,7 @@ def log_workout(exercises: list[dict], workout_date: Optional[str] = None,
     return out
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=READ_ONLY)
 def get_exercise_history(exercise_id: Optional[int] = None,
                          name: Optional[str] = None, limit: int = 10) -> dict:
     """Per-session performance for one exercise, newest first — the progressive-
@@ -2990,7 +3095,7 @@ def get_exercise_history(exercise_id: Optional[int] = None,
             "sessions": sessions[:limit], "count": min(len(sessions), limit)}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=READ_ONLY)
 def get_personal_records(exercise_id: Optional[int] = None,
                          name: Optional[str] = None) -> dict:
     """Personal bests for one exercise — the data layer for "have I ever done X?"
@@ -3054,7 +3159,7 @@ def get_personal_records(exercise_id: Optional[int] = None,
     return out
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
                    notes: Optional[str] = None,
@@ -3092,7 +3197,7 @@ def update_workout(workout_id: int, workout_date: Optional[str] = None,
     return {"workout_id": workout_id, "updated": list(sets)}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_set(set_id: int, weight_lbs: Optional[float] = None,
                reps: Optional[int] = None, rpe: Optional[float] = None,
                duration_seconds: Optional[int] = None,
@@ -3154,7 +3259,7 @@ def _active_workout(conn: sqlite3.Connection):
     ).fetchone()
 
 
-def _expand_planned_sets(ex: dict) -> list[dict]:
+def _expand_planned_sets(ex: PlannedExercise) -> list[dict]:
     """Normalize an exercise's planned sets. Accepts an explicit `sets` list of
     {target_weight_lbs?, target_reps?, note?}, or the shorthand
     {set_count, target_reps?, target_weight_lbs?} which expands to that many identical
@@ -3170,7 +3275,7 @@ def _expand_planned_sets(ex: dict) -> list[dict]:
     return []
 
 
-def _bad_planned(exercises: list[dict]) -> Optional[dict]:
+def _bad_planned(exercises: list[PlannedExercise]) -> Optional[dict]:
     """Validate the target numbers on every planned set, else None."""
     for ex in exercises:
         for s in _expand_planned_sets(ex):
@@ -3182,7 +3287,7 @@ def _bad_planned(exercises: list[dict]) -> Optional[dict]:
 
 
 def _insert_planned(conn: sqlite3.Connection, wid: int,
-                    exercises: list[dict]) -> tuple[list[dict], list[dict]]:
+                    exercises: list[PlannedExercise]) -> tuple[list[dict], list[dict]]:
     """Append pending (planned) sets to a workout. Resolves each exercise against the
     CLOSED catalog (no auto-stub) and continues set numbering per exercise — the same
     path log_workout uses, but writing targets + status='pending'. Returns
@@ -3355,8 +3460,8 @@ def clear_plan_set(set_id: int) -> dict:
         return _plan_payload(conn, wid)
 
 
-@trainer_mcp.tool()
-def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
+@trainer_mcp.tool(annotations=DESTRUCTIVE)
+def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = None,
                        notes: Optional[str] = None, replace: bool = False) -> dict:
     """Lay out the next routine as a plan the user works through — usually today's, but
     if they asked to plan TOMORROW's session, decide it from a get_fitness_briefing whose
@@ -3366,24 +3471,20 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
     user completes them with complete_set as they go. The plan stays undated until
     finish_workout stamps the day it's actually completed, so planning ahead needs no date.
 
-    Build a full session: aim for ~21-26 working sets total, roughly 6-8 exercises at
-    3-4 sets each, across the muscle groups that are due.
+    Build a full session at the volume this server's instructions call for, across the
+    muscle groups that are due.
 
-    Each item in `exercises` is either explicit:
-        {"name": "Bench Press", "muscles": ["chest"],
-         "sets": [{"target_weight_lbs": 100, "target_reps": 10, "target_rpe": 7},
-                  {"target_weight_lbs": 100, "target_reps": 10, "target_rpe": 8},
-                  {"target_weight_lbs": 100, "target_reps": 8,  "target_rpe": 9}]}
-    or the shorthand for N identical sets:
-        {"name": "Curls", "muscles": ["biceps"], "set_count": 3,
-         "target_reps": 12, "target_weight_lbs": 25, "target_rpe": 8}
+    Each item in `exercises` is either explicit — {"name": "Bench Press", "sets":
+    [{"target_weight_lbs": 100, "target_reps": 10, "target_rpe": 7}, …]} — or uses the
+    shorthand for N identical sets: {"name": "Curls", "set_count": 3, "target_reps": 12,
+    "target_weight_lbs": 25, "target_rpe": 8}.
 
     `target_rpe` (1-10) is the difficulty you're programming for each set — set it from
     your judgment of how hard that set should be, and ramp it across the exercise's sets
     when you intend a build-up. It prefills the Easy/Med/Hard buttons the user taps on the
     /trainer card (Easy ≈ 5, Med ≈ 7, Hard ≈ 9), so they confirm a feel rather than typing
     a number; they can still change it. Optional — omit it and the buttons start blank.
-    Pick the movements from the library with `exercises(muscle=..., rotation_only=True)` —
+    Pick the movements from the library with `find_exercises(muscle=..., rotation_only=True)` —
     the catalog is closed, so program only names it already holds (prefer the rotation).
     Names resolve fuzzily; a name with no real match is SKIPPED and returned under
     `unmatched` with its closest `candidates` — re-issue it under one of those, or have the
@@ -3418,7 +3519,7 @@ def start_workout_plan(exercises: list[dict], focus: Optional[str] = None,
         return _plan_payload(conn, wid, unmatched=unmatched)
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=READ_ONLY)
 def get_workout_plan() -> dict:
     """The active workout plan (today's routine in progress): each exercise in order
     with its sets — `target_weight_lbs`/`target_reps` (the plan), `weight_lbs`/`reps`/
@@ -3431,7 +3532,7 @@ def get_workout_plan() -> dict:
         return _plan_payload(conn, w["id"]) if w else {"active": False}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def complete_set(set_id: int, weight_lbs: Optional[float] = None,
                  reps: Optional[int] = None, rpe: Optional[float] = None,
                  note: Optional[str] = None) -> dict:
@@ -3462,7 +3563,7 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
         return _plan_payload(conn, r["workout_id"])
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=DESTRUCTIVE)
 def swap_exercise(from_exercise: str, to_exercise: str,
                   sets: Optional[list[dict]] = None,
                   workout_id: Optional[int] = None) -> dict:
@@ -3473,7 +3574,7 @@ def swap_exercise(from_exercise: str, to_exercise: str,
     isolation), and roughly the loading character. A Lat Pulldown's peer is a Close-/
     Neutral-Grip Pulldown or a Pull-up — NOT a Straight-Arm Pulldown, which isolates
     the same lats but is a single-joint accessory and a different stimulus. Use
-    `exercises(similar_to=from_exercise)` to see the catalog's closest peers (shared
+    `find_exercises(similar_to=from_exercise)` to see the catalog's closest peers (shared
     primary muscle, same mechanic) and pick `to_exercise` from there. Only drop to a
     narrower or different-pattern move when no true peer is available, and say so.
     The PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
@@ -3497,7 +3598,7 @@ def swap_exercise(from_exercise: str, to_exercise: str,
         to = _resolve_exercise(conn, to_exercise)
         if not to:
             return {"error": f"{to_exercise!r} isn't in the library — pick a peer from "
-                             "exercises(similar_to=...) or add it on the library page",
+                             "find_exercises(similar_to=...) or add it on the library page",
                     "candidates": _match_exercises(conn, to_exercise)}
         pend = conn.execute(
             """SELECT target_weight_lbs, target_reps, target_rpe FROM sets
@@ -3523,12 +3624,12 @@ def swap_exercise(from_exercise: str, to_exercise: str,
         return _plan_payload(conn, w["id"], unmatched=unmatched)
 
 
-@trainer_mcp.tool()
-def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict:
+@trainer_mcp.tool(annotations=WRITE)
+def add_to_plan(exercises: list[PlannedExercise], workout_id: Optional[int] = None) -> dict:
     """Append exercises (or extra sets of an exercise already present) to the active
     plan mid-session — e.g. "add some calf raises" or "give me one more drop set". Same
     `exercises` shape as start_workout_plan; pick the movements from the library with
-    `exercises(...)`. Errors if no plan is active. Names resolve against the closed
+    `find_exercises(...)`. Errors if no plan is active. Names resolve against the closed
     catalog — a name that doesn't match comes back under `unmatched` with its closest
     `candidates` and is not added; re-issue it under one of those (or have the user add it
     on the library page). (To retarget an existing pending set, use update_set with
@@ -3544,7 +3645,7 @@ def add_to_plan(exercises: list[dict], workout_id: Optional[int] = None) -> dict
         return _plan_payload(conn, w["id"], unmatched=unmatched)
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def reorder_plan(order: list[str], workout_id: Optional[int] = None) -> dict:
     """Reorder the exercises in the active plan. `order` is the exercise names in the
     sequence you want them done, e.g. ["Squat", "Bench Press", "Curls"] — names resolve
@@ -3566,7 +3667,7 @@ def reorder_plan(order: list[str], workout_id: Optional[int] = None) -> dict:
     return reorder_plan_exercises(ids, workout_id=w["id"])
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE)
 def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = None,
                    notes: Optional[str] = None) -> dict:
     """Close out the active plan when the session is over. Remaining pending sets are
@@ -3611,7 +3712,7 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
 # Trainer: bodyweight
 # --------------------------------------------------------------------------- #
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE)
 def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
                    note: Optional[str] = None) -> dict:
     """Record a bodyweight reading, in POUNDS. The user weighs in around training (a
@@ -3647,7 +3748,7 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
     return out
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=READ_ONLY)
 def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
@@ -3773,7 +3874,7 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
             "rotation": rotation}
 
 
-@trainer_mcp.tool()
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_profile(profile: dict) -> dict:
     """Merge fields into the stored trainer profile (JSON). Pass only the keys you
     want to change; existing keys are preserved. Use it to keep durable training
@@ -3792,7 +3893,7 @@ def update_profile(profile: dict) -> dict:
     return {"profile": current}
 
 
-@trainer_mcp.tool(name="delete_record")
+@trainer_mcp.tool(name="delete_record", annotations=DESTRUCTIVE)
 def delete_training_record(kind: str, id: int) -> dict:
     """Permanently delete one training record. Irreversible — confirm first.
 
