@@ -41,19 +41,15 @@ MAX_TOKENS = 4096
 # unbounded chain of tool calls. Generous enough for capture + a few lookups.
 MAX_TOOL_HOPS = 12
 
-# Drinks moved to a direct-entry form, so the journal chat drops these three tools
-# from the journal server — keeping the conversation focused on capture + people.
-_JOURNAL_DRINK_TOOLS = {"log_drinks", "get_drink_summary", "update_drink"}
-
 # A short, surface-specific addendum appended to each server's own instructions.
 _JOURNAL_BLURB = (
     "\n\nYou are running inside the journal's own web app, in a chat panel on the "
     "journal page — the user is talking to you directly on their phone or laptop. "
     "Be concise and warm. After you capture something, say briefly what you "
     "recorded. Use the tools to both capture entries and answer recall questions "
-    "about people and past days. Drink logging is handled by a separate "
-    "direct-entry form, not here — you have no drink tools, so if drinks come up, "
-    "just point the user to the Drinking page rather than trying to log them."
+    "about people and past days. Drink logging isn't a tool anywhere — it's the "
+    "counter on each day's header in the feed behind this panel — so if drinks come "
+    "up, point the user at that rather than trying to log them."
 )
 _TRAINER_BLURB = (
     "\n\nYou are running inside the trainer's own web app, on the /trainer page — the "
@@ -255,8 +251,8 @@ def _exercise_tools():
 # its own `instructions` + a `tools` builder (see the exercise-add agent above). Extend,
 # don't special-case.
 _AGENTS = {
-    "journal":  {"server": server.mcp,         "exclude": _JOURNAL_DRINK_TOOLS, "blurb": _JOURNAL_BLURB},
-    "trainer":  {"server": server.trainer_mcp, "exclude": set(),                "blurb": _TRAINER_BLURB},
+    "journal":  {"server": server.mcp,         "exclude": set(), "blurb": _JOURNAL_BLURB},
+    "trainer":  {"server": server.trainer_mcp, "exclude": set(), "blurb": _TRAINER_BLURB},
     "exercise": {"instructions": _EXERCISE_INSTRUCTIONS, "tools": _exercise_tools, "blurb": ""},
 }
 

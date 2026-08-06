@@ -12,7 +12,7 @@ remote HTTP server behind Google auth (phone access via claude.ai connectors).
 
 **Two MCP servers, one process, one DB.** The training feature is a *second* FastMCP
 instance — `trainer_mcp`, exposed at its own endpoint `/trainer/mcp` — separate from
-the journal+drinking server (`mcp` at `/mcp`). Both live in `server.py` and share the
+the journal+eating server (`mcp` at `/mcp`). Both live in `server.py` and share the
 same SQLite DB; each has its OWN Google auth provider (providers are single-resource —
 see the auth section). Each is its own connector → its own Claude project, so a
 conversation loads only that half's tools (smaller tool surface = less latency, the
@@ -107,7 +107,7 @@ There is no exercise-selection or progression logic in the server either.
 ## Files
 
 - `server.py` — everything: schema, matching, both FastMCP instances (`mcp` =
-  journal+drinking, `trainer_mcp` = training), all tools, shared auth wiring, the
+  journal+eating, `trainer_mcp` = training), all tools, shared auth wiring, the
   shared `_delete_record` helper (each server exposes a kind-scoped `delete_record`),
   and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
 - `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): serves the
@@ -153,7 +153,7 @@ There is no exercise-selection or progression logic in the server either.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # local (Claude Desktop, stdio) — stdio runs ONE server; pick it with MCP_SERVER:
-.venv/bin/python server.py                       # journal+drinking (default)
+.venv/bin/python server.py                       # journal+eating (default)
 MCP_SERVER=trainer .venv/bin/python server.py    # trainer
 # remote, both endpoints in one process (this is what the Dockerfile runs):
 MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db .venv/bin/python webapp/combined.py
@@ -246,7 +246,12 @@ working.
   (REAL), `kind`, `notes`. `log_drinks` upserts: the first log of a day creates the
   row, later logs accumulate onto it (`standard_drinks` add up, `kind` merges into a
   deduped list via `_merge_kinds`) — so it takes the increment, not the running total;
-  `update_drink` sets absolutes (corrections/overwrites). Sober days generally aren't
+  `update_drink` sets absolutes (corrections/overwrites). **None of the three is an
+  MCP tool** — they're plain functions the webapp calls (the `create_exercise` pattern):
+  a day's drinks are one number, faster to tap than to describe, so putting them on a
+  connector only costs every conversation three schemas it won't use.
+  `_delete_record("drink", id)` removes a day (the kind-scoped `delete_record` TOOL
+  doesn't accept it). Sober days generally aren't
   stored — a day with no row is sober — but a row of **0 IS allowed and meaningful**:
   it's a day CONFIRMED sober, versus one merely never logged, and the counter shows a
   real "0" for it. Aggregates treat the two identically (a 0 row is not a drinking day
