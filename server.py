@@ -172,14 +172,35 @@ def _build_auth(public_url: Optional[str] = None):
 
 class AllowlistMiddleware(Middleware):
     """Reject any authenticated Google account that isn't on the allowlist — so a
-    valid Google login alone is not enough; it must be *your* account."""
+    valid Google login alone is not enough; it must be *your* account.
+
+    Enforced on `on_message`, which sits above EVERY MCP message, not just
+    on_call_tool. Guarding only tool calls left the door open on the metadata
+    surface: an authenticated non-allowlisted account couldn't read a single row,
+    but it could still finish the handshake and enumerate tools/list — all 38 tool
+    names, their full docstrings, and the server instructions. No journal data, but
+    the shape of the whole journal. on_message closes tools/list, resources, prompts
+    and anything a future protocol version adds, in one place.
+
+    on_call_tool is KEPT below it deliberately: it's the check that's been running
+    against the live connectors, and a tool call is the one path where a miss would
+    expose actual entries. Two layers, cheap ones — both are a set lookup.
+    """
+
+    def _check(self) -> None:
+        if not ALLOWED_EMAILS:
+            return  # authless (local/dev): no token to check against
+        tok = get_access_token()
+        email = (tok.claims or {}).get("email", "").lower() if tok else ""
+        if email not in ALLOWED_EMAILS:
+            raise ToolError("Not authorized for this journal.")
+
+    async def on_message(self, context, call_next):
+        self._check()
+        return await call_next(context)
 
     async def on_call_tool(self, context, call_next):
-        if ALLOWED_EMAILS:
-            tok = get_access_token()
-            email = (tok.claims or {}).get("email", "").lower() if tok else ""
-            if email not in ALLOWED_EMAILS:
-                raise ToolError("Not authorized for this journal.")
+        self._check()
         return await call_next(context)
 
 
@@ -205,7 +226,8 @@ its docstring has the details, so follow them there rather than improvising:
   - PROFILES: each person's `summary` is their rolling profile of durable KEY FACTS —
     and, since there is no relationship graph, the ONLY place relationships live.
     Update it AT LINK TIME (see link_mentions); nothing does it automatically. Lean on
-    these summaries — get_briefing surfaces them — to resolve relational references
+    these summaries — get_briefing carries them for everyone recently mentioned — to
+    resolve relational references
     like "her parents" or "his brother" to the right people.
 
 Every entry is classified `kind`: "log" (an interaction/event/fact — the default) or
@@ -224,7 +246,11 @@ call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls) — ins
 as well as, writing an entry about it. Corrections go through update_intake_item by id;
 day totals are summed from the items, so you never recompute a day yourself.
 
-Start a session with get_briefing to load people/journal context before acting.
+Start a session with get_briefing: it loads the last two weeks of entries plus the
+summaries of everyone mentioned in the last week, so you write in context rather than
+from a blank slate. Everyone else comes back in a compact `roster` (no summary) —
+still enough to resolve a name; pull their full profile with get_person_history when
+they come up.
 (Workouts/training live on a separate `trainer` MCP server.)""")
 if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
@@ -986,6 +1012,36 @@ def find_candidates(conn: sqlite3.Connection, surface: str, limit: int = 5):
 # Tools
 # --------------------------------------------------------------------------- #
 
+# How recently an identical entry must have been saved to count as a retry rather than
+# a deliberate repeat. Generous enough to cover a connector retrying a timed-out call,
+# short enough that genuinely re-saying a terse note ("called mom") days or even minutes
+# later still records as its own entry.
+RETRY_WINDOW_SECONDS = 120
+
+
+def _recent_duplicate(conn, entry_date: str, body: str):
+    """The id of an identical entry saved moments ago, or None.
+
+    This server is reached over HTTP by a connector, where a response lost to a timeout
+    is indistinguishable from a call that never landed — so a retry re-sends the same
+    save and, without this, silently writes a SECOND entry: same text, same day, a new
+    day_position, and a duplicate set of pending mentions to resolve twice. That's
+    corruption you'd only notice much later, with no way to tell which copy was real.
+
+    Matching on (entry_date, body) inside a short window rather than on an idempotency
+    key, because the model doesn't mint one and the retried payload is byte-identical
+    anyway. `body` is the cleaned text; two different raw_body slices that cleaned to
+    the same body on the same day within two minutes is the retry case, not a real pair.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=RETRY_WINDOW_SECONDS)).isoformat()
+    row = conn.execute(
+        "SELECT id FROM entries WHERE entry_date=? AND body=? AND created_at >= ? "
+        "ORDER BY id DESC LIMIT 1",
+        (entry_date, body, cutoff),
+    ).fetchone()
+    return row["id"] if row else None
+
+
 def _next_day_position(conn, entry_date: str) -> int:
     """Rank to give a newly inserted entry so it lands at the END of its day. Counts
     only positioned entries (NULL = legacy, which sort by id before any positioned row),
@@ -1005,7 +1061,11 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
                       kind: str = "log") -> dict:
     """Save a journal entry and match any people named in it.
 
-    ALWAYS call this to capture an entry — never block on resolution.
+    ALWAYS call this to capture an entry — never block on resolution. Safe to retry: an
+    identical body on the same day within two minutes is treated as a re-send, and comes
+    back as the ORIGINAL entry flagged `duplicate_of_recent_save` with its still-pending
+    mentions, rather than saving a second copy. To deliberately record the same words
+    twice, vary the wording or resolve the first entry's mentions.
 
     LOG vs THOUGHT (`kind`). Classify every entry as one of two kinds:
       - "log" (the DEFAULT): a record of something that happened or that the user
@@ -1098,6 +1158,26 @@ def add_journal_entry(body: str, raw_body: Optional[str] = None,
     entry_date = entry_date or today()
     snippet_source = raw_body or body
     with db() as conn:
+        # A connector retrying a timed-out call re-sends this identical payload; without
+        # the guard it would save a second copy of the entry (see _recent_duplicate).
+        if dup_id := _recent_duplicate(conn, entry_date, body):
+            pend = conn.execute(
+                """SELECT id, surface_form FROM mentions
+                   WHERE entry_id=? AND status='pending' ORDER BY id""",
+                (dup_id,),
+            ).fetchall()
+            return {
+                "entry_id": dup_id, "entry_date": entry_date, "kind": kind,
+                "duplicate_of_recent_save": True,
+                "note": "An identical entry was saved moments ago, so this looks like a "
+                        "retry and nothing new was written. Its pending mentions are "
+                        "below — resolve those rather than re-saving.",
+                "mentions": [
+                    {"mention_id": m["id"], "surface_form": m["surface_form"],
+                     "candidates": find_candidates(conn, m["surface_form"])}
+                    for m in pend
+                ],
+            }
         cur = conn.execute(
             "INSERT INTO entries(body, raw_body, entry_date, kind, day_position, created_at) "
             "VALUES (?,?,?,?,?,?)",
@@ -1848,55 +1928,110 @@ def get_related_people(person_id: int, limit: int = 10) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def get_briefing(recent_entries: int = 5, recent_days: Optional[int] = None) -> dict:
-    """One-call session context. Returns the people roster (id, name, role, groups,
-    short summary), the pending-mention count, the list of groups, and the most
-    recent entries — by default the last `recent_entries` (5); pass `recent_days`
-    instead to get EVERY entry from the last N Pacific days (e.g. recent_days=7 for
-    a week of catch-up context before a debrief). Also returns `now`: the current
-    Pacific date/time — all dates in this log are Pacific, so use it to anchor
-    "today"/"yesterday" before defaulting or computing any entry_date. Call this at
-    the start of a conversation so you know who and what the user is likely talking
-    about."""
+def get_briefing(days: int = 14, people_days: int = 7, max_entries: int = 80,
+                 max_chars: int = 300) -> dict:
+    """One-call session context, scoped to what's RECENT — call it at the start of a
+    conversation, before capturing or answering.
+
+    Returns:
+      - `now` — current Pacific date/time with `date`/`yesterday`/`tomorrow`
+        precomputed. All dates here are Pacific: anchor any day reference to these
+        EXACT strings rather than computing dates yourself.
+      - `recent_entries` — every entry from the last `days` Pacific days (default 14),
+        newest first, so you write new entries with the last two weeks in view: what's
+        ongoing, what's already been said, how the user has been describing things. If
+        the window is empty (a gap since they last journaled) it falls back to the most
+        recent handful anyway, flagged `outside_window`, so you're never blind.
+      - `people` — the people MENTIONED in the last `people_days` days (default 7), each
+        with their rolling `summary`. These are who the user is most likely to talk
+        about next, and the summaries are what let you resolve "her parents" or tell two
+        Toms apart. `mentioned_on` is their most recent mention date.
+      - `roster` — everyone ELSE, compact (id, name, role, no summary). Enough to
+        recognize and resolve a name that hasn't come up lately; call
+        get_person_history for the full summary when one of them does come up.
+      - `groups`, `pending_mentions` — circles, and the size of the resolution queue.
+
+    The split is deliberate: summaries are the expensive part of this payload, so they
+    go only to the people actually in play, while the roster keeps EVERY person
+    resolvable. Widen either window when the user is catching up after a long gap
+    (e.g. days=30, people_days=30); the caps (`max_entries`, `max_chars`) keep a busy
+    stretch from crowding out the conversation, and `entries_truncated` says when one
+    bit."""
+    ref = date.fromisoformat(today())
+    entry_cutoff = (ref - timedelta(days=max(days, 1) - 1)).isoformat()
+    people_cutoff = (ref - timedelta(days=max(people_days, 1) - 1)).isoformat()
+    order = ("ORDER BY e.entry_date DESC, e.day_position IS NULL, "
+             "e.day_position DESC, e.id DESC")
     with db() as conn:
-        prows = conn.execute(
-            "SELECT id, canonical_name, role, summary FROM people ORDER BY canonical_name"
+        rows = conn.execute(
+            f"SELECT e.id, e.entry_date, e.body, e.kind FROM entries e "
+            f"WHERE e.entry_date >= ? {order} LIMIT ?",
+            (entry_cutoff, max_entries + 1),
         ).fetchall()
-        roster = [
+        truncated = len(rows) > max_entries
+        rows = rows[:max_entries]
+        outside = False
+        if not rows:
+            # Nothing in the window — the user hasn't journaled in a while. Hand back
+            # the latest few anyway: stale context beats none when they resume.
+            outside = True
+            rows = conn.execute(
+                f"SELECT e.id, e.entry_date, e.body, e.kind FROM entries e {order} LIMIT 5"
+            ).fetchall()
+
+        # People in play: mentioned (and resolved) inside the people window.
+        active = conn.execute(
+            """SELECT p.id, p.canonical_name, p.role, p.summary,
+                      MAX(e.entry_date) AS mentioned_on
+               FROM people p
+               JOIN mentions m ON m.person_id = p.id AND m.status='resolved'
+               JOIN entries e ON e.id = m.entry_id
+               WHERE e.entry_date >= ?
+               GROUP BY p.id ORDER BY mentioned_on DESC, p.canonical_name""",
+            (people_cutoff,),
+        ).fetchall()
+        active_ids = {r["id"] for r in active}
+        people = [
             {"person_id": r["id"], "name": r["canonical_name"], "role": r["role"],
              "groups": _groups_for(conn, r["id"]),
-             "summary": _truncate(r["summary"], 160) if r["summary"] else None}
-            for r in prows
+             "summary": _truncate(r["summary"], 300) if r["summary"] else None,
+             "mentioned_on": r["mentioned_on"]}
+            for r in active
+        ]
+        # Everyone else stays resolvable, but without the summary that dominates the cost.
+        roster = [
+            {"person_id": r["id"], "name": r["canonical_name"], "role": r["role"]}
+            for r in conn.execute(
+                "SELECT id, canonical_name, role FROM people ORDER BY canonical_name"
+            ).fetchall()
+            if r["id"] not in active_ids
         ]
         pending = conn.execute(
             "SELECT COUNT(*) AS n FROM mentions WHERE status='pending'"
         ).fetchone()["n"]
         grp = [r["name"] for r in conn.execute("SELECT name FROM groups ORDER BY name")]
-        if recent_days:
-            cutoff = (date.fromisoformat(today()) - timedelta(days=recent_days - 1)).isoformat()
-            recent = conn.execute(
-                "SELECT id, entry_date, body FROM entries WHERE entry_date >= ? "
-                "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC "
-                "LIMIT 100",
-                (cutoff,),
-            ).fetchall()
-        else:
-            recent = conn.execute(
-                "SELECT id, entry_date, body FROM entries "
-                "ORDER BY entry_date DESC, day_position IS NULL, day_position DESC, id DESC LIMIT ?",
-                (recent_entries,),
-            ).fetchall()
-    return {
+    out = {
         "now": current_clock(),
-        "people": roster,
-        "people_count": len(roster),
+        "window": {"entry_days": days, "people_days": people_days,
+                   "since": entry_cutoff},
+        "people": people,
+        "roster": roster,
+        "people_count": len(people) + len(roster),
         "groups": grp,
         "pending_mentions": pending,
         "recent_entries": [
-            {"entry_id": r["id"], "entry_date": r["entry_date"],
-             "body": _truncate(r["body"], 200)} for r in recent
+            {"entry_id": r["id"], "entry_date": r["entry_date"], "kind": r["kind"],
+             "body": _truncate(r["body"], max_chars)} for r in rows
         ],
     }
+    if truncated:
+        out["entries_truncated"] = (
+            f"more than {max_entries} entries since {entry_cutoff}; showing the newest. "
+            "Raise max_entries or narrow days for the rest.")
+    if outside:
+        out["outside_window"] = (
+            f"no entries since {entry_cutoff}; showing the most recent instead.")
+    return out
 
 
 # --------------------------------------------------------------------------- #

@@ -240,8 +240,9 @@ working.
   school, birthday, where they live, major life events. The model keeps it current
   AT LINK TIME — whenever it links a mention it folds in any new key fact the entry
   revealed (read-before-write); nothing regenerates summaries automatically.
-  `get_briefing` surfaces a short preview; `get_person_history` returns the FULL
-  summary for read-before-write, same as `contact`), `contact` — a free-form JSON blob holding
+  `get_briefing` surfaces it ONLY for people mentioned in the last `people_days`
+  (everyone else arrives summary-less in its compact `roster`), and `get_person_history`
+  returns the FULL summary for read-before-write, same as `contact`), `contact` — a free-form JSON blob holding
   multi-valued contact info (emails, phones, addresses, websites, …), written via
   `update_contact` with a shallow per-top-level-key merge (so adding phones never touches
   addresses; lists are replaced wholesale, so the model READS via `get_person_history`
