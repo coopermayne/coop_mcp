@@ -274,12 +274,16 @@ def _attach_drinks(days: list[dict], floor: str | None, bare_days: bool = True) 
 def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
     """Hang each day's eating section onto the feed's day blocks, in place.
 
-    A day gets a `nutrition` dict (summary, notes, and whichever macros were
+    A day gets a `nutrition` dict (summary, notes, and whichever nutrients were
     actually estimated) only when one was logged — days with none carry nothing,
     so the template can just test truthiness and the block stays absent rather
     than rendering an empty "Eating —". Same window/bare-day rules as
     `_attach_drinks`: a food-only day is inserted inside the loaded window so it's
-    still reachable, and a kind-filtered feed skips those insertions."""
+    still reachable, and a kind-filtered feed skips those insertions.
+
+    Also splits `summary` back into the `items` it was built from: log_food appends
+    each new food with "; " (server._merge_notes), so splitting on that separator
+    recovers one entry per thing eaten, which the feed renders as a numbered list."""
     cols = ("summary", "notes", *server.NUTRIENTS)
     with server.db() as conn:
         rows = conn.execute(
@@ -288,10 +292,11 @@ def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = Tru
             + "ORDER BY food_date",
             (floor,) if floor else (),
         ).fetchall()
-    by_date = {
-        r["food_date"]: {c: r[c] for c in cols if r[c] is not None}
-        for r in rows
-    }
+    by_date = {}
+    for r in rows:
+        n = {c: r[c] for c in cols if r[c] is not None}
+        n["items"] = [s.strip() for s in (n.get("summary") or "").split("; ") if s.strip()]
+        by_date[r["food_date"]] = n
     for day in days:
         n = by_date.pop(day["date"], None)
         if n:
