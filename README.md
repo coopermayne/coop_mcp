@@ -392,6 +392,64 @@ cp journal-2026-06-04.db /data/journal.db   # the path JOURNAL_DB points at
 
 (Authless/local: the route is open, same as the rest of the dev app.)
 
+## Menu-bar macros
+
+Today's protein and water in the macOS menu bar, via
+[SwiftBar](https://github.com/swiftbar/SwiftBar) — a glanceable nudge, so the gap
+between "should log that" and actually logging it is one glance wide.
+
+Two pieces: a read-only endpoint on the server, and a plugin script on the Mac.
+
+**1. Server.** `GET /api/today.json` returns today's nutrient sums plus the display
+targets they're read against — no entries, no people, no items. Set `WIDGET_TOKEN` to
+a strong random value (`openssl rand -hex 32`) and restart:
+
+```bash
+curl -H "Authorization: Bearer $WIDGET_TOKEN" https://YOUR-DOMAIN/app/api/today.json
+```
+
+```json
+{"date": "2026-08-06",
+ "nutrients": {"protein_g": {"total": 92, "target": 150, "ceiling": false},
+               "water_oz":  {"total": 48, "target": 128, "ceiling": false}, ...}}
+```
+
+`total` is `null` when nothing logged carries that nutrient — the same distinction the
+journal rings draw between "0 so far" and "unestimated", so a client can show an unknown
+state rather than claiming a zero. An untargeted nutrient (fat) reports `target: null`.
+Units aren't included: they're a rendering choice that lives in `macros.html`, and a
+second server-side copy is how the two drift.
+
+> **`WIDGET_TOKEN` is deliberately NOT `BACKUP_TOKEN`.** This token sits on every device
+> that wants a number on screen; `BACKUP_TOKEN` downloads the entire journal. Keep the
+> blast radius of the widely-copied credential at one day of nutrient sums. The two are
+> not interchangeable — each endpoint accepts only its own.
+
+**2. Mac.** `scripts/swiftbar/macros.5m.py` is the plugin — a **template**. Copy it into
+your SwiftBar plugin folder and fill in `JOURNAL_URL` and `TOKEN` at the top of *that*
+copy:
+
+```bash
+cp scripts/swiftbar/macros.5m.py ~/path/to/swiftbar-plugins/
+$EDITOR ~/path/to/swiftbar-plugins/macros.5m.py   # set JOURNAL_URL and TOKEN
+```
+
+> **Copy, not a symlink — because this repo is public.** A symlink would auto-update on
+> `git pull`, but it would also make the file you edit the file you commit, and one
+> `git add -A` would publish your token. Git history keeps a secret even after a later
+> commit removes the line, so this is a mistake you can't quietly undo. The tracked copy
+> stays a template with empty placeholders; re-copy it when the plugin changes.
+
+(`JOURNAL_URL` / `JOURNAL_WIDGET_TOKEN` in the environment override the constants, if you
+prefer to keep the file pristine.)
+
+The **refresh interval is the filename** — `macros.5m.py` polls every 5 minutes; rename
+to `.1m.` / `.15m.` to change it. The dropdown carries a Refresh item for right after you
+log something. It shows the full nutrient breakdown, greens a floor you've met and reds a
+ceiling you've passed, and links back to the journal. If the server is unreachable the
+menu bar goes quiet (grey dashes) and the detail lands in the dropdown — a bar that shouts
+on every dropped wifi connection is a bar you learn to ignore.
+
 ## Web frontend
 
 `webapp/` is a small browser UI for reviewing what's been recorded — journal entries

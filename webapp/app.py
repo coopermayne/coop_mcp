@@ -90,6 +90,14 @@ ALLOWED_EMAILS = server.ALLOWED_EMAILS  # reuse the MCP server's allowlist
 # leaked cron token grants nothing but read-only backups.
 BACKUP_TOKEN = (os.environ.get("BACKUP_TOKEN") or "").strip()
 
+# Same headless-token idea, MUCH smaller scope: unlocks GET /api/today.json, a
+# read-only view of TODAY's nutrient sums (and the display targets they're read
+# against) for an ambient display — a SwiftBar menu-bar plugin, a phone widget.
+# Its own token on purpose: this one lives on every device that wants a glanceable
+# number, so it must never be BACKUP_TOKEN, which downloads the whole journal.
+# Unset = the endpoint is browser/session-only.
+WIDGET_TOKEN = (os.environ.get("WIDGET_TOKEN") or "").strip()
+
 # --------------------------------------------------------------------------- #
 # Journal lock — a second, local gate on top of Google auth.
 #
@@ -401,7 +409,10 @@ PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health",
                 # The backup endpoint opts OUT of the redirect-to-login middleware so
                 # a headless cron isn't bounced to an HTML login page; it does its OWN
                 # auth (a logged-in session OR the BACKUP_TOKEN) inside the route.
-                "/export/journal.db"}
+                "/export/journal.db",
+                # Same reason: a menu-bar plugin polling for today's macros must get
+                # 401 JSON, not an HTML login redirect. Guarded by WIDGET_TOKEN in-route.
+                "/api/today.json"}
 
 oauth = None
 if AUTH_ENABLED:
@@ -597,30 +608,91 @@ async def health():
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
 
 
-def _backup_token_presented(request: Request) -> Optional[str]:
-    """Pull a caller-presented backup token from (in order) an
-    `Authorization: Bearer <t>` header, an `X-Backup-Token` header, or a
+def _presented_token(request: Request, header: str) -> Optional[str]:
+    """Pull a caller-presented token from (in order) an `Authorization: Bearer <t>`
+    header, the given custom header (`X-Backup-Token` / `X-Widget-Token`), or a
     `?token=` query param. Returns None if none present."""
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip() or None
-    return request.headers.get("x-backup-token") or request.query_params.get("token") or None
+    return request.headers.get(header) or request.query_params.get("token") or None
 
 
-def _backup_authorized(request: Request) -> bool:
-    """Allow the backup download for a logged-in browser session (so you can pull
-    it from a browser tab while signed in) OR a headless client presenting the
-    BACKUP_TOKEN (constant-time compare). With auth off entirely (dev), everything
-    is open anyway."""
+def _token_authorized(request: Request, token: str, header: str) -> bool:
+    """Shared shape for the two headless endpoints: a logged-in browser session
+    (so you can also just open the URL in a signed-in tab) OR a client presenting
+    `token` (constant-time compare). With auth off entirely (dev), everything is
+    open anyway. An unset token means session-only — never open."""
     if not AUTH_ENABLED:
         return True
     if request.session.get("email"):
         return True
-    if BACKUP_TOKEN:
-        presented = _backup_token_presented(request)
-        if presented and secrets.compare_digest(presented, BACKUP_TOKEN):
-            return True
-    return False
+    if not token:
+        return False
+    presented = _presented_token(request, header)
+    return bool(presented and secrets.compare_digest(presented, token))
+
+
+def _backup_authorized(request: Request) -> bool:
+    """Authorize the full-DB backup download — session or BACKUP_TOKEN."""
+    return _token_authorized(request, BACKUP_TOKEN, "x-backup-token")
+
+
+def _widget_authorized(request: Request) -> bool:
+    """Authorize the today's-macros read — session or WIDGET_TOKEN.
+
+    Deliberately a SEPARATE token from BACKUP_TOKEN, not a reuse: this one lives in
+    a menu-bar plugin / phone widget on whatever device wants a glanceable figure,
+    and BACKUP_TOKEN downloads the entire journal — every entry, every person. The
+    blast radius of the token that sits on the most devices should be one day's
+    nutrient sums, so the two are never interchangeable.
+    """
+    return _token_authorized(request, WIDGET_TOKEN, "x-widget-token")
+
+
+@app.get("/api/today.json")
+async def today_json(request: Request):
+    """Today's nutrient sums, for an ambient display (SwiftBar plugin, phone widget).
+
+    Read-only and scoped to ONE day: no entries, no people, no items — just the
+    figures the journal page's rings already show, so the token that ends up on a
+    laptop or phone can't be turned into a data exfil. Auth is a session or
+    WIDGET_TOKEN (see `_widget_authorized`).
+
+    Returns each nutrient as {total, target, ceiling}. `total` is null when nothing
+    logged carries that nutrient — the SAME distinction the rings draw between "0 so
+    far" and "unestimated", so a client can render a dashed/unknown state instead of
+    claiming a zero. Targets ride along because they live in the webapp
+    (`data.NUTRIENT_TARGETS`), not the DB — this is the display layer serving its own
+    display constant to another of its own surfaces, which is why targets appearing
+    here doesn't cross the "no goals in the server" line: they're still absent from
+    the schema and from every MCP tool return.
+
+    UNITS are deliberately NOT here. They're a rendering choice that already lives in
+    `macros.html`, and duplicating them server-side is how the two copies drift; a
+    client that wants "92g" formats it from `protein_g` itself.
+    """
+    from fastapi.responses import JSONResponse
+    if not _widget_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
+    day = server.today()
+    intake = server.get_intake(days=1, include_items=False)
+    # get_intake omits days with nothing logged, so an unlogged day has no entry.
+    totals = next((d["totals"] for d in intake["days"] if d["food_date"] == day), {})
+    # Keyed off server.NUTRIENTS, not NUTRIENT_TARGETS, so an UNTARGETED nutrient
+    # (fat) still reports its figure with target=null — the same thing the journal
+    # page does when it draws fat's ring with a dashed track and no arc. Iterating
+    # the targets instead would silently drop it.
+    return JSONResponse({
+        "date": day,
+        "nutrients": {
+            key: {"total": totals.get(key),
+                  "target": (data.NUTRIENT_TARGETS.get(key) or {}).get("target"),
+                  "ceiling": (data.NUTRIENT_TARGETS.get(key) or {}).get("ceiling", False)}
+            for key in server.NUTRIENTS
+        },
+    })
 
 
 @app.get("/export/journal.db")
