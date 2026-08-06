@@ -329,6 +329,26 @@ If the connector shows "disconnected" after adding Google: usually the redirect 
 Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 `TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
 
+## Verifying the intake migration
+
+Alcohol used to live in its own `drinks` table, then briefly on a day-level
+`nutrition` row; it's now an item in `intake_items` like everything else consumed.
+Both folds run automatically inside `init_db()` at startup, once each (guarded by
+flags in `settings`), and neither deletes anything — the old tables are left in place.
+
+Before deploying that change against a database with real drinking history, prove it
+on a copy:
+
+```bash
+curl -H "X-Backup-Token: $BACKUP_TOKEN" https://YOUR-DOMAIN/export/journal.db -o prod.db
+python3 scripts/verify_intake_migration.py prod.db
+```
+
+It copies the file, runs the real `init_db()` on the copy twice (so a redeploy is
+covered too), and compares alcohol day-by-day before and after. Exit 0 and "OK" means
+every drinking day survived with the same total; any `LOST`/`CHANGED`/`ADDED` line
+means don't deploy. Your original file is never opened for writing.
+
 ## Backup & restore
 
 The whole life log is one SQLite file (`JOURNAL_DB`, on the `/data` volume in prod). If
