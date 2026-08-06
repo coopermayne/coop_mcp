@@ -24,9 +24,11 @@ no LLM inside it. The judgment ("which Tom?") happens in the conversation.
 - **Circles + emergent network.** Assign people to groups (family, colleagues,
   Robin's friends). Separately, `get_related_people` derives who gets talked about
   together straight from the journal — no tagging needed.
-- **Session context in one call.** `get_briefing` hands Claude the people roster
-  (with short per-person summaries), groups, pending count, and recent entries, so it
-  knows who and what you're likely talking about before you explain.
+- **Session context in one call.** `get_briefing` hands Claude the last two weeks of
+  entries plus a profile of everyone mentioned in the last week, so it writes new
+  entries knowing what's already going on. Everyone else arrives as a compact roster
+  (name/role, no summary) — enough to recognize a name, without paying for every
+  profile on every session. Widen either window for a longer catch-up.
 - **"Tell you later" works.** Unresolved mentions sit in a pending queue until you
   feel like resolving them.
 
@@ -92,7 +94,8 @@ already carry most of it; this just sets the posture.
 >      `person_id`) and link.
 > 3. If I say I'll explain later, leave the mention pending — don't push.
 > 4. At the start of a session, call `get_briefing` once to load context — who I
->    know (roster, roles, groups, summaries), the pending queue, and recent entries.
+>    know (recent people with summaries, everyone else by name/role), the pending
+>    queue, and the last two weeks of entries.
 >    When I tell you something durable about a person, keep their `summary` current
 >    with `save_person` (pass their `person_id`), and set their `groups` when I place
 >    them in a circle.
@@ -509,7 +512,7 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `list_people` | Compact registry; filter by name/role or group |
 | `get_person_history` | Every entry about one person — the payoff query |
 | `get_related_people` | Emergent network: who's mentioned alongside this person |
-| `get_briefing` | One-call session context (roster, groups, pending, recent) |
+| `get_briefing` | One-call session context, scoped to recent: entries from the last `days` (14) + summaries for people mentioned in the last `people_days` (7), plus a compact roster of everyone else, groups, and the pending count |
 | `get_entry` | Fetch one entry, including the verbatim `raw_body` on demand |
 | `update_entry` | Edit an entry's date (`entry_date`), cleaned `body`, or `raw_body`; pass `mentions` to reconcile who it references (adds/removes mention rows, keeps resolved links) |
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
