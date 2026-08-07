@@ -31,8 +31,10 @@
 <div data-chat-backdrop class="fixed inset-0 z-40 bg-black/30 opacity-0 pointer-events-none transition-opacity duration-300 hidden"></div>
 
 {# The panel. Closed transform differs by breakpoint: slide up on mobile, slide in
-   from the right on desktop. JS toggles the three translate classes. #}
-<div data-chat-panel
+   from the right on desktop. JS toggles the three translate classes. `inert` while
+   closed: the panel stays in the DOM translated off-screen, so without it a
+   keyboard user tabs into an invisible composer. #}
+<div data-chat-panel inert
      class="fixed z-50 flex flex-col bg-white
             inset-x-0 bottom-0 top-10 rounded-t-2xl border-t border-gray-200
             sm:inset-y-0 sm:left-auto sm:right-0 sm:top-0 sm:w-[440px] sm:rounded-none sm:border-t-0 sm:border-l
@@ -87,6 +89,7 @@
   var closed = ['translate-y-full', 'sm:translate-y-0', 'sm:translate-x-full'];
 
   function open() {
+    panel.inert = false;  // closed panel is inert (out of the tab order)
     panel.classList.remove.apply(panel.classList, closed);
     backdrop.classList.remove('hidden');
     // next frame so the opacity transition runs
@@ -97,6 +100,7 @@
     setTimeout(function () { input.focus(); }, 200);
   }
   function close() {
+    panel.inert = true;
     panel.classList.add.apply(panel.classList, closed);
     backdrop.classList.add('opacity-0');
     backdrop.classList.remove('pointer-events-auto');

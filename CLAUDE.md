@@ -154,7 +154,12 @@ There is no exercise-selection or progression logic in the server either.
   only by the authenticated user, never by the journal/trainer connectors. Off unless
   `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
-  `chat.js`, manifest); the app is an installable PWA.
+  `chat.js`, manifest); the app is an installable PWA. Styles are COMPILED
+  Tailwind (`static/tailwind.css`, checked in — no CDN, the app styles itself
+  offline); after adding/removing classes in templates or static JS, rebuild:
+  `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
+  (config + why in `webapp/tailwind.config.js`). Inter and `marked` are
+  self-hosted (`static/fonts/`, `static/vendor/`) for the same reason.
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.

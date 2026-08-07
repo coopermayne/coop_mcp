@@ -34,12 +34,22 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>{% block title %}Journal{% endblock %}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://cdn.tailwindcss.com"></script>
+  {# Compiled Tailwind + self-hosted Inter (the @font-face lives in the sheet).
+     No CDNs: the app is an installable PWA and a personal journal, so styles
+     must work offline and page loads shouldn't ping Google/Cloudflare. Rebuild
+     with the command in webapp/tailwind.config.js after changing classes. #}
+  <link rel="stylesheet" href="{{ base }}/static/tailwind.css" />
+  {# Shared "is focus in a text field?" test — used by the global shortcuts
+     (1-4 and "/") below and the library page's j/k navigation, so the keys never
+     hijack typing. Defined in <head>: page-level scripts run before the
+     end-of-body ones, and their handlers may fire first. #}
   <script>
-    tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] } } } };
+    window.isTypingInField = function (el) {
+      if (!el) return false;
+      if (el.isContentEditable) return true;
+      var tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    };
   </script>
   <style>
     html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -82,7 +92,10 @@
       text-decoration: none; user-select: none;
     }
     .group:hover .entry-open { color: #9ca3af; }
-    @media (min-width: 640px) { .entry-open { opacity: 0; } .group:hover .entry-open { opacity: 1; } }
+    /* Hide-until-hover is keyed on HOVER CAPABILITY, not width: an iPad is
+       ≥640px wide but has no hover, so a width-only rule would leave the marker
+       permanently invisible (still tappable, but undiscoverable) on tablets. */
+    @media (hover: hover) and (min-width: 640px) { .entry-open { opacity: 0; } .group:hover .entry-open { opacity: 1; } }
 
     /* Brief zoom-in flourish on the day section the user just clicked in the
        mini-calendar. Origin is the top-left so it feels like the section
@@ -121,12 +134,15 @@
        own custom classes in one place rather than sprinkling dark: variants
        across every template.
 
-       Each selector is prefixed with `html[data-theme="dark"]` to bump
-       specificity above Tailwind's bare utilities — needed because the Tailwind
-       Play CDN injects its own stylesheets at runtime AFTER this <style> block
-       parses, so equal-specificity rules would lose the cascade. The attribute
-       also lets `color-scheme` follow the choice, so native chrome (scrollbars,
-       form controls, autofill) matches the explicit theme rather than the OS. */
+       Each selector is prefixed with `html[data-theme="dark"]` so the dark rule
+       both scopes to the theme AND outranks Tailwind's bare utilities (the
+       compiled sheet loads via <link> before this block, so specificity keeps
+       these wins unambiguous). The attribute also lets `color-scheme` follow
+       the choice, so native chrome (scrollbars, form controls, autofill)
+       matches the explicit theme rather than the OS.
+
+       NOTE: any NEW gray/color utility a template starts using needs a row here
+       or dark mode silently won't flip it — check this table when adding one. */
     html[data-theme="dark"]  { color-scheme: dark; }
     html[data-theme="light"] { color-scheme: light; }
     html[data-theme="dark"] body { background-color: #0a0a0a; color: #fafafa; }
@@ -141,10 +157,11 @@
     html[data-theme="dark"] .text-gray-500                            { color: #a3a3a3; }
     html[data-theme="dark"] .text-gray-600                            { color: #d4d4d4; }
     html[data-theme="dark"] .text-gray-700, html[data-theme="dark"] .text-gray-800, html[data-theme="dark"] .text-gray-900 { color: #fafafa; }
-    /* The `hidden` attribute must beat Tailwind's display utilities. The Play CDN
-       injects `.flex{display:flex}` etc. AFTER this block, so at equal specificity
-       a flex+hidden element (the custom drink panel, the inline day-edit forms)
-       would render despite `hidden`. !important on the UA-equivalent rule wins. */
+    /* The `hidden` attribute must beat Tailwind's display utilities, so a
+       flex+hidden element (chat panels, the inline day-edit forms) never renders
+       despite `hidden`. Source order alone would do it now that the compiled
+       sheet loads first, but keep !important so a future stylesheet reshuffle
+       can't silently regress it. */
     [hidden] { display: none !important; }
     html[data-theme="dark"] .border-gray-100                          { border-color: #171717; }
     html[data-theme="dark"] .border-gray-200                          { border-color: #262626; }
@@ -269,7 +286,7 @@
           </a>
           {% endif %}
           {% if show_logout %}
-          <a href="{{ base }}/logout" onclick="return confirm('Log out?');" class="flex items-center gap-3 px-3 py-2 text-sm text-red-500 hover:text-red-600 transition-colors">
+          <a href="{{ base }}/logout" data-confirm="Log out?" data-confirm-ok="Log out" class="flex items-center gap-3 px-3 py-2 text-sm text-red-500 hover:text-red-600 transition-colors">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>
             <span>Log out</span>
           </a>
@@ -282,6 +299,79 @@
   <main class="max-w-3xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
     {% block content %}{% endblock %}
   </main>
+  {# App-styled confirm/notice dialog, replacing the native confirm()/alert()
+     boxes (the one UI moment that broke the app's visual language). Same look
+     as the journal's detail modal. Exposed as window.appDialog:
+       appDialog.confirm(msg, {ok, cancel}) → Promise<boolean>
+       appDialog.notice(msg, {ok})          → Promise (no cancel button)
+     Plus a declarative form for links: <a data-confirm="Sure?" data-confirm-ok="Yes">
+     navigates only after an OK. z-[60] sits above the chat panels (z-50) so the
+     chat's session-timeout notice isn't buried under its own panel. #}
+  <div data-app-dialog hidden class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/30"
+       role="alertdialog" aria-modal="true" aria-labelledby="app-dialog-msg">
+    <div data-app-dialog-card class="w-full max-w-sm bg-white border border-gray-200 rounded-[6px] shadow-xl px-6 py-5">
+      <p id="app-dialog-msg" data-app-dialog-msg class="text-[15px] text-gray-800 leading-relaxed whitespace-pre-line"></p>
+      <div class="flex justify-end gap-2 mt-5">
+        <button type="button" data-app-dialog-cancel
+                class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Cancel</button>
+        <button type="button" data-app-dialog-ok
+                class="px-3 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">OK</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var modal = document.querySelector('[data-app-dialog]');
+      var msg = modal.querySelector('[data-app-dialog-msg]');
+      var okBtn = modal.querySelector('[data-app-dialog-ok]');
+      var cancelBtn = modal.querySelector('[data-app-dialog-cancel]');
+      var resolveFn = null, lastFocus = null;
+
+      function settle(v) {
+        if (!resolveFn) return;
+        var r = resolveFn; resolveFn = null;
+        modal.hidden = true;
+        if (lastFocus && lastFocus.focus) lastFocus.focus();
+        lastFocus = null;
+        r(v);
+      }
+      function open(message, opts, withCancel) {
+        opts = opts || {};
+        return new Promise(function (resolve) {
+          settle(false);  // a second open() while one is up cancels the first
+          resolveFn = resolve;
+          lastFocus = document.activeElement;
+          msg.textContent = message;
+          okBtn.textContent = opts.ok || 'OK';
+          cancelBtn.textContent = opts.cancel || 'Cancel';
+          cancelBtn.hidden = !withCancel;
+          modal.hidden = false;
+          okBtn.focus();
+        });
+      }
+      okBtn.addEventListener('click', function () { settle(true); });
+      cancelBtn.addEventListener('click', function () { settle(false); });
+      modal.addEventListener('click', function (e) {  // backdrop dismisses = cancel
+        if (!e.target.closest('[data-app-dialog-card]')) settle(false);
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !modal.hidden) settle(false);
+      });
+      window.appDialog = {
+        confirm: function (message, opts) { return open(message, opts, true); },
+        notice: function (message, opts) { return open(message, opts, false); },
+      };
+
+      // Declarative confirm for plain links (the logout item in the nav menu).
+      document.addEventListener('click', function (e) {
+        var el = e.target.closest('[data-confirm]');
+        if (!el) return;
+        e.preventDefault();
+        window.appDialog.confirm(el.dataset.confirm, { ok: el.dataset.confirmOk })
+          .then(function (ok) { if (ok && el.href) window.location.href = el.href; });
+      });
+    })();
+  </script>
   {# Register the service worker so the app is installable (Add to Home Screen)
      and shows an offline page when the network drops. Scoped to the app root so
      it works both standalone and mounted at /app. Failures are non-fatal. #}
@@ -294,16 +384,28 @@
       });
     }
   </script>
-  {# Nav theme toggle: flip data-theme and persist the explicit choice so it
-     survives reloads and overrides the OS default the head script falls back to. #}
+  {# Nav theme toggle: flip data-theme, persisting the choice so it survives
+     reloads — EXCEPT when the flip lands back on what the OS prefers anyway:
+     then the stored override is cleared, so the app returns to following the OS
+     (before this, the first-ever toggle pinned an explicit theme forever). The
+     matchMedia listener keeps an un-pinned app tracking live OS theme changes. #}
   <script>
     (function () {
+      var mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+      function osTheme() { return mq && mq.matches ? 'dark' : 'light'; }
       var btn = document.querySelector('[data-theme-toggle]');
-      if (!btn) return;
-      btn.addEventListener('click', function () {
+      if (btn) btn.addEventListener('click', function () {
         var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
-        try { localStorage.setItem('theme', next); } catch (e) {}
+        try {
+          if (next === osTheme()) localStorage.removeItem('theme');
+          else localStorage.setItem('theme', next);
+        } catch (e) {}
+      });
+      if (mq && mq.addEventListener) mq.addEventListener('change', function () {
+        var stored = null;
+        try { stored = localStorage.getItem('theme'); } catch (e) {}
+        if (!stored) document.documentElement.setAttribute('data-theme', osTheme());
       });
     })();
   </script>
@@ -340,15 +442,9 @@
         '3': '{{ base }}/workouts',
         '4': '{{ base }}/graphs',
       };
-      function typingInField(el) {
-        if (!el) return false;
-        if (el.isContentEditable) return true;
-        var tag = el.tagName;
-        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-      }
       document.addEventListener('keydown', function (e) {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
-        if (typingInField(e.target)) return;
+        if (window.isTypingInField(e.target)) return;
         if (e.key === '/') {
           var search = document.querySelector('input[type="search"]');
           if (search) { e.preventDefault(); search.focus(); search.select(); }
@@ -411,7 +507,7 @@
      render (quiet inline underline) and send any other link out in a new tab. Exposed
      as window.renderJournalMd so the chat panel can re-render the feed it swaps in
      after a write. Falls back to plain wrapped text if `marked` hasn't loaded. #}
-  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script src="{{ base }}/static/vendor/marked.min.js"></script>
   <script>
     window.renderJournalMd = function (scope) {
       var nodes = (scope || document).querySelectorAll('[data-md]:not([data-md-done])');
@@ -458,14 +554,17 @@
       if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
       var PERIOD = 2000;            // ms for a full start → finish → start cycle
       var els = [], lastScan = -Infinity;
+      // Pages with no rep-loops (the journal, people, graphs) must not pay for a
+      // 60fps rAF treadmill that only ever finds nothing — it keeps the page from
+      // idling on phones. With zero elements we drop to a 1s setTimeout re-scan,
+      // and rejoin rAF the moment a scan (or a trainer-card render) surfaces one.
       function frame(t) {
         if (t - lastScan > 500) { els = document.querySelectorAll('.rep-loop-end'); lastScan = t; }
-        if (els.length) {
-          var phase = (t % PERIOD) / PERIOD;                 // 0..1
-          var tri = phase < 0.5 ? phase * 2 : 2 - phase * 2; // triangle 0 → 1 → 0
-          var o = tri * tri * (3 - 2 * tri);                 // smoothstep for a soft fade
-          for (var i = 0; i < els.length; i++) els[i].style.opacity = o;
-        }
+        if (!els.length) { setTimeout(function () { requestAnimationFrame(frame); }, 1000); return; }
+        var phase = (t % PERIOD) / PERIOD;                 // 0..1
+        var tri = phase < 0.5 ? phase * 2 : 2 - phase * 2; // triangle 0 → 1 → 0
+        var o = tri * tri * (3 - 2 * tri);                 // smoothstep for a soft fade
+        for (var i = 0; i < els.length; i++) els[i].style.opacity = o;
         requestAnimationFrame(frame);
       }
       requestAnimationFrame(frame);
