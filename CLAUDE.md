@@ -308,26 +308,27 @@ working.
   tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
   Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
   estimate, made in conversation; there is no food database in the server.
-  The webapp shows a day's items and its summed rings under that day's entries on the
-  journal feed (`data._attach_nutrition` + `macros.eating_block`), STRICTLY READ-ONLY:
-  intake has exactly ONE write path, the MCP tools (the in-app chat panel counts —
-  it calls the same functions). There is no form, no tappable ring, no /intake write
-  route; the browser only renders. Water and alcohol rings still always render, dashed
-  when unlogged, because "no water yet" is worth seeing on a day you mean to hit a
-  gallon. Each nutrient renders as a ring with BOTH
+  The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
+  `macros.eating_block`; the journal feed carries entries only) — one line per item,
+  each led by its circled index. `/food` is deliberately OUTSIDE the journal lock
+  (glancing at macros shouldn't need the knock) and has no chat panel. STRICTLY
+  READ-ONLY: intake has exactly ONE write path, the MCP tools (the in-app chat panel
+  counts — it calls the same functions). There is no form, no tappable ring, no
+  /intake write route; the browser only renders. Water and alcohol rings still always
+  render, dashed when unlogged, because "no water yet" is worth seeing on a day you
+  mean to hit a gallon. Each nutrient renders as a ring with BOTH
   its summed figure (unit included: "1400mg") and a short label ("sod") inside it
   (`macros.nutrient_ring`), read against `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY
   webapp constant, the `DRINK_LIMIT` pattern: the server stores no goals, so targets
   never enter the DB or a tool return. A `ceiling` target (sodium, calories, alcohol)
   turns the ring clay once passed; a floor one (protein, carbs, fiber, water)
   doesn't, and an untargeted nutrient (fat) draws a DASHED track with no arc — an
-  empty solid ring would read as "0% of goal" rather than "no goal set". Items render
-  as a NUMBERED list flowing inline, each index glued to its item's first word so a
-  wrap can't strand it; a tapped top-up has no text, so it's named from what it
-  carries ("16oz water"). Three things a rendered day can't say for itself — an
+  empty solid ring would read as "0% of goal" rather than "no goal set". A tapped
+  top-up has no text, so it's named from what it carries ("16oz water"). Three
+  things a rendered day can't say for itself — an
   item's OWN nutrients (the rings show the day summed), a ring's TARGET (an arc can
   only imply it), and the day's item NOTES — are all one CLICK away, into a single
-  display-only modal in `journal.html`. Each click target carries its whole payload
+  display-only modal in `food.html`. Each click target carries its whole payload
   as JSON in `data-detail` (`{kicker, title, rows, note}`), so the modal needs no
   fetch and no lookup, and one delegated handler serves all three. Hover just firms
   the text/figure to black — no tooltips, no underlines, nothing that would fight
