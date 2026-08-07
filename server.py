@@ -302,6 +302,11 @@ Two ways to record training:
 Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
 yet-done set doesn't, so the briefing stays honest mid-session.
 
+A session's `focus` (whichever tool writes it) is a SHORT kind-of-day label — a couple
+of words like "Pull + Legs", "Push", "Upper", "Cardio". Never pack the lifts or muscle
+list into it: the session's own exercise rows already say what was done, and the
+webapp renders them directly under the title.
+
 Weight on a lift is SIGNED added/removed load, not total bodyweight: 0 (or null) = plain
 bodyweight, positive = weight added (a +25 weighted pull-up), and NEGATIVE = assistance,
 the load a band or machine took OFF (an assisted pull-up at -20). This lets one movement
@@ -877,6 +882,26 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES "
                 "('nutrition_split_into_items', 'true')"
+            )
+        # One-time cleanup: early sessions were titled like "Pull + Legs — Deadlift,
+        # Lats, Back, Quads, Hamstrings, Biceps" — the lift list restated what the
+        # session's own exercise rows already show right under the title, and it
+        # overflowed the /workouts card heading. The contract (trainer server
+        # instructions) now calls for a SHORT kind-of-day label, so strip the
+        # " — ..." tail from existing rows once. Flag-guarded like the fold-ins
+        # above, so a future title that legitimately carries an em dash isn't
+        # re-stripped on every boot.
+        done3 = conn.execute(
+            "SELECT value FROM settings WHERE key='workout_focus_shortened'"
+        ).fetchone()
+        if not done3:
+            conn.execute(
+                "UPDATE workouts SET focus = substr(focus, 1, instr(focus, ' — ') - 1) "
+                "WHERE focus LIKE '% — %'"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES "
+                "('workout_focus_shortened', 'true')"
             )
 
 
@@ -3110,7 +3135,8 @@ def log_workout(exercises: list[LoggedExercise], workout_date: Optional[str] = N
     Args:
         exercises: The exercises performed, each with the sets performed.
         workout_date: Day trained, YYYY-MM-DD. Defaults to today.
-        focus: Session focus, e.g. "Legs", "Arms", "Cardio".
+        focus: Short kind-of-day label, e.g. "Legs", "Pull + Legs", "Cardio" —
+            never a lift list (the rule lives in the server instructions).
         feeling: Overall how it felt / energy / soreness.
         notes: Anything else about the session.
         workout_id: Append to this existing session instead of starting a new one
