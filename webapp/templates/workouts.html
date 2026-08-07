@@ -14,13 +14,17 @@
 
 {# ── Mini muscle maps ────────────────────────────────────────────────────────────────
    Front/back body diagrams live in static/body-symbols.svg (two <symbol>s,
-   ~30KB of path data) and are stamped per day via EXTERNAL <use> below, so the
-   browser caches the paths once instead of re-downloading them inlined in every
-   /workouts response. Each muscle region's fill reads a per-muscle CSS custom
-   property (--m-<name> / --o-<name>) set inline on the per-day wrapper — custom
-   properties and currentColor are inherited properties, so they carry into the
-   <use> shadow tree even across the external-file boundary; an unset muscle
-   falls back to a faint currentColor.
+   ~30KB of path data) so the browser caches the paths once instead of
+   re-downloading them inlined in every /workouts response. They are NOT
+   referenced by external <use href="file#id"> — cross-file <use> is unreliable
+   in Chrome/Safari (it silently renders nothing). Instead the script below
+   fetches the file once (service-worker cached) and injects the <symbol>s into
+   the page, so the per-day <use href="#body-front"> stays a same-document
+   reference, which works everywhere. Each muscle region's fill reads a
+   per-muscle CSS custom property (--m-<name> / --o-<name>) set inline on the
+   per-day wrapper — custom properties inherit through the <use> shadow tree, so
+   one copy of the paths serves every day; an unset muscle falls back to a faint
+   currentColor.
 
    Anatomical SVG outlines + per-muscle path regions are adapted from the
    MIT-licensed golang-muscle-highlighter
@@ -28,6 +32,24 @@
    taxonomy remapped onto server.MUSCLES (their single back "upper-back" region
    is split here into our "middle back" + "lats"). Front viewBox is the left half
    of a shared 1448-tall canvas (0 0 724 1448); back is the right half. #}
+<script>
+  (function () {
+    fetch('{{ base }}/static/body-symbols.svg')
+      .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+      .then(function (text) {
+        var holder = document.createElement('div');
+        holder.innerHTML = text;
+        var svg = holder.querySelector('svg');
+        if (!svg) return;
+        svg.setAttribute('width', '0');
+        svg.setAttribute('height', '0');
+        svg.setAttribute('aria-hidden', 'true');
+        svg.style.position = 'absolute';
+        document.body.insertBefore(svg, document.body.firstChild);
+      })
+      .catch(function () {});  // no sprite → the maps just don't draw; the page still reads
+  })();
+</script>
 
 {# Per-day heat: primary muscles deepest, secondary/tertiary paler — same clay
    ramp the old 14-day heatmap used. A cardio-only day has no muscle rows, so
@@ -45,8 +67,8 @@
       {% if s.muscles %}
       <div class="flex gap-1 shrink-0 mt-1" title="{{ s.muscles.keys() | join(', ') }}"
            style="{% for name, tier in s.muscles.items() %}--m-{{ name | replace(' ', '-') }}:{{ tier_color[tier] }};--o-{{ name | replace(' ', '-') }}:.9;{% endfor %}">
-        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="{{ base }}/static/body-symbols.svg#body-front"/></svg>
-        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="{{ base }}/static/body-symbols.svg#body-back"/></svg>
+        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="#body-front"/></svg>
+        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="#body-back"/></svg>
       </div>
       {% endif %}
     </div>
