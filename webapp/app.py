@@ -767,15 +767,19 @@ async def manifest(request: Request):
 # Service worker. Network-first for navigations (the journal is auth-gated and
 # always live data, so we never cache authed HTML — only fall back to a baked
 # offline page when the network is gone), stale-while-revalidate for same-origin
-# static assets (icons/favicon). Cross-origin (Tailwind/Fonts CDNs) passes
-# straight through. Bump VERSION to retire old caches on the next visit.
+# static assets. Everything the shell needs is now self-hosted (compiled
+# Tailwind, Inter, marked — no CDNs), so it's all precached and the app styles
+# itself offline. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [
   BASE + '/static/icon-192.png',
   BASE + '/static/favicon.svg',
+  BASE + '/static/tailwind.css',
+  BASE + '/static/fonts/inter-latin.woff2',
+  BASE + '/static/vendor/marked.min.js',
   BASE + '/manifest.webmanifest',
 ];
 const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">`

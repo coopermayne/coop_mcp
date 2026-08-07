@@ -18,17 +18,20 @@
 </a>
 {% endmacro %}
 
-{% macro entry_paragraph(e) %}
+{% macro entry_paragraph(e, show_date=False) %}
 {# One per-topic note in the day's block. The body is Markdown (e.body_md, names
    turned into person links server-side); the client renders it with `marked` into
    the .chat-md scope (see base.html). A faint hanging marker opens the full entry
-   without turning the whole note into a link (which can't wrap the inner name links). #}
+   without turning the whole note into a link (which can't wrap the inner name links).
+   show_date: search results sit outside any day block, so each carries its own
+   date line — the feed proper leaves it off (the day heading already says it). #}
 <div class="group flex gap-2 sm:-ml-5 sm:gap-3">
   <a href="{{ base }}/entry/{{ e.entry_id }}" class="entry-open shrink-0 pt-0.5 text-sm leading-relaxed"
      title="Open entry" aria-label="Open this entry">›</a>
   <div class="flex-1">
+    {% if show_date %}<p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | short_date }}</p>{% endif %}
     {% if e.kind == 'thought' %}{{ thought_badge() }}{% endif %}
-    <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed">{{ e.body_md }}</div>
+    <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed{{ ' mt-1' if show_date }}">{{ e.body_md }}</div>
   </div>
 </div>
 {% endmacro %}

@@ -10,6 +10,20 @@
   {% endif %}
 {% endmacro %}
 
+{% macro lib_url(q=none, muscle=none, rotation=false, hearted=false, archived=false) -%}
+{#- One place that builds a library URL: every filter link below passes the
+    filters it wants to KEEP and this emits the query string — adding the next
+    filter is one line here instead of new ?-vs-& combinatorics in each link. -#}
+{{- base }}/trainer/library
+{%- set qs = [] -%}
+{%- if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif -%}
+{%- if muscle %}{% set _ = qs.append('muscle=' ~ (muscle | urlencode)) %}{% endif -%}
+{%- if rotation %}{% set _ = qs.append('rotation=1') %}{% endif -%}
+{%- if hearted %}{% set _ = qs.append('hearted=1') %}{% endif -%}
+{%- if archived %}{% set _ = qs.append('archived=1') %}{% endif -%}
+{%- if qs %}?{{ qs | join('&') }}{% endif -%}
+{%- endmacro %}
+
 {% block content %}
 
 {# The rep-loop crossfade (start ⇄ finish frame) is styled in base.html so the /trainer
@@ -28,13 +42,13 @@
    it's drawn from (rotation ⊆ hearted). Archived is the soft-deleted view (each row offers
    Restore); the first three show live movements only. #}
 <div class="mb-4 flex gap-2">
-  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}rotation=1"
+  <a href="{{ lib_url(q=q, muscle=muscle, rotation=True) }}"
      class="badge hover:border-black hover:text-black transition-colors {% if rotation and not archived %}badge-dark{% endif %}">★ In rotation</a>
-  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}hearted=1"
+  <a href="{{ lib_url(q=q, muscle=muscle, hearted=True) }}"
      class="badge hover:border-black hover:text-black transition-colors {% if hearted and not archived %}badge-dark{% endif %}">♥ Hearted</a>
-  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}{% endif %}{% if q and muscle %}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}{% endif %}"
+  <a href="{{ lib_url(q=q, muscle=muscle) }}"
      class="badge hover:border-black hover:text-black transition-colors {% if not rotation and not hearted and not archived %}badge-dark{% endif %}">All</a>
-  <a href="{{ base }}/trainer/library?{% if q %}q={{ q | urlencode }}&{% endif %}{% if muscle %}muscle={{ muscle | urlencode }}&{% endif %}archived=1"
+  <a href="{{ lib_url(q=q, muscle=muscle, archived=True) }}"
      class="badge hover:border-black hover:text-black transition-colors {% if archived %}badge-dark{% endif %}">Archived</a>
 </div>
 
@@ -54,13 +68,13 @@
   </button>
   {% endif %}
   <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
-  {% if q or muscle %}<a href="{{ base }}/trainer/library{% if rotation %}?rotation=1{% elif hearted %}?hearted=1{% endif %}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+  {% if q or muscle %}<a href="{{ lib_url(rotation=rotation, hearted=hearted) }}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
 {# Muscle filter chips: each toggles ?muscle=, keeping any name query and rotation/hearted filter. #}
 <div class="mb-8 flex flex-wrap gap-2">
   {% for mu in muscles %}
-  <a href="{{ base }}/trainer/library?muscle={{ mu | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if rotation %}&rotation=1{% elif hearted %}&hearted=1{% endif %}"
+  <a href="{{ lib_url(q=q, muscle=mu, rotation=rotation, hearted=hearted) }}"
      class="badge hover:border-black hover:text-black transition-colors {% if muscle == mu %}badge-dark{% endif %}">{{ mu }}</a>
   {% endfor %}
 </div>
@@ -238,16 +252,17 @@
 })();
 
 // Archive / Restore: soft-delete a movement (or bring it back). On success the row no
-// longer belongs in the current view, so drop it from the DOM.
+// longer belongs in the current view, so drop it from the DOM. The confirm runs
+// through the app-styled dialog (base.html's appDialog) instead of window.confirm.
 document.querySelectorAll(".archive-toggle").forEach(function (btn) {
-  btn.addEventListener("click", function (e) {
+  btn.addEventListener("click", async function (e) {
     e.preventDefault();
     e.stopPropagation();
     var want = btn.dataset.archived === "1";   // true => archive, false => restore
-    if (want && !window.confirm(
+    if (want && !(await window.appDialog.confirm(
         "Remove this exercise from your library?\n\nIt'll be hidden from the library, "
         + "search and the trainer — but your past workouts keep it, and you can restore "
-        + "it from the Archived view.")) return;
+        + "it from the Archived view.", { ok: "Archive" }))) return;
     btn.disabled = true;
     fetch("{{ base }}/trainer/exercise/" + btn.dataset.id + "/archive", {
       method: "POST",
@@ -274,13 +289,6 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
   if (!rows.length) return;
   var current = -1;
 
-  function typingInField(el) {
-    if (!el) return false;
-    if (el.isContentEditable) return true;
-    var tag = el.tagName;
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-  }
-
   function openRow(i) {
     current = Math.max(0, Math.min(rows.length - 1, i));
     // Open only the focused row; collapse the rest so the list stays a single read.
@@ -295,7 +303,7 @@ document.querySelectorAll(".archive-toggle").forEach(function (btn) {
   document.addEventListener("keydown", function (e) {
     if (e.key !== "j" && e.key !== "k") return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;      // leave shortcuts alone
-    if (typingInField(e.target)) return;                 // don't hijack text entry
+    if (window.isTypingInField(e.target)) return;        // don't hijack text entry (base.html helper)
     e.preventDefault();
     openRow(e.key === "j" ? current + 1 : current - 1);
   });

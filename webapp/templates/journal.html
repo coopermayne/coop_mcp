@@ -54,17 +54,7 @@
   <p class="text-xs uppercase tracking-widest text-gray-400 mb-4">Results for "{{ q }}"</p>
   {% if entries %}
     <div class="space-y-6">
-      {% for e in entries %}
-      <div class="group flex gap-2 sm:-ml-5 sm:gap-3">
-        <a href="{{ base }}/entry/{{ e.entry_id }}" class="entry-open shrink-0 pt-0.5 text-sm leading-relaxed"
-           title="Open entry" aria-label="Open this entry">›</a>
-        <div class="flex-1">
-          <p class="text-xs uppercase tracking-widest text-gray-400">{{ e.entry_date | short_date }}</p>
-          {% if e.kind == 'thought' %}{{ m.thought_badge() }}{% endif %}
-          <div data-md class="chat-md text-[15px] text-gray-800 leading-relaxed mt-1">{{ e.body_md }}</div>
-        </div>
-      </div>
-      {% endfor %}
+      {% for e in entries %}{{ m.entry_paragraph(e, show_date=True) }}{% endfor %}
     </div>
   {% else %}
     <p class="text-sm text-gray-400">Nothing matched "{{ q }}".</p>
@@ -120,7 +110,15 @@
     var title  = modal.querySelector('[data-detail-title]');
     var rows   = modal.querySelector('[data-detail-rows]');
     var note   = modal.querySelector('[data-detail-note]');
-    function close() { modal.hidden = true; }
+    // Keyboard focus follows the dialog: Close takes focus on open (so Escape/
+    // Enter act on the modal, not the page behind it), and focus returns to the
+    // ring/item that opened it on close.
+    var lastFocus = null;
+    function close() {
+      modal.hidden = true;
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+      lastFocus = null;
+    }
 
     function open(el) {
       var d;
@@ -152,7 +150,9 @@
       rows.hidden = !rows.childNodes.length;
       note.textContent = d.note || '';
       note.hidden = !d.note;
+      lastFocus = el;
       modal.hidden = false;
+      modal.querySelector('[data-detail-close]').focus();
     }
 
     document.addEventListener('click', function (e) {

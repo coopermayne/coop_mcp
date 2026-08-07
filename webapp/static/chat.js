@@ -163,7 +163,10 @@
         autosize();
         setBusy(false);
         input.focus();
-        alert('Your session timed out while you were typing. The message was kept in the box — unlock the journal (or sign back in), then send it again.');
+        var timeoutMsg = 'Your session timed out while you were typing. The message was kept in the box — unlock the journal (or sign back in), then send it again.';
+        // App-styled notice (base.html's appDialog); native alert only as a fallback.
+        if (window.appDialog) window.appDialog.notice(timeoutMsg);
+        else alert(timeoutMsg);
         return;
       }
       if (!res.ok || !res.body) {
