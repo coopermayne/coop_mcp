@@ -65,11 +65,20 @@
         <p class="text-sm text-gray-500 mt-0.5">{{ s.exercise_count }} exercises · {{ s.set_count }} sets</p>
       </div>
       {% if s.muscles %}
-      <div class="flex gap-1 shrink-0 mt-1" title="{{ s.muscles.keys() | join(', ') }}"
-           style="{% for name, tier in s.muscles.items() %}--m-{{ name | replace(' ', '-') }}:{{ tier_color[tier] }};--o-{{ name | replace(' ', '-') }}:.9;{% endfor %}">
-        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="#body-front"/></svg>
-        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="#body-back"/></svg>
-      </div>
+      {# Thumbnail pair, sized to the three-line header block beside it. No hover
+         tooltip — the pair is a BUTTON that opens the muscle modal below, where
+         the diagrams render large and each region answers hover/tap with its
+         name + emphasis tier. The day's tier colors ride along as the inline
+         custom properties; the modal copies this style string onto its own
+         cloned diagrams so both render identically. #}
+      <button type="button" data-muscle-zoom data-date="{{ s.date | long_date }}"
+              data-title="{{ s.focus or 'Workout' }}" data-muscles='{{ s.muscles | tojson }}'
+              aria-label="Muscles worked — open diagram"
+              class="flex gap-1 shrink-0 mt-1 cursor-pointer opacity-100 hover:opacity-75 transition-opacity"
+              style="{% for name, tier in s.muscles.items() %}--m-{{ name | replace(' ', '-') }}:{{ tier_color[tier] }};--o-{{ name | replace(' ', '-') }}:.9;{% endfor %}">
+        <svg class="w-8 h-16 sm:w-10 sm:h-20" aria-hidden="true"><use href="#body-front"/></svg>
+        <svg class="w-8 h-16 sm:w-10 sm:h-20" aria-hidden="true"><use href="#body-back"/></svg>
+      </button>
       {% endif %}
     </div>
 
@@ -99,6 +108,122 @@
 {% else %}
   <p class="text-sm text-gray-400">No workouts logged yet.</p>
 {% endif %}
+
+{# Muscle-map modal — opened by a day's thumbnail pair. The diagrams here are NOT
+   <use> stamps: shadow-tree content can't take per-region pointer events, so the
+   script clones the injected <symbol>s' children into real inline SVGs. Each
+   muscle group then answers hover (tap on touch) with "name · tier" — or
+   "not worked this day" for a cold region — in the caption line, so the modal
+   doubles as a mini anatomy reference. Display-only, one modal reused by every
+   day (the journal detail-modal pattern). #}
+<div data-muscle-modal hidden
+     class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/30"
+     role="dialog" aria-modal="true" aria-labelledby="muscle-modal-title">
+  <div data-muscle-card class="w-full max-w-md bg-white border border-gray-200 rounded-[6px] shadow-xl px-6 py-5">
+    <p data-muscle-kicker class="text-[10px] uppercase tracking-widest text-gray-400"></p>
+    <p id="muscle-modal-title" data-muscle-title class="text-[15px] text-gray-800 leading-relaxed mt-1"></p>
+    <div data-muscle-diagrams class="flex justify-center gap-4 mt-4 text-gray-600"></div>
+    {# Fixed-height caption so hover updates don't bounce the layout. #}
+    <p data-muscle-caption class="h-5 mt-3 text-center text-[13px] text-gray-500"></p>
+    <div class="flex justify-end mt-4">
+      <button type="button" data-muscle-close
+              class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Close</button>
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    var modal = document.querySelector('[data-muscle-modal]');
+    if (!modal) return;
+    var kicker = modal.querySelector('[data-muscle-kicker]');
+    var title = modal.querySelector('[data-muscle-title]');
+    var diagrams = modal.querySelector('[data-muscle-diagrams]');
+    var caption = modal.querySelector('[data-muscle-caption]');
+    var closeBtn = modal.querySelector('[data-muscle-close]');
+    var canHover = window.matchMedia && window.matchMedia('(hover: hover)').matches;
+    var IDLE = canHover ? 'Hover a muscle' : 'Tap a muscle';
+    var lastFocus = null;
+
+    function close() {
+      modal.hidden = true;
+      diagrams.textContent = '';
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+      lastFocus = null;
+    }
+
+    // Clone a symbol's children into a real inline <svg> so the muscle groups are
+    // light-DOM nodes that can take hover/tap (a <use> instance can't).
+    function buildDiagram(symbolId, muscles) {
+      var sym = document.getElementById(symbolId);
+      if (!sym) return null;  // sprite not fetched yet — the loader is near-instant, retry via reopen
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', sym.getAttribute('viewBox'));
+      svg.setAttribute('class', 'h-64 sm:h-80 w-auto');
+      Array.prototype.forEach.call(sym.children, function (child) {
+        svg.appendChild(child.cloneNode(true));
+      });
+      // Each muscle group's fill reads var(--m-<slug>); the slug is also how we
+      // know which muscle the group IS — no extra markup needed in the sprite.
+      svg.querySelectorAll('g[style*="--m-"]').forEach(function (g) {
+        var m = /--m-([a-z-]+)/.exec(g.getAttribute('style') || '');
+        if (!m) return;
+        var name = m[1].replace(/-/g, ' ');
+        var tier = muscles[name];
+        var restOpacity = g.style.getPropertyValue('fill-opacity');
+        g.style.cursor = 'pointer';
+        function show() {
+          caption.textContent = tier ? (name + ' · ' + tier) : (name + ' — not worked this day');
+          caption.classList.toggle('text-gray-800', true);
+          g.style.setProperty('fill-opacity', tier ? '1' : '.25');
+        }
+        function rest() {
+          caption.textContent = IDLE;
+          caption.classList.toggle('text-gray-800', false);
+          g.style.setProperty('fill-opacity', restOpacity);
+        }
+        if (canHover) {
+          g.addEventListener('mouseenter', show);
+          g.addEventListener('mouseleave', rest);
+        }
+        g.addEventListener('click', show);  // touch (and a harmless echo on desktop)
+      });
+      return svg;
+    }
+
+    function open(btn) {
+      var muscles;
+      try { muscles = JSON.parse(btn.dataset.muscles) || {}; } catch (e) { muscles = {}; }
+      var front = buildDiagram('body-front', muscles);
+      var back = buildDiagram('body-back', muscles);
+      if (!front || !back) return;
+      kicker.textContent = btn.dataset.date || '';
+      title.textContent = btn.dataset.title || '';
+      diagrams.textContent = '';
+      // The day's tier colors live in the button's inline custom properties —
+      // copy the whole style string so the big diagrams paint identically.
+      diagrams.setAttribute('style', btn.getAttribute('style') || '');
+      diagrams.appendChild(front);
+      diagrams.appendChild(back);
+      caption.textContent = IDLE;
+      caption.classList.remove('text-gray-800');
+      lastFocus = btn;
+      modal.hidden = false;
+      closeBtn.focus();
+    }
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-muscle-zoom]');
+      if (btn) open(btn);
+    });
+    closeBtn.addEventListener('click', close);
+    modal.addEventListener('click', function (e) {  // backdrop dismisses
+      if (!e.target.closest('[data-muscle-card]')) close();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modal.hidden) close();
+    });
+  })();
+</script>
 
 {# Floating trainer chat — same panel as /trainer, just the opener + slide-in here.
    TrainerPlan isn't bootstrapped on this page, so its refresh hook is a no-op (guarded). #}
