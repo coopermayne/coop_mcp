@@ -344,7 +344,9 @@ def main() -> None:
                 color = " | color=green"
         print(f"{line}{color} | font=Menlo size=12")
     print("---")
-    print(f"Open journal | href={JOURNAL_URL}/app/journal")
+    # The menu shows macros, so it links to the food log (its own page since the
+    # journal/food split) — not the journal, which is entries-only now.
+    print(f"Open food log | href={JOURNAL_URL}/app/food")
     print("Refresh | refresh=true")
 
 
