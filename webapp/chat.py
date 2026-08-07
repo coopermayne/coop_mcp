@@ -365,7 +365,11 @@ async def _ensure_tools(agent: str):
         tools, dispatch = cfg["tools"]()
     else:
         exclude = cfg["exclude"]
-        tool_objs = await cfg["server"].list_tools()
+        # run_middleware=False: this is the in-process webapp surface, already behind
+        # the browser session's Google auth — there is no MCP access token here, so
+        # letting AllowlistMiddleware.on_message run would reject the empty email.
+        # The middleware guards the MCP wire surface, which this call never touches.
+        tool_objs = await cfg["server"].list_tools(run_middleware=False)
         tools, dispatch = [], {}
         for t in tool_objs:
             if t.name in exclude:
