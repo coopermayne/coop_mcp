@@ -233,8 +233,10 @@
 <body class="min-h-screen bg-white text-black">
   {% if active %}
   <header class="border-b border-gray-100 sticky top-0 bg-white/90 backdrop-blur z-10">
-    {# Icon-only nav: the primary sections (journal · trainer · training ·
-       graphs) sit on the strip; everything secondary (people, theme toggle,
+    {# Icon-only nav: the primary sections (journal · food · training ·
+       graphs) sit on the strip — the trainer has no strip icon of its own,
+       it's reached from the Training page header (and the "2" shortcut);
+       everything secondary (people, theme toggle,
        logout) collapses behind a hamburger that opens a dropdown. Icons are inline
        Lucide-style strokes inheriting currentColor; active page firms to black
        (white in dark). aria-label/title carry the names for a11y + tooltips. #}
@@ -245,10 +247,7 @@
       <a href="{{ base }}/food" aria-label="Food" title="Food" class="hover:text-black transition-colors {% if active == 'food' %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>
       </a>
-      <a href="{{ base }}/trainer" aria-label="Trainer" title="Trainer" class="hover:text-black transition-colors {% if active == 'trainer' %}text-black{% endif %}">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="m9 13 2 2 4-4"/></svg>
-      </a>
-      <a href="{{ base }}/workouts" aria-label="Training" title="Training" class="hover:text-black transition-colors {% if active == 'workouts' %}text-black{% endif %}">
+      <a href="{{ base }}/workouts" aria-label="Training" title="Training" class="hover:text-black transition-colors {% if active in ('workouts', 'trainer') %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="9" x2="3.5" y2="15"/><line x1="6.5" y1="6.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="20.5" y1="9" x2="20.5" y2="15"/><line x1="6.5" y1="12" x2="17.5" y2="12"/></svg>
       </a>
       <a href="{{ base }}/graphs" aria-label="Graphs" title="Graphs" class="hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">

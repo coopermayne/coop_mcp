@@ -7,9 +7,18 @@
 
 <div class="flex items-center justify-between mb-12">
   <h1 class="text-2xl font-bold tracking-tight">Training</h1>
-  <a href="{{ base }}/trainer/library" aria-label="Exercise library" title="Exercise library" class="text-gray-400 hover:text-black transition-colors">
-    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
-  </a>
+  {# The trainer lives under Training, not on the nav strip — these two labeled
+     links are its front door. #}
+  <div class="flex items-center gap-5">
+    <a href="{{ base }}/trainer" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="m9 13 2 2 4-4"/></svg>
+      <span>Trainer</span>
+    </a>
+    <a href="{{ base }}/trainer/library" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
+      <span>Library</span>
+    </a>
+  </div>
 </div>
 
 {# ── Mini muscle maps ────────────────────────────────────────────────────────────────
