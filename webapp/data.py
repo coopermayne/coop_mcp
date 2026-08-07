@@ -196,12 +196,8 @@ def list_days(limit_entries: int = 120, since: str | None = None,
         if not days or days[-1]["date"] != e["entry_date"]:
             days.append({"date": e["entry_date"], "entries": []})
         days[-1]["entries"].append(e)
-    # Floor for bare intake-only days: the start of what's actually loaded. An
-    # explicit `since` IS that start; otherwise the default window reaches back to
-    # `oldest` — unless there's nothing older at all (has_more False), in which case
-    # the feed is complete and every logged day belongs on it.
-    floor = since or (oldest if has_more else None)
-    _attach_nutrition(days, floor, bare_days=kind is None)
+    # Intake lives on its own /food page now (food_days below) — the journal feed
+    # carries entries only, so no nutrition is attached here.
     if kind is None:
         _fill_empty_days(days)
     return {"days": days, "total": total, "oldest": oldest,
@@ -210,18 +206,17 @@ def list_days(limit_entries: int = 120, since: str | None = None,
 
 def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
     """Insert a bare block for every calendar day inside the loaded window that has
-    neither entries nor an intake row, in place.
+    no entries, in place.
 
-    A day with nothing written is still a day you want to reach: it's where the
-    drinks counter is tapped and where "write about this day" opens the chat. Without
-    this the feed silently skips quiet days (an empty Tuesday simply isn't there, so
-    there's nothing to tap). The window runs from today back to the oldest loaded
-    day — never older, so it doesn't imply history that hasn't been paged in — and
-    is capped at `span_cap` days as a guard against a single ancient outlier
-    rendering years of blanks.
+    A day with nothing written is still a day you want to reach: it's where
+    "write about this day" opens the chat. Without this the feed silently skips
+    quiet days (an empty Tuesday simply isn't there, so there's nothing to tap).
+    The window runs from today back to the oldest loaded day — never older, so it
+    doesn't imply history that hasn't been paged in — and is capped at `span_cap`
+    days as a guard against a single ancient outlier rendering years of blanks.
 
     Only the unfiltered feed fills: a kind filter is a scoped view of entries, so
-    empty days there would be noise (same reason bare intake days are skipped)."""
+    empty days there would be noise."""
     if not days:
         return
     newest = max(date.fromisoformat(d["date"]) for d in days)
@@ -263,51 +258,70 @@ NUTRIENT_TARGETS = {
 }
 
 
-def _attach_nutrition(days: list[dict], floor: str | None, bare_days: bool = True) -> None:
-    """Hang each day's intake — its items and their summed totals — onto the feed's
-    day blocks, in place.
+def _day_nutrition(items: list) -> dict:
+    """One day's intake, shaped for the templates: summed totals plus the item rows.
+    Totals are SUMMED here from the item rows (server.intake_items) rather than read
+    from a stored column: the sum is the only version that can't drift from the items
+    shown beside it. A nutrient no item carries is absent, not 0 — "unestimated" is a
+    different fact from zero."""
+    n = {m: round(sum(x[m] for x in items if x[m] is not None), 1)
+         for m in server.NUTRIENTS
+         if any(x[m] is not None for x in items)}
+    n["items"] = [
+        {"id": r["id"], "text": r["item"], "note": r["note"],
+         # Which nutrients this item carries — drives the per-item detail modal.
+         **{m: r[m] for m in server.NUTRIENTS if r[m] is not None}}
+        for r in items
+    ]
+    n["notes"] = "; ".join(r["note"] for r in items if r["note"]) or None
+    return n
 
-    A day gets a `nutrition` dict only when something was logged; days with none carry
-    nothing, so the template just tests truthiness. Totals are SUMMED here from the
-    item rows (server.intake_items) rather than read from a stored column: the sum is
-    the only version that can't drift from the items shown beside it. A nutrient no
-    item carries is absent, not 0 — "unestimated" is a different fact from zero.
 
-    A day with intake but no entries is inserted inside the loaded window so it's still
-    reachable, and a kind-filtered feed skips those insertions."""
+def food_days(since: str | None = None, limit_days: int = 30) -> dict:
+    """The food log's own feed: days with intake, newest first, each carrying the
+    `nutrition` dict (_day_nutrition). Journal entries don't appear here and intake
+    no longer appears on /journal — the two logs are separate pages.
+
+    Default window is the `limit_days` most recent logged days; `since` (ISO date)
+    instead loads every logged day on/after it, cumulatively — the same "load older"
+    cursor contract as list_days, so the button works identically."""
     with server.db() as conn:
+        if since:
+            dates = [r["food_date"] for r in conn.execute(
+                "SELECT DISTINCT food_date FROM intake_items "
+                "WHERE food_date >= ? ORDER BY food_date DESC", (since,))]
+        else:
+            dates = [r["food_date"] for r in conn.execute(
+                "SELECT DISTINCT food_date FROM intake_items "
+                "ORDER BY food_date DESC LIMIT ?", (limit_days,))]
+        total = conn.execute(
+            "SELECT COUNT(DISTINCT food_date) AS n FROM intake_items").fetchone()["n"]
+        oldest = dates[-1] if dates else None
         rows = conn.execute(
-            "SELECT * FROM intake_items "
-            + ("WHERE food_date >= ? " if floor else "")
-            + "ORDER BY food_date, position, id",
-            (floor,) if floor else (),
-        ).fetchall()
+            "SELECT * FROM intake_items WHERE food_date >= ? "
+            "ORDER BY food_date DESC, position, id", (oldest,)
+        ).fetchall() if oldest else []
+        has_more, next_since = False, None
+        if oldest:
+            has_more = conn.execute(
+                "SELECT 1 FROM intake_items WHERE food_date < ? LIMIT 1", (oldest,)
+            ).fetchone() is not None
+            if has_more:
+                row = conn.execute(
+                    "SELECT DISTINCT food_date FROM intake_items WHERE food_date < ? "
+                    "ORDER BY food_date DESC LIMIT 1 OFFSET ?",
+                    (oldest, limit_days - 1),
+                ).fetchone()
+                next_since = row["food_date"] if row else conn.execute(
+                    "SELECT MIN(food_date) AS d FROM intake_items").fetchone()["d"]
     by_date: dict = {}
     for r in rows:
         by_date.setdefault(r["food_date"], []).append(r)
-    built = {}
-    for d, items in by_date.items():
-        n = {m: round(sum(x[m] for x in items if x[m] is not None), 1)
-             for m in server.NUTRIENTS
-             if any(x[m] is not None for x in items)}
-        n["items"] = [
-            {"id": r["id"], "text": r["item"], "note": r["note"],
-             # Which nutrients this item carries — lets the stepper list just the
-             # water (or drink) items when you tap that ring.
-             **{m: r[m] for m in server.NUTRIENTS if r[m] is not None}}
-            for r in items
-        ]
-        n["notes"] = "; ".join(r["note"] for r in items if r["note"]) or None
-        built[d] = n
-    for day in days:
-        n = built.pop(day["date"], None)
-        if n:
-            day["nutrition"] = n
-    if not bare_days or not built:
-        return
-    for d, n in built.items():
-        days.append({"date": d, "entries": [], "nutrition": n})
+    days = [{"date": d, "nutrition": _day_nutrition(items)}
+            for d, items in by_date.items()]
     days.sort(key=lambda x: x["date"], reverse=True)
+    return {"days": days, "total": total, "oldest": oldest,
+            "has_more": has_more, "next_since": next_since}
 
 
 def calendar_months(entry_dates: list[str], today: str | None = None) -> list[dict]:
@@ -519,19 +533,32 @@ def workouts_full(limit: int = 20) -> list:
                      "distance_miles": s["distance_miles"], "note": s["note"]}
                 )
             exercises = [by_ex[i] for i in order]
-            # muscles this session actually hit, at their strongest emphasis tier
-            # (drives the mini body diagram in the day's title block)
+            # muscles this session actually hit — each with its strongest emphasis
+            # tier (colors the mini body diagram in the day's title block) and the
+            # exercises that worked it, ordered by how hard each worked it
+            # (primary contributors first). Shape per muscle:
+            #   {"tier": "primary", "exercises": [{"name": ..., "role": ...}, ...]}
+            # The muscle modal's hover caption reads the exercise list.
             mrows = conn.execute(
-                """SELECT em.muscle,
-                          MIN(CASE em.role WHEN 'primary' THEN 1
-                                           WHEN 'secondary' THEN 2 ELSE 3 END) AS tier
-                   FROM sets s JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+                """SELECT DISTINCT em.muscle, em.role, e.name,
+                          CASE em.role WHEN 'primary' THEN 1
+                                       WHEN 'secondary' THEN 2 ELSE 3 END AS rank
+                   FROM sets s
+                   JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+                   JOIN exercises e ON e.id = s.exercise_id
                    WHERE s.workout_id = ? AND s.status='done'
-                   GROUP BY em.muscle""",
+                   ORDER BY em.muscle, rank, e.name""",
                 (w["id"],),
             ).fetchall()
             tier_name = {1: "primary", 2: "secondary", 3: "tertiary"}
-            muscles = {r["muscle"]: tier_name[r["tier"]] for r in mrows}
+            muscles: dict = {}
+            for r in mrows:
+                # rows arrive rank-ordered, so the first row for a muscle carries
+                # its strongest tier
+                entry = muscles.setdefault(
+                    r["muscle"], {"tier": tier_name[r["rank"]], "exercises": []}
+                )
+                entry["exercises"].append({"name": r["name"], "role": r["role"]})
             # latest bodyweight reading on the day of this session, if any
             bw = conn.execute(
                 "SELECT weight_lbs FROM body_weight WHERE weigh_date=? ORDER BY id DESC LIMIT 1",

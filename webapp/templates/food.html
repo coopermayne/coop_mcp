@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% import "macros.html" as m with context %}
+{% block title %}Food · Journal{% endblock %}
+{% block content %}
+
+{# The food log, split out of the journal feed: intake days only, newest first.
+   Deliberately OUTSIDE the journal lock (glancing at macros shouldn't need the
+   knock) and with no chat panel — intake is logged through the MCP tools (or the
+   journal chat), this page only reads. #}
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-2xl font-bold tracking-tight">Food</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} day{{ '' if count == 1 else 's' }} logged</span>
+</div>
+
+{% if days %}
+  {% for day in days %}
+  <section id="day-{{ day.date }}" class="scroll-mt-20 border-t border-gray-200 first:border-t-0 first:pt-0 mb-10 pt-8">
+    <p class="text-sm uppercase tracking-widest text-gray-500 font-medium mb-4">{{ day.date | long_date }}</p>
+    {{ m.eating_block(day.nutrition) }}
+  </section>
+  {% endfor %}
+  {% if has_more %}
+  <div class="mt-8 flex justify-center">
+    <a href="{{ base }}/food?since={{ next_since }}"
+       class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors">Load older</a>
+  </div>
+  {% endif %}
+{% else %}
+<p class="text-sm text-gray-400">Nothing logged yet — tell the journal chat (or Claude) what you ate.</p>
+{% endif %}
+
+{# Intake detail reader — ONE modal for all three things on a day: an item (its own
+   nutrients, which the summed rings can't show), a nutrient ring (its target, which
+   an arc can only imply), and the circled "i" (the day's notes). Each carries its
+   whole payload in `data-detail` as JSON — {kicker, title, rows, note} — so opening
+   one is display-only, with no fetch and nothing to look up. #}
+<div data-detail-modal hidden
+     class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/30"
+     role="dialog" aria-modal="true" aria-labelledby="detail-modal-title">
+  <div class="w-full max-w-sm bg-white border border-gray-200 rounded-[6px] shadow-xl px-6 py-5"
+       data-detail-card>
+    <p data-detail-kicker class="text-[10px] uppercase tracking-widest text-gray-400"></p>
+    <p id="detail-modal-title" data-detail-title
+       class="text-[15px] text-gray-800 leading-relaxed mt-1"></p>
+    {# Rows are label-left / figure-right with a hairline between, so a breakdown reads
+       as a small table without drawing one. #}
+    <dl data-detail-rows class="mt-4 text-[13px]"></dl>
+    <p data-detail-note
+       class="mt-4 text-[13px] text-gray-500 leading-relaxed whitespace-pre-line"></p>
+    <div class="flex justify-end mt-5">
+      <button type="button" data-detail-close
+              class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Close</button>
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    var modal = document.querySelector('[data-detail-modal]');
+    if (!modal) return;
+    var kicker = modal.querySelector('[data-detail-kicker]');
+    var title  = modal.querySelector('[data-detail-title]');
+    var rows   = modal.querySelector('[data-detail-rows]');
+    var note   = modal.querySelector('[data-detail-note]');
+    // Keyboard focus follows the dialog: Close takes focus on open, and focus
+    // returns to the ring/item that opened it on close.
+    var lastFocus = null;
+    function close() {
+      modal.hidden = true;
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+      lastFocus = null;
+    }
+
+    function open(el) {
+      var d;
+      try { d = JSON.parse(el.dataset.detail); } catch (err) { return; }
+      kicker.textContent = d.kicker || '';
+      title.textContent = d.title || '';
+      title.hidden = !d.title;
+      rows.textContent = '';
+      (d.rows || []).forEach(function (r, i) {
+        var row = document.createElement('div');
+        row.className = 'flex justify-between gap-4 py-1.5' +
+                        (i ? ' border-t border-gray-100' : '');
+        var dt = document.createElement('dt');
+        dt.className = 'text-gray-500';
+        dt.textContent = r.label;
+        var dd = document.createElement('dd');
+        dd.className = 'text-gray-800 tabular-nums';
+        dd.textContent = r.value;
+        row.appendChild(dt); row.appendChild(dd); rows.appendChild(row);
+      });
+      // An item logged in words alone carries no numbers — say so rather than
+      // showing an empty gap where a breakdown would be.
+      if (!(d.rows || []).length && d.empty) {
+        var p = document.createElement('p');
+        p.className = 'text-gray-400 italic';
+        p.textContent = d.empty;
+        rows.appendChild(p);
+      }
+      rows.hidden = !rows.childNodes.length;
+      note.textContent = d.note || '';
+      note.hidden = !d.note;
+      lastFocus = el;
+      modal.hidden = false;
+      modal.querySelector('[data-detail-close]').focus();
+    }
+
+    document.addEventListener('click', function (e) {
+      var el = e.target.closest('[data-detail]');
+      if (!el) return;
+      e.preventDefault();
+      open(el);
+    });
+    // role="button" spans (the intake items) need the keyboard activation a real
+    // button would have given them.
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var el = e.target.closest && e.target.closest('[data-detail]');
+      if (!el) return;
+      e.preventDefault();
+      open(el);
+    });
+    modal.querySelector('[data-detail-close]').addEventListener('click', close);
+    modal.addEventListener('click', function (e) {  // backdrop dismisses
+      if (!e.target.closest('[data-detail-card]')) close();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modal.hidden) close();
+    });
+  })();
+</script>
+
+{% endblock %}

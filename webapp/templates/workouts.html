@@ -75,7 +75,7 @@
               data-title="{{ s.focus or 'Workout' }}" data-muscles='{{ s.muscles | tojson }}'
               aria-label="Muscles worked — open diagram"
               class="flex gap-1 shrink-0 mt-1 cursor-pointer opacity-100 hover:opacity-75 transition-opacity"
-              style="{% for name, tier in s.muscles.items() %}--m-{{ name | replace(' ', '-') }}:{{ tier_color[tier] }};--o-{{ name | replace(' ', '-') }}:.9;{% endfor %}">
+              style="{% for name, info in s.muscles.items() %}--m-{{ name | replace(' ', '-') }}:{{ tier_color[info.tier] }};--o-{{ name | replace(' ', '-') }}:.9;{% endfor %}">
         <svg class="w-8 h-16 sm:w-10 sm:h-20" aria-hidden="true"><use href="#body-front"/></svg>
         <svg class="w-8 h-16 sm:w-10 sm:h-20" aria-hidden="true"><use href="#body-back"/></svg>
       </button>
@@ -97,10 +97,18 @@
     </div>
 
     {% if s.feeling or s.notes or s.bodyweight is not none %}
-    <div class="border-t border-gray-100 px-5 sm:px-6 py-4 space-y-1.5">
-      {% if s.bodyweight is not none %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Weight:</span> <span class="tabular-nums">{{ s.bodyweight | num }} lbs</span></p>{% endif %}
-      {% if s.feeling %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Feeling:</span> {{ s.feeling }}</p>{% endif %}
-      {% if s.notes %}<p class="text-xs text-gray-500 whitespace-pre-line"><span class="text-gray-400 font-medium">Notes:</span> {{ s.notes }}</p>{% endif %}
+    {# Notes are context you want occasionally, not on every card — so they hide
+       behind a quiet right-aligned button on the Weight/Feeling line, opening
+       the app dialog (base.html's appDialog.notice, which renders pre-line). #}
+    <div class="border-t border-gray-100 px-5 sm:px-6 py-4 flex items-start justify-between gap-3">
+      <div class="space-y-1.5 min-w-0">
+        {% if s.bodyweight is not none %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Weight:</span> <span class="tabular-nums">{{ s.bodyweight | num }} lbs</span></p>{% endif %}
+        {% if s.feeling %}<p class="text-xs text-gray-500"><span class="text-gray-400 font-medium">Feeling:</span> {{ s.feeling }}</p>{% endif %}
+      </div>
+      {% if s.notes %}
+      <button type="button" data-session-notes="{{ s.notes }}"
+              class="shrink-0 text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Notes ›</button>
+      {% endif %}
     </div>
     {% endif %}
   </article>
@@ -123,8 +131,12 @@
     <p data-muscle-kicker class="text-[10px] uppercase tracking-widest text-gray-400"></p>
     <p id="muscle-modal-title" data-muscle-title class="text-[15px] text-gray-800 leading-relaxed mt-1"></p>
     <div data-muscle-diagrams class="flex justify-center gap-4 mt-4 text-gray-600"></div>
-    {# Fixed-height caption so hover updates don't bounce the layout. #}
-    <p data-muscle-caption class="h-5 mt-3 text-center text-[13px] text-gray-500"></p>
+    {# Two-line caption (muscle · tier, then the exercises that worked it) with a
+       reserved min-height so hover updates don't bounce the layout. #}
+    <div data-muscle-caption class="min-h-10 mt-3 text-center text-[13px] text-gray-500">
+      <p data-muscle-cap-name></p>
+      <p data-muscle-cap-exs class="mt-0.5 leading-snug"></p>
+    </div>
     <div class="flex justify-end mt-4">
       <button type="button" data-muscle-close
               class="px-3 py-2 border border-gray-200 text-gray-500 text-xs hover:border-black hover:text-black transition-colors">Close</button>
@@ -138,11 +150,32 @@
     var kicker = modal.querySelector('[data-muscle-kicker]');
     var title = modal.querySelector('[data-muscle-title]');
     var diagrams = modal.querySelector('[data-muscle-diagrams]');
-    var caption = modal.querySelector('[data-muscle-caption]');
+    var capName = modal.querySelector('[data-muscle-cap-name]');
+    var capExs = modal.querySelector('[data-muscle-cap-exs]');
     var closeBtn = modal.querySelector('[data-muscle-close]');
     var canHover = window.matchMedia && window.matchMedia('(hover: hover)').matches;
     var IDLE = canHover ? 'Hover a muscle' : 'Tap a muscle';
     var lastFocus = null;
+
+    function setIdle() {
+      capName.textContent = IDLE;
+      capName.classList.remove('text-gray-800');
+      capExs.textContent = '';
+    }
+    // The exercises that worked the hovered muscle, already ordered by data.py
+    // (primary contributors first). Primary names print at full strength,
+    // secondary/tertiary progressively quieter, so the ordering is visible.
+    var ROLE_CLASS = { primary: 'text-gray-800', secondary: 'text-gray-500', tertiary: 'text-gray-400' };
+    function renderExercises(list) {
+      capExs.textContent = '';
+      (list || []).forEach(function (ex, i) {
+        if (i) capExs.appendChild(document.createTextNode(' · '));
+        var span = document.createElement('span');
+        span.className = ROLE_CLASS[ex.role] || 'text-gray-500';
+        span.textContent = ex.name;
+        capExs.appendChild(span);
+      });
+    }
 
     function close() {
       modal.hidden = true;
@@ -168,17 +201,17 @@
         var m = /--m-([a-z-]+)/.exec(g.getAttribute('style') || '');
         if (!m) return;
         var name = m[1].replace(/-/g, ' ');
-        var tier = muscles[name];
+        var info = muscles[name];  // {tier, exercises} or undefined (not worked)
         var restOpacity = g.style.getPropertyValue('fill-opacity');
         g.style.cursor = 'pointer';
         function show() {
-          caption.textContent = tier ? (name + ' · ' + tier) : (name + ' — not worked this day');
-          caption.classList.toggle('text-gray-800', true);
-          g.style.setProperty('fill-opacity', tier ? '1' : '.25');
+          capName.textContent = info ? (name + ' · ' + info.tier) : (name + ' — not worked this day');
+          capName.classList.add('text-gray-800');
+          renderExercises(info && info.exercises);
+          g.style.setProperty('fill-opacity', info ? '1' : '.25');
         }
         function rest() {
-          caption.textContent = IDLE;
-          caption.classList.toggle('text-gray-800', false);
+          setIdle();
           g.style.setProperty('fill-opacity', restOpacity);
         }
         if (canHover) {
@@ -204,8 +237,7 @@
       diagrams.setAttribute('style', btn.getAttribute('style') || '');
       diagrams.appendChild(front);
       diagrams.appendChild(back);
-      caption.textContent = IDLE;
-      caption.classList.remove('text-gray-800');
+      setIdle();
       lastFocus = btn;
       modal.hidden = false;
       closeBtn.focus();
@@ -214,6 +246,10 @@
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-muscle-zoom]');
       if (btn) open(btn);
+      // Session notes button — the notes text rides in the attribute, shown in
+      // the shared app dialog rather than printed on every card.
+      var nb = e.target.closest('[data-session-notes]');
+      if (nb && window.appDialog) window.appDialog.notice(nb.dataset.sessionNotes);
     });
     closeBtn.addEventListener('click', close);
     modal.addEventListener('click', function (e) {  // backdrop dismisses

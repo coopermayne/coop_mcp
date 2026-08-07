@@ -242,6 +242,9 @@
       <a href="{{ base }}/journal" aria-label="Journal" title="Journal" class="hover:text-black transition-colors {% if active == 'journal' %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       </a>
+      <a href="{{ base }}/food" aria-label="Food" title="Food" class="hover:text-black transition-colors {% if active == 'food' %}text-black{% endif %}">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>
+      </a>
       <a href="{{ base }}/trainer" aria-label="Trainer" title="Trainer" class="hover:text-black transition-colors {% if active == 'trainer' %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="m9 13 2 2 4-4"/></svg>
       </a>
@@ -441,6 +444,7 @@
         '2': '{{ base }}/trainer',
         '3': '{{ base }}/workouts',
         '4': '{{ base }}/graphs',
+        '5': '{{ base }}/food',
       };
       document.addEventListener('keydown', function (e) {
         if (e.metaKey || e.ctrlKey || e.altKey) return;

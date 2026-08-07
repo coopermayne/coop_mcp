@@ -46,26 +46,22 @@
 {# Day sections are anchor targets for the sidebar calendar (#day-YYYY-MM-DD).
    scroll-mt-20 keeps the heading clear of the sticky page header on jump. A top
    rule separates one day from the next; first:* drops it on the first block.
-
-   Nothing here writes: intake is logged through the MCP tools (or the chat panel,
-   which calls the same ones), so the day header is just a date. #}
+   Entries only — intake lives on its own /food page now. #}
 {# An empty day is still a day (it carries the "write about this day" way in), but it
    shouldn't eat a full block of scroll — a quiet stretch compresses to one line
    each. #}
 <section id="day-{{ day.date }}"
          class="scroll-mt-20 border-t border-gray-200 first:border-t-0 first:pt-0
-                {{ 'mb-3 pt-3' if not (day.entries or day.nutrition) else 'mb-10 pt-8' }}">
-  <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not (day.entries or day.nutrition) else 'mb-4' }}">
+                {{ 'mb-3 pt-3' if not day.entries else 'mb-10 pt-8' }}">
+  <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not day.entries else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
   </div>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
-    {% if day.nutrition %}{{ eating_block(day.nutrition) }}{% endif %}
     {% if not day.entries and chat_enabled %}
     {# Nothing written that day. Offer the way in: opens the chat panel with the
        date prefilled (wired in _chat_panel.html) so the user can just start talking
-       about it. Only with chat on — otherwise there'd be nothing to open (the day
-       still shows, and its drink counter still works). #}
+       about it. Only with chat on — otherwise there'd be nothing to open. #}
     <button type="button" data-day-write data-date="{{ day.date }}"
             class="text-sm text-gray-300 hover:text-black transition-colors">Nothing yet — write about this day ›</button>
     {% endif %}
@@ -75,30 +71,23 @@
 
 
 {% macro eating_block(n) %}
-{# The day's intake — every item logged that day (server.intake_items), food,
-   alcohol and water alike, since a beer and a sandwich are the same kind of fact.
-   Styled as an aside rather than a note: it's a daily metric, not a journal entry.
-   The rings show the day's SUMMED totals; a nutrient no item carries is simply
-   absent, so a day described only in words has no phantom zeros — EXCEPT water and
-   alcohol, which always render (dashed when unlogged), since "no water logged" is
-   itself worth seeing on a day you're trying to hit a gallon.
+{# One day of the /food log — every item logged that day (server.intake_items),
+   food, alcohol and water alike, since a beer and a sandwich are the same kind of
+   fact. The rings show the day's SUMMED totals; a nutrient no item carries is
+   simply absent, so a day described only in words has no phantom zeros — EXCEPT
+   water and alcohol, which always render (dashed when unlogged), since "no water
+   logged" is itself worth seeing on a day you're trying to hit a gallon.
 
-   Items get a circled index each but FLOW as one paragraph rather than one line
-   each: the numbers alone make the list scannable, and intake is usually a few
-   short phrases that would waste a line apiece. Each index is glued to its item's
-   first word in a nowrap span, so a wrap never strands one at the end of a line;
-   the rest of the item wraps freely.
+   Now that the log has its own page, each item gets its OWN LINE (still led by
+   its circled index); a long item wraps under itself rather than into the next.
 
    Each nutrient is a ring (data.NUTRIENT_TARGETS supplies the goal) with its summed
    figure and short label inside. All display-only — every write goes through the MCP
    tools. The day's notes hide behind a
-   circled "i" at the END of that row, opening a modal (wired in journal.html):
+   circled "i" at the END of that row, opening a modal (wired in food.html):
    they're context you want occasionally, not on every day. #}
-<div class="flex gap-2 sm:-ml-5 sm:gap-3">
-  <span class="shrink-0 pt-0.5 text-sm leading-relaxed text-transparent select-none" aria-hidden="true">›</span>
-  <div class="flex-1 border-l-2 border-gray-200 pl-3">
-    <p class="text-[10px] uppercase tracking-widest text-gray-400">Intake</p>
-    {# An UNESTIMATED nutrient is left out of the dict entirely (data._attach_nutrition
+<div>
+    {# An UNESTIMATED nutrient is left out of the dict entirely (data._day_nutrition
        drops NULLs), so presence is a plain key test — and n.calories on a missing
        key would be Undefined, which sails past `is not none` into the num filter.
 
@@ -117,7 +106,7 @@
         'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks', 'label': 'Alcohol'},
     } %}
     {% if n['items'] %}
-    <p class="text-[15px] text-gray-800 leading-relaxed mt-0.5">
+    <div class="space-y-1.5">
       {%- for it in n['items'] %}
         {# A tapped top-up has no text of its own, so name it from what it carries:
            "16oz water", "1 drink". Anything logged in chat has real text. #}
@@ -126,7 +115,6 @@
         {%- elif it.get('standard_drinks') %}{% set label = (it.standard_drinks | num) ~ ' drink' ~ ('' if it.standard_drinks == 1 else 's') %}
         {%- else %}{% set label = '' %}{% endif -%}
         {%- if label -%}
-        {%- set head, _, tail = label.partition(' ') -%}
         {# The item's own numbers, for the modal. The rings show the day SUMMED, so
            this is the only place you can see WHICH item the calories came from — and
            a nutrient the item doesn't carry is absent, never 0, the same
@@ -142,24 +130,19 @@
         {%- endfor -%}
         {%- set payload = {'kicker': 'Intake item', 'title': label, 'rows': rows,
                            'empty': 'Nothing estimated for this one.', 'note': it.note} -%}
-        {%- if not loop.first %} {% endif -%}
-        {# The WHOLE item is the click target (not just the circled index — 16px is too
-           small a thing to aim at), opening the detail modal with its own numbers. The
-           only hint is the text firming to black on hover: a dotted underline or a
-           border on every item would fight the prose. Rendered as a span rather than a
-           button so a long item still WRAPS mid-line; role/tabindex put it back on the
-           keyboard, and the delegated handler in journal.html takes Enter/Space.
-
-           ml-1 on every item but the first widens the gap between one item and the
-           next index, so the run reads as a list rather than a sentence. #}
-        <span role="button" tabindex="0" data-detail='{{ payload | tojson }}'
-              class="cursor-pointer hover:text-black transition-colors">
-          {#- -#}<span class="whitespace-nowrap{{ '' if loop.first else ' ml-1' }}">{{ index_circle(loop.index) }}{{ head }}</span>
-          {#- -#}{{ ' ' ~ tail if tail else '' }}{#- -#}
-        </span>
+        {# One line per item. The WHOLE line is the click target (not just the
+           circled index — 16px is too small a thing to aim at), opening the detail
+           modal with its own numbers. The only hint is the text firming to black
+           on hover. A span (not a button) so a long item wraps naturally under
+           itself; role/tabindex put it back on the keyboard, and the delegated
+           handler in food.html takes Enter/Space. #}
+        <p class="text-[15px] text-gray-800 leading-relaxed">
+          <span role="button" tabindex="0" data-detail='{{ payload | tojson }}'
+                class="cursor-pointer hover:text-black transition-colors">{{ index_circle(loop.index) }}{{ label }}</span>
+        </p>
         {%- endif -%}
       {%- endfor %}
-    </p>
+    </div>
     {% endif %}
     {# Alcohol and water always get a ring on a day that has any intake at all, even
        unlogged (a dashed empty one) — they're the two the user tops up through the
@@ -170,13 +153,12 @@
         {% set _ = shown.append(key) %}
       {%- endif -%}
     {% endfor %}
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3">
       {% for key in shown %}
       {{ nutrient_ring(n.get(key), units[key], NUTRIENT_TARGETS.get(key)) }}
       {% endfor %}
       {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
     </div>
-  </div>
 </div>
 {% endmacro %}
 

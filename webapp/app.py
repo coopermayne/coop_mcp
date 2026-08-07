@@ -916,6 +916,18 @@ async def journal(request: Request, q: str = "", since: str = "", kind: str = ""
                 has_more=res["has_more"], next_since=res["next_since"])
 
 
+@app.get("/food")
+async def food(request: Request, since: str = ""):
+    # The food log's own page — split out of the journal feed. Deliberately NOT in
+    # LOCK_PATHS (glancing at macros shouldn't need the knock) and carries no chat
+    # panel: intake is logged through the MCP tools / the journal chat, this page
+    # only reads.
+    res = data.food_days(since=(since or "").strip() or None)
+    return page(request, "food.html", active="food",
+                days=res["days"], count=res["total"],
+                has_more=res["has_more"], next_since=res["next_since"])
+
+
 @app.get("/pending")
 async def pending(request: Request):
     items = data.pending_mentions()
