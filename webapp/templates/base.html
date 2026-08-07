@@ -235,13 +235,13 @@
   <header class="border-b border-gray-100 sticky top-0 bg-white/90 backdrop-blur z-10">
     {# Icon-only nav: the primary sections (journal · food · training) sit on
        the strip — the trainer has no strip icon of its own, it's reached from
-       the Training page header (and the "2" shortcut);
-       everything secondary (people, graphs, theme toggle,
+       the Training page header (and the "2" shortcut), and People from the
+       Journal page header; everything secondary (graphs, theme toggle,
        logout) collapses behind a hamburger that opens a dropdown. Icons are inline
        Lucide-style strokes inheriting currentColor; active page firms to black
        (white in dark). aria-label/title carry the names for a11y + tooltips. #}
     <nav class="max-w-3xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between text-gray-400">
-      <a href="{{ base }}/journal" aria-label="Journal" title="Journal" class="hover:text-black transition-colors {% if active == 'journal' %}text-black{% endif %}">
+      <a href="{{ base }}/journal" aria-label="Journal" title="Journal" class="hover:text-black transition-colors {% if active in ('journal', 'people') %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       </a>
       <a href="{{ base }}/food" aria-label="Food" title="Food" class="hover:text-black transition-colors {% if active == 'food' %}text-black{% endif %}">
@@ -251,19 +251,15 @@
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="9" x2="3.5" y2="15"/><line x1="6.5" y1="6.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="20.5" y1="9" x2="20.5" y2="15"/><line x1="6.5" y1="12" x2="17.5" y2="12"/></svg>
       </a>
       {# Hamburger → dropdown of secondary actions. Firms to black when the
-         current page (people, graphs) lives inside the menu. The dropdown is a quiet
+         current page (graphs) lives inside the menu. The dropdown is a quiet
          popover anchored to the right under the button; the script below toggles
          [hidden] and closes it on outside-click / Escape. #}
       <div class="relative">
         <button type="button" data-menu-toggle aria-label="Menu" aria-haspopup="true" aria-expanded="false" title="Menu"
-                class="flex hover:text-black transition-colors {% if active in ('people', 'graphs') %}text-black{% endif %}">
+                class="flex hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div data-menu hidden class="absolute right-0 top-full mt-2 w-44 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-20">
-          <a href="{{ base }}/people" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'people' %}text-black{% else %}text-gray-500{% endif %}">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-            <span>People</span>
-          </a>
           <a href="{{ base }}/graphs" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'graphs' %}text-black{% else %}text-gray-500{% endif %}">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
             <span>Graphs</span>
