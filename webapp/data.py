@@ -258,7 +258,7 @@ NUTRIENT_TARGETS = {
     "carbs_g":   {"target": 250,  "ceiling": False},
     "sodium_mg": {"target": 2300, "ceiling": True},
     "fiber_g":   {"target": 30,   "ceiling": False},
-    "water_oz":  {"target": 128,  "ceiling": False},  # a gallon
+    "water_oz":  {"target": 88,   "ceiling": False},
     "standard_drinks": {"target": 2, "ceiling": True},
 }
 
