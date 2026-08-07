@@ -995,7 +995,6 @@ async def workouts(request: Request):
     months = data.calendar_months([s["date"] for s in sessions], today=server.today())
     return page(request, "workouts.html", active="workouts",
                 sessions=sessions,
-                muscles=data.muscle_breakdown(),
                 profile=brief.get("profile", {}),
                 months=months)
 
