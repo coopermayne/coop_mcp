@@ -425,13 +425,13 @@ second server-side copy is how the two drift.
 > blast radius of the widely-copied credential at one day of nutrient sums. The two are
 > not interchangeable — each endpoint accepts only its own.
 
-**2. Mac.** `scripts/swiftbar/macros.5m.py` is the plugin — a **template**. Copy it into
+**2. Mac.** `scripts/swiftbar/macros.1m.py` is the plugin — a **template**. Copy it into
 your SwiftBar plugin folder and fill in `JOURNAL_URL` and `TOKEN` at the top of *that*
 copy:
 
 ```bash
-cp scripts/swiftbar/macros.5m.py ~/path/to/swiftbar-plugins/
-$EDITOR ~/path/to/swiftbar-plugins/macros.5m.py   # set JOURNAL_URL and TOKEN
+cp scripts/swiftbar/macros.1m.py ~/path/to/swiftbar-plugins/
+$EDITOR ~/path/to/swiftbar-plugins/macros.1m.py   # set JOURNAL_URL and TOKEN
 ```
 
 > **Copy, not a symlink — because this repo is public.** A symlink would auto-update on
@@ -443,7 +443,7 @@ $EDITOR ~/path/to/swiftbar-plugins/macros.5m.py   # set JOURNAL_URL and TOKEN
 (`JOURNAL_URL` / `JOURNAL_WIDGET_TOKEN` in the environment override the constants, if you
 prefer to keep the file pristine.)
 
-The **refresh interval is the filename** — `macros.5m.py` polls every 5 minutes; rename
+The **refresh interval is the filename** — `macros.1m.py` polls every minute; rename
 to `.1m.` / `.15m.` to change it. The dropdown carries a Refresh item for right after you
 log something. It shows the full nutrient breakdown, greens a floor you've met and reds a
 ceiling you've passed, and links back to the journal. If the server is unreachable the

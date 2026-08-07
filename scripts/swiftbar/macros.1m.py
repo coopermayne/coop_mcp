@@ -8,9 +8,11 @@
   breakdown in the dropdown.</bitbar.desc>
   <bitbar.dependencies>python3</bitbar.dependencies>
 
-The REFRESH INTERVAL is the filename, not anything in here: `macros.5m.py` polls
-every 5 minutes. Rename to .1m./.15m. to change it; the dropdown also carries a
-Refresh item for when you've just logged something and don't want to wait.
+The REFRESH INTERVAL is the filename, not anything in here: `macros.1m.py` polls
+every minute. Rename to .5m./.15m. to change it. Don't go much below a minute: the
+figures only move when you LOG something, a handful of times a day, so a tighter
+poll buys nothing and just spawns a process every few seconds — and for the one
+moment it would help (right after logging) the dropdown's Refresh item is instant.
 
 Setup lives in the repo README ("Menu-bar macros"). Fill in JOURNAL_URL and TOKEN
 below — but do that in your INSTALLED COPY, not in this file.
@@ -83,7 +85,7 @@ UNITS = {
 # colour, so over/under-target colouring lives in the dropdown instead.
 #
 # Compiled ONCE into a cache dir and reused — `swiftc` takes ~5s, which is fine at
-# install time and absurd every 5 minutes. The binary is keyed by a hash of the
+# install time and absurd once a minute. The binary is keyed by a hash of the
 # source below, so editing the layout recompiles automatically.
 # --------------------------------------------------------------------------- #
 
