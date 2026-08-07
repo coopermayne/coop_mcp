@@ -519,6 +519,19 @@ def workouts_full(limit: int = 20) -> list:
                      "distance_miles": s["distance_miles"], "note": s["note"]}
                 )
             exercises = [by_ex[i] for i in order]
+            # muscles this session actually hit, at their strongest emphasis tier
+            # (drives the mini body diagram in the day's title block)
+            mrows = conn.execute(
+                """SELECT em.muscle,
+                          MIN(CASE em.role WHEN 'primary' THEN 1
+                                           WHEN 'secondary' THEN 2 ELSE 3 END) AS tier
+                   FROM sets s JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+                   WHERE s.workout_id = ? AND s.status='done'
+                   GROUP BY em.muscle""",
+                (w["id"],),
+            ).fetchall()
+            tier_name = {1: "primary", 2: "secondary", 3: "tertiary"}
+            muscles = {r["muscle"]: tier_name[r["tier"]] for r in mrows}
             # latest bodyweight reading on the day of this session, if any
             bw = conn.execute(
                 "SELECT weight_lbs FROM body_weight WHERE weigh_date=? ORDER BY id DESC LIMIT 1",
@@ -531,6 +544,7 @@ def workouts_full(limit: int = 20) -> list:
                 "feeling": w["feeling"],
                 "notes": w["notes"],
                 "bodyweight": bw["weight_lbs"] if bw else None,
+                "muscles": muscles,
                 "exercises": exercises,
                 "exercise_count": len(exercises),
                 "set_count": len(srows),
@@ -648,70 +662,6 @@ def bodyweight_on(d: str):
             (d,),
         ).fetchone()
     return r["weight_lbs"] if r else None
-
-
-def muscle_breakdown() -> dict:
-    """Per-muscle training breakdown for the /workouts body heatmap.
-
-    Keyed by every muscle in `server.MUSCLES` — all of them are always present (zeroed
-    when never trained) so the diagram can render cold regions too. Each value
-    carries the recency/volume the diagram colors by (`days_since`, `last_trained`,
-    `sets_last_7d`, `sets_last_14d`) plus the per-exercise breakdown the recency
-    briefing doesn't expose: the top ~5 exercises that hit the muscle in the last
-    14 days, with 14d/7d set counts, for the hover popup.
-
-    A "set" counts once per (muscle, set) through exercise_muscles, matching how
-    server.get_fitness_briefing computes muscle_recency. All dates are Pacific
-    (server.today())."""
-    today = server.today()
-    seven_ago = (date.fromisoformat(today) - timedelta(days=6)).isoformat()
-    fourteen_ago = (date.fromisoformat(today) - timedelta(days=13)).isoformat()
-    out = {
-        m: {"days_since": None, "last_trained": None,
-            "sets_last_7d": 0, "sets_last_14d": 0, "exercises": []}
-        for m in server.MUSCLES
-    }
-    with server.db() as conn:
-        for r in conn.execute(
-            """SELECT em.muscle,
-                      MAX(w.workout_date) AS last_date,
-                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_7d,
-                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_14d
-               FROM sets s
-               JOIN workouts w ON w.id = s.workout_id
-               JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
-               WHERE s.status='done'
-               GROUP BY em.muscle""",
-            (seven_ago, fourteen_ago),
-        ).fetchall():
-            m = out.get(r["muscle"])
-            if m is None:   # a muscle outside the canonical list — ignore
-                continue
-            m["last_trained"] = r["last_date"]
-            m["days_since"] = server._days_since(r["last_date"])
-            m["sets_last_7d"] = r["sets_7d"] or 0
-            m["sets_last_14d"] = r["sets_14d"] or 0
-        # top exercises per muscle over the last 14 days (for the hover popup)
-        for r in conn.execute(
-            """SELECT em.muscle, e.name AS name,
-                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_7d,
-                      COUNT(*) AS sets_14d
-               FROM sets s
-               JOIN workouts w ON w.id = s.workout_id
-               JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
-               JOIN exercises e ON e.id = s.exercise_id
-               WHERE w.workout_date >= ? AND s.status='done'
-               GROUP BY em.muscle, e.id
-               ORDER BY em.muscle, sets_14d DESC, sets_7d DESC, e.name""",
-            (seven_ago, fourteen_ago),
-        ).fetchall():
-            m = out.get(r["muscle"])
-            if m is None or len(m["exercises"]) >= 5:
-                continue
-            m["exercises"].append(
-                {"name": r["name"], "sets_14d": r["sets_14d"], "sets_7d": r["sets_7d"]}
-            )
-    return out
 
 
 # --------------------------------------------------------------------------- #
