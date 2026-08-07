@@ -771,7 +771,7 @@ async def manifest(request: Request):
 # Tailwind, Inter, marked — no CDNs), so it's all precached and the app styles
 # itself offline. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v6';
+const VERSION = 'v7';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [
@@ -780,6 +780,7 @@ const PRECACHE = [
   BASE + '/static/tailwind.css',
   BASE + '/static/fonts/inter-latin.woff2',
   BASE + '/static/vendor/marked.min.js',
+  BASE + '/static/body-symbols.svg',
   BASE + '/manifest.webmanifest',
 ];
 const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">`
