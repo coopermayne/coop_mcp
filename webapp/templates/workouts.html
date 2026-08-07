@@ -191,8 +191,8 @@
       {% if s.muscles %}
       <div class="flex gap-1 shrink-0 mt-1" title="{{ s.muscles.keys() | join(', ') }}"
            style="{% for name, tier in s.muscles.items() %}--m-{{ name | replace(' ', '-') }}:{{ tier_color[tier] }};--o-{{ name | replace(' ', '-') }}:.9;{% endfor %}">
-        <svg class="w-8 h-16" aria-hidden="true"><use href="#body-front"/></svg>
-        <svg class="w-8 h-16" aria-hidden="true"><use href="#body-back"/></svg>
+        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="#body-front"/></svg>
+        <svg class="w-12 h-24 sm:w-14 sm:h-28" aria-hidden="true"><use href="#body-back"/></svg>
       </div>
       {% endif %}
     </div>
