@@ -155,14 +155,17 @@
     {% endfor %}
     <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3">
       {% for key in shown %}
-      {{ nutrient_ring(n.get(key), units[key], NUTRIENT_TARGETS.get(key)) }}
+      {# The drinks ring carries one extra fact its own figure can't hold: what those
+         drinks cost in calories (data._day_nutrition's `alcohol`). #}
+      {{ nutrient_ring(n.get(key), units[key], NUTRIENT_TARGETS.get(key),
+                       n.get('alcohol') if key == 'standard_drinks' else None) }}
       {% endfor %}
       {% if n.notes %}{{ note_button(n.notes) }}{% endif %}
     </div>
 </div>
 {% endmacro %}
 
-{% macro nutrient_ring(value, unit, goal) %}
+{% macro nutrient_ring(value, unit, goal, alcohol=None) %}
 {# One nutrient, whole: the figure (with its unit) and a short label both sit INSIDE
    the ring, so each nutrient is one self-contained object instead of a stack. The
    arc is share-of-target, capped at a full circle so an overshoot doesn't wrap
@@ -199,11 +202,29 @@
                           'value': ((gap if gap >= 0 else -gap) | num) ~ u}) %}
   {% set _ = rows.append({'label': 'Of target', 'value': ((pct * 100) | round | int) ~ '%'}) %}
 {% endif %}
+{# Drinks carry one row the count can't hold: what they cost. A day of two light
+   beers and a day of two margaritas are the same "2" on the ring. #}
+{% if alcohol %}
+  {% set _ = rows.append({'label': 'Calories',
+                          'value': (alcohol.calories | num) if alcohol.calories is not none else '—'}) %}
+  {% if alcohol.share %}
+    {% set _ = rows.append({'label': "Of day's calories", 'value': alcohol.share ~ '%'}) %}
+  {% endif %}
+{% endif %}
+{% set kind_note = ('A ceiling — the ring turns clay once the day is past it.' if goal and goal.ceiling
+                    else ('A floor — going over is fine, the ring stays sage.' if goal
+                          else 'No target set for this one, so the ring draws a dashed track and no arc.')) %}
+{# An alcohol item with no calorie figure would otherwise make a partial sum look
+   complete, so the modal says how many are missing. Counting ITEMS, not drinks —
+   one item can carry several. #}
+{% set missing = alcohol.unestimated if alcohol else 0 %}
+{% set items_phrase = missing ~ ' alcohol item' ~ ('' if missing == 1 else 's') ~ ' logged without a calorie estimate' %}
+{% set gap_note = ('' if not missing else
+                   (' ' ~ items_phrase ~ ', so nothing can be summed yet.' if alcohol.calories is none
+                    else ' ' ~ items_phrase ~ ', so the figure above is partial.')) %}
 {% set payload = {
     'kicker': 'Nutrient', 'title': unit.label, 'rows': rows,
-    'note': ('A ceiling — the ring turns clay once the day is past it.' if goal and goal.ceiling
-             else ('A floor — going over is fine, the ring stays sage.' if goal
-                   else 'No target set for this one, so the ring draws a dashed track and no arc.')) } %}
+    'note': kind_note ~ gap_note } %}
 <svg viewBox="0 0 56 56" class="w-14 h-14 shrink-0 text-gray-600 cursor-pointer hover:text-black transition-colors"
      role="button" tabindex="0" data-detail='{{ payload | tojson }}'
      aria-label="{{ spoken }}{{ ' of %s target' % (goal.target | num) if goal else '' }}">
