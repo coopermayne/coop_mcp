@@ -241,15 +241,15 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
 # reach — it only changes the ring's color once it's past the target.
 #
 # The macros are set so they add up to the calorie target rather than each being
-# picked on its own (150p + 180c + 75f = 1,995 kcal): protein is fixed by muscle
+# picked on its own (130p + 200c + 75f = 1,995 kcal): protein is fixed by muscle
 # preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder — which
 # is also why carbs is NOT a ceiling. It's the flex macro, and calories already has
 # a ceiling ring to catch a genuine overshoot; a second warning color the moment
-# carbs pass 180 would be noise. Fat has no target yet, so it renders a dashed ring.
+# carbs pass 200 would be noise. Fat has no target yet, so it renders a dashed ring.
 NUTRIENT_TARGETS = {
     "calories":  {"target": 2000, "ceiling": True},
-    "protein_g": {"target": 150,  "ceiling": False},
-    "carbs_g":   {"target": 180,  "ceiling": False},
+    "protein_g": {"target": 130,  "ceiling": False},
+    "carbs_g":   {"target": 200,  "ceiling": False},
     "sodium_mg": {"target": 2300, "ceiling": True},
     "fiber_g":   {"target": 30,   "ceiling": False},
     "water_oz":  {"target": 88,   "ceiling": False},
