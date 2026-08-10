@@ -499,6 +499,7 @@ CREATE TABLE IF NOT EXISTS intake_items (
     id         INTEGER PRIMARY KEY,
     food_date  TEXT NOT NULL,    -- YYYY-MM-DD (Pacific) it was consumed
     position   INTEGER,          -- order logged within the day (1 = first)
+    at_time    TEXT,             -- HH:MM (Pacific) it was CONSUMED; NULL = unrecorded
     item       TEXT,             -- "chipotle bowl"; NULL for a bare tap ("+16oz")
     calories   REAL,             -- all optional; NULL = not estimated
     protein_g  REAL,
@@ -728,6 +729,14 @@ def init_db() -> None:
             # keeps its old id order at the top) and LAST in the newest-first lists; a
             # newly captured entry gets a real position and appends below the NULLs.
             conn.execute("ALTER TABLE entries ADD COLUMN day_position INTEGER")
+        icols = [r["name"] for r in conn.execute("PRAGMA table_info(intake_items)")]
+        if "at_time" not in icols:
+            # When it was CONSUMED, which the log never recorded before. Deliberately
+            # NOT back-filled from created_at: that's when the row was WRITTEN, and a
+            # day recapped at bedtime would get six items all stamped 10pm. Legacy
+            # rows stay NULL ("unrecorded"), and the food page falls back to showing
+            # created_at explicitly labelled as the logging time.
+            conn.execute("ALTER TABLE intake_items ADD COLUMN at_time TEXT")
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
         for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
@@ -960,6 +969,20 @@ def _bad_date(value: Optional[str], field: str) -> Optional[dict]:
         date.fromisoformat(value)
     except ValueError:
         return {"error": f"{field} is not a real calendar date: {value!r}"}
+    return None
+
+
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _bad_time(value: Optional[str], field: str) -> Optional[dict]:
+    """Return an error dict if `value` is a non-null but invalid clock time, else None.
+    Requires 24-hour HH:MM (Pacific, like every other user-facing time here) — one
+    storage format, so the display layer owns how it's spoken ("8:15am")."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _TIME_RE.match(value):
+        return {"error": f"{field} must be 24-hour HH:MM, got {value!r}"}
     return None
 
 
@@ -2488,6 +2511,8 @@ NUTRIENTS = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"
 def _item_row(r) -> dict:
     """One logged item, token-compact: only the nutrients it actually carries."""
     out = {"item_id": r["id"], "food_date": r["food_date"], "item": r["item"]}
+    if r["at_time"]:
+        out["at_time"] = r["at_time"]
     if r["note"]:
         out["note"] = r["note"]
     for m in NUTRIENTS:
@@ -2509,6 +2534,7 @@ def _day_totals(rows) -> dict:
 
 @mcp.tool(annotations=WRITE)
 def log_intake(item: str = "", food_date: Optional[str] = None,
+             at_time: Optional[str] = None,
              calories: Optional[float] = None, protein_g: Optional[float] = None,
              carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
              sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
@@ -2530,6 +2556,14 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     a strong cocktail ~1.5; a tallboy/double ~2.0. Water is in fluid ounces (128 = a
     gallon).
 
+    RECORD THE TIME when you can. `at_time` is when it was CONSUMED (24-hour HH:MM,
+    Pacific) — take it from the user's words when they give one ("had lunch around
+    noon" → "12:00"), and when they're telling you about something they just ate, use
+    the current Pacific clock from get_briefing's `now`. Leave it out when you'd be
+    guessing; an unrecorded time is fine, an invented one isn't. It's what makes the
+    day read as a sequence of meals rather than a list, and it's a different fact from
+    when the row was written (a day recapped at bedtime was not all eaten at bedtime).
+
     The nutrient numbers are OPTIONAL and stay NULL until filled in. Estimate them
     when the user wants numbers tracked or asks how a day is adding up (that judgment
     is yours — the server does no food lookup); leave them out when they're just
@@ -2545,6 +2579,7 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
         item: What was consumed, e.g. "chipotle bowl". Optional only when logging a
             bare number, like a water top-up from the app.
         food_date: Day consumed, YYYY-MM-DD (Pacific). Defaults to today.
+        at_time: Optional time consumed, 24-hour HH:MM (Pacific), e.g. "08:15".
         calories: Optional calories for THIS item.
         protein_g: Optional grams of protein.
         carbs_g: Optional grams of carbs.
@@ -2557,6 +2592,8 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     """
     if err := _bad_date(food_date, "food_date"):
         return err
+    if err := _bad_time(at_time, "at_time"):
+        return err
     item = (item or "").strip()
     nutrients = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
                  "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
@@ -2567,7 +2604,7 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     if not item and all(v is None for v in nutrients.values()):
         return {"error": "nothing to log — pass an item and/or a nutrient amount"}
     d = food_date or today()
-    cols = ("food_date", "position", "item", "note", *NUTRIENTS, "created_at")
+    cols = ("food_date", "position", "at_time", "item", "note", *NUTRIENTS, "created_at")
     with db() as conn:
         # Position is the order logged within the day — the server assigns it, same
         # deterministic append as entries' day_position.
@@ -2578,7 +2615,8 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
         rid = conn.execute(
             "INSERT INTO intake_items(" + ", ".join(cols) + ") VALUES ("
             + ",".join("?" * len(cols)) + ")",
-            (d, nxt, item or None, note, *(nutrients[m] for m in NUTRIENTS), now()),
+            (d, nxt, at_time, item or None, note,
+             *(nutrients[m] for m in NUTRIENTS), now()),
         ).lastrowid
         rows = conn.execute(
             "SELECT * FROM intake_items WHERE food_date=? ORDER BY position, id", (d,)
@@ -2648,6 +2686,7 @@ def get_intake(days: int = 14, since: Optional[str] = None,
 @mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_intake_item(item_id: int, item: Optional[str] = None,
                        food_date: Optional[str] = None,
+                       at_time: Optional[str] = None,
                        calories: Optional[float] = None, protein_g: Optional[float] = None,
                        carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
                        sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
@@ -2666,6 +2705,7 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
         item_id: The item to correct (from get_intake or log_intake).
         item: Replacement text for what it was.
         food_date: Move it to this day, YYYY-MM-DD (Pacific).
+        at_time: Replacement time consumed, 24-hour HH:MM (Pacific).
         calories: Replacement calories for this item.
         protein_g: Replacement grams of protein.
         carbs_g: Replacement grams of carbs.
@@ -2678,7 +2718,9 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
     """
     if err := _bad_date(food_date, "food_date"):
         return err
-    fields = {"item": item, "note": note, "food_date": food_date,
+    if err := _bad_time(at_time, "at_time"):
+        return err
+    fields = {"item": item, "note": note, "food_date": food_date, "at_time": at_time,
               "calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
               "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
               "standard_drinks": standard_drinks, "water_oz": water_oz}

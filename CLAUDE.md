@@ -292,6 +292,15 @@ working.
   columns. There is no per-nutrient special case anywhere above this table.
   `log_intake` inserts ONE item (the model calls it once per thing; `position` is the
   server-assigned order within the day, the same append as entries' `day_position`);
+  an item also carries an optional `at_time` — 24-hour HH:MM Pacific, when it was
+  CONSUMED, which the MODEL supplies from the user's words or the briefing's `now`
+  and never guesses. It is NOT back-filled from `created_at`: that's when the row was
+  WRITTEN, and a day recapped at bedtime would stamp six items 10pm. The two stay
+  visibly apart on the page — `at_time` leads the item line, `created_at` appears only
+  in the detail modal under a "Logged" label (the one honest thing the days predating
+  the column can offer). `data._chronological` sorts a day by time ONLY when every
+  item has one, so a partly-timed day keeps its log order rather than being shuffled
+  into an order matching neither the clock nor the log;
   `update_intake_item` edits one by id; `delete_record(kind="intake_item")` removes
   one.
   **Day totals are DERIVED, never stored** (`SUM ... GROUP BY food_date`). That's the
@@ -309,8 +318,18 @@ working.
   Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
   estimate, made in conversation; there is no food database in the server.
   The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
-  `macros.eating_block`; the journal feed carries entries only) — one line per item,
-  each led by its circled index. `/food` is deliberately OUTSIDE the journal lock
+  `macros.eating_block`) — one line per item in three columns: the time eaten, the
+  item (led by its circled index), and its calories + protein. Those two figures are
+  on the line because they're what the day is steered by; the other five would just
+  rebuild the rings in worse form, so they stay one click away in the detail modal.
+  The journal feed carries entries — plus, at the right edge of each day's date, a
+  fork-and-knife button opening that day's DISHES AND TIMES, no figures
+  (`data._intake_names_by_day`): "that was the night at Gjelina" is how you place a
+  day, and putting macros there would turn the journal into a tracker. Bare
+  water/alcohol taps have no text, so they're dropped from that list. The modal
+  itself is one shared partial (`templates/_detail_modal.html`, included by both
+  pages) with a single delegated handler, so a page adds a target just by rendering
+  `data-detail` on an element. `/food` is deliberately OUTSIDE the journal lock
   (glancing at macros shouldn't need the knock) and has no chat panel. STRICTLY
   READ-ONLY: intake has exactly ONE write path, the MCP tools (the in-app chat panel
   counts — it calls the same functions). There is no form, no tappable ring, no

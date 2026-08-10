@@ -12,7 +12,7 @@ dashboard roll-up. Nothing here writes.
 import calendar as _cal
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 # server.py lives one directory up; make it importable however we're launched.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -200,8 +200,39 @@ def list_days(limit_entries: int = 120, since: str | None = None,
     # carries entries only, so no nutrition is attached here.
     if kind is None:
         _fill_empty_days(days)
+    # …but WHAT was eaten rides along as a memory hook: "Gjelina, 8pm" is often how
+    # you remember what a day was. Names and times only — the figures stay on /food,
+    # so the journal reads as prose. Attached AFTER the fill, since a day with
+    # nothing written can still have been a day you ate somewhere memorable.
+    if days:
+        eaten = _intake_names_by_day([d["date"] for d in days])
+        for d in days:
+            d["food"] = eaten.get(d["date"], [])
     return {"days": days, "total": total, "oldest": oldest,
             "has_more": has_more, "next_since": next_since}
+
+
+def _intake_names_by_day(dates: list[str]) -> dict[str, list[dict]]:
+    """{date: [{text, at}]} for the given days — what was eaten, nothing about it.
+
+    A bare water top-up has no text of its own and would render as an empty line, so
+    it's dropped here: this list is for recognizing a day, and "16oz water" isn't a
+    thing you remember one by."""
+    if not dates:
+        return {}
+    by_day: dict[str, list] = {}
+    with server.db() as conn:
+        rows = conn.execute(
+            "SELECT food_date, item, at_time FROM intake_items "
+            "WHERE food_date BETWEEN ? AND ? AND item IS NOT NULL AND item != '' "
+            "ORDER BY food_date, position, id",
+            (min(dates), max(dates)),
+        ).fetchall()
+    for r in rows:
+        by_day.setdefault(r["food_date"], []).append(r)
+    return {day: [{"text": r["item"], "at": _spoken_time(r["at_time"])}
+                  for r in _chronological(items)]
+            for day, items in by_day.items()}
 
 
 def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
@@ -257,6 +288,53 @@ NUTRIENT_TARGETS = {
 }
 
 
+def _chronological(rows: list) -> list:
+    """A day's intake items in clock order — but ONLY when every one of them carries
+    a time. Otherwise the stored log order is kept.
+
+    All-or-nothing on purpose. Log order is already roughly chronological, so mixing
+    the two (timed items sorted, untimed ones dumped at one end) would shuffle a day
+    into an order that matches neither what happened nor what was written, for no
+    gain. A fully-timed day sorts; a partly-timed one is left exactly as logged."""
+    if rows and all(r["at_time"] for r in rows):
+        return sorted(rows, key=lambda r: r["at_time"])
+    return list(rows)
+
+
+def _spoken_time(hhmm: str | None) -> str | None:
+    """Stored 24-hour "HH:MM" as the page says it: "8:15am", "12:40pm", "noon".
+    Storage keeps one format and the display layer owns the wording, the same split
+    as the nutrient units living in macros.html rather than in the API."""
+    if not hhmm:
+        return None
+    try:
+        h, m = (int(x) for x in hhmm.split(":"))
+    except ValueError:
+        return None
+    if (h, m) == (12, 0):
+        return "noon"
+    suffix = "am" if h < 12 else "pm"
+    return f"{(h % 12) or 12}:{m:02d}{suffix}"
+
+
+def _logged_time(created_at: str | None) -> str | None:
+    """The UTC `created_at` storage stamp, spoken as a Pacific clock time.
+
+    This is when the ROW WAS WRITTEN, never when the food was eaten — a day recapped
+    at bedtime writes six rows at 10pm. It's shown only in the detail modal, under a
+    "Logged" label that says exactly that, which is also the only honest thing the
+    132 days predating `at_time` can offer."""
+    if not created_at:
+        return None
+    try:
+        stamp = datetime.fromisoformat(created_at)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return _spoken_time(stamp.astimezone(server.PACIFIC).strftime("%H:%M"))
+
+
 def _day_nutrition(items: list) -> dict:
     """One day's intake, shaped for the templates: summed totals plus the item rows.
     Totals are SUMMED here from the item rows (server.intake_items) rather than read
@@ -268,9 +346,15 @@ def _day_nutrition(items: list) -> dict:
          if any(x[m] is not None for x in items)}
     n["items"] = [
         {"id": r["id"], "text": r["item"], "note": r["note"],
+         # When it was EATEN (server stores HH:MM) and, separately, when the row was
+         # WRITTEN. They're different facts and the page keeps them apart: `at` leads
+         # the item line, `logged_at` only appears in the detail modal under its own
+         # label. Every item predating the at_time column has just the latter.
+         "at": _spoken_time(r["at_time"]),
+         "logged_at": _logged_time(r["created_at"]),
          # Which nutrients this item carries — drives the per-item detail modal.
          **{m: r[m] for m in server.NUTRIENTS if r[m] is not None}}
-        for r in items
+        for r in _chronological(items)
     ]
     # What the day's ALCOHOL cost in calories — derived from the items like every
     # other figure here, never stored. The drinks ring counts standard drinks, and
