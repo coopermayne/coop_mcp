@@ -272,6 +272,27 @@ def _day_nutrition(items: list) -> dict:
          **{m: r[m] for m in server.NUTRIENTS if r[m] is not None}}
         for r in items
     ]
+    # What the day's ALCOHOL cost in calories — derived from the items like every
+    # other figure here, never stored. The drinks ring counts standard drinks, and
+    # two of those can be 200 kcal or 900 depending on whether they were light beers
+    # or margaritas, so the count alone can't say what drinking added to the day.
+    # `unestimated` counts alcohol items carrying no calorie figure, so a partial sum
+    # can admit it instead of reading as the whole truth — the same "unestimated is
+    # not zero" rule the totals follow.
+    booze = [x for x in items if x["standard_drinks"]]
+    kcal = [x["calories"] for x in booze if x["calories"] is not None]
+    if booze:
+        missing = len(booze) - len(kcal)
+        n["alcohol"] = {
+            "calories": round(sum(kcal), 1) if kcal else None,
+            "unestimated": missing,
+            # Share is withheld while any drink is unestimated: a partial numerator
+            # over the same partial denominator reads as a much bigger fraction than
+            # it is (one estimated drink on a day of otherwise-unestimated drinks
+            # would say "100% of the day's calories").
+            "share": (round(100 * sum(kcal) / n["calories"])
+                      if kcal and not missing and n.get("calories") else None),
+        }
     n["notes"] = "; ".join(r["note"] for r in items if r["note"]) or None
     return n
 

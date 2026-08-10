@@ -324,13 +324,18 @@ working.
   turns the ring clay once passed; a floor one (protein, carbs, fiber, water)
   doesn't, and an untargeted nutrient (fat) draws a DASHED track with no arc — an
   empty solid ring would read as "0% of goal" rather than "no goal set". A tapped
-  top-up has no text, so it's named from what it carries ("16oz water"). Three
+  top-up has no text, so it's named from what it carries ("16oz water"). Four
   things a rendered day can't say for itself — an
   item's OWN nutrients (the rings show the day summed), a ring's TARGET (an arc can
-  only imply it), and the day's item NOTES — are all one CLICK away, into a single
+  only imply it), what the day's DRINKS cost in calories (a count of standard drinks
+  is the same "2" for two light beers and two margaritas — `data._day_nutrition`
+  derives it by summing the calories of the items carrying alcohol, and withholds
+  the share-of-day figure while any of them is unestimated, since a partial numerator
+  over the same partial denominator overstates it), and the day's item NOTES — are
+  all one CLICK away, into a single
   display-only modal in `food.html`. Each click target carries its whole payload
   as JSON in `data-detail` (`{kicker, title, rows, note}`), so the modal needs no
-  fetch and no lookup, and one delegated handler serves all three. Hover just firms
+  fetch and no lookup, and one delegated handler serves them all. Hover just firms
   the text/figure to black — no tooltips, no underlines, nothing that would fight
   the prose. The circled "i" (`macros.note_button`) at the end of the ring row is
   the notes' target.
