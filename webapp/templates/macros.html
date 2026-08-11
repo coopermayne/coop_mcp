@@ -56,14 +56,14 @@
   <div class="flex items-center justify-between gap-3 {{ 'mb-1' if not day.entries else 'mb-4' }}">
     <p class="text-sm uppercase tracking-widest text-gray-500 font-medium">{{ day.date | long_date }}</p>
     {# What was eaten, one tap away at the right edge of the date. NOT the macros —
-       just the dishes and their times, because "oh, that was the night at Gjelina"
-       is often what unlocks the memory of a day. The figures stay on /food; putting
-       them here would turn the journal into a tracker. Rendered only on days that
-       have intake, so a quiet day's header stays a single clean line. #}
+       just the dishes, because "oh, that was the night at Gjelina" is often what
+       unlocks the memory of a day. The figures stay on /food; putting them here
+       would turn the journal into a tracker. Rendered only on days that have
+       intake, so a quiet day's header stays a single clean line. #}
     {% if day.food %}
     {% set food_rows = [] %}
     {% for f in day.food %}
-      {% set _ = food_rows.append({'label': f.text, 'value': f.at or ''}) %}
+      {% set _ = food_rows.append({'label': f.text, 'value': ''}) %}
     {% endfor %}
     {% set payload = {'kicker': 'Eaten', 'title': day.date | long_date, 'rows': food_rows} %}
     <button type="button" data-detail='{{ payload | tojson }}'
@@ -144,36 +144,20 @@
            "unestimated ≠ zero" rule the rings follow. Built as a row list here
            (rather than in a macro, which can only return a string) and handed to the
            modal as JSON. #}
-        {%- set nutrient_rows = [] -%}
+        {%- set rows = [] -%}
         {%- for key, u in units.items() -%}
           {%- if it.get(key) is not none -%}
-          {%- set _ = nutrient_rows.append({'label': u.label,
+          {%- set _ = rows.append({'label': u.label,
                                    'value': (it[key] | num) ~ (' ' ~ u.suffix if u.suffix else '')}) -%}
           {%- endif -%}
         {%- endfor -%}
-        {# Times bracket the numbers: when it was EATEN on top, and at the bottom when
-           the row was WRITTEN — a different fact, so it's labelled as itself and kept
-           off the line, where it would read as a meal time. `logged_at` is all the
-           items predating the at_time column can offer. #}
-        {%- set rows = [] -%}
-        {%- if it.at -%}
-          {%- set _ = rows.append({'label': 'Eaten', 'value': it.at}) -%}
-        {%- endif -%}
-        {%- set _ = rows.extend(nutrient_rows) -%}
-        {%- if it.logged_at -%}
-          {%- set _ = rows.append({'label': 'Logged', 'value': it.logged_at}) -%}
-        {%- endif -%}
-        {# The timestamps mean `rows` is never empty, so "nothing estimated" can't be
-           left to the modal's `empty` fallback — it's said in the note instead, where
-           it sits next to whatever the user wrote about the item. #}
-        {%- set unestimated = '' if nutrient_rows else 'Nothing estimated for this one.' -%}
         {%- set payload = {'kicker': 'Intake item', 'title': label, 'rows': rows,
-                           'note': (unestimated ~ ('\n' ~ it.note if it.note else '')) if unestimated else it.note} -%}
-        {# One line per item, in three columns: when it was eaten, what it was, and
-           the two figures worth reading at a glance. The WHOLE line is the click
-           target (not just the circled index — 16px is too small a thing to aim at),
-           opening the detail modal with the REST: the other nutrients, the note, and
-           when it was logged. The only hint is the text firming to black on hover.
+                           'empty': 'Nothing estimated for this one.', 'note': it.note} -%}
+        {# One line per item: what it was, and the two figures worth reading at a
+           glance. The WHOLE line is the click target (not just the circled index —
+           16px is too small a thing to aim at), opening the detail modal with the
+           REST: the other five nutrients and the note. The only hint is the text
+           firming to black on hover.
 
            Calories and protein are the pair on the line because they're the two the
            day is actually steered by; putting all seven here would rebuild the rings
@@ -185,10 +169,6 @@
            delegated handler in _detail_modal.html takes Enter/Space. #}
         <div role="button" tabindex="0" data-detail='{{ payload | tojson }}'
              class="group flex items-baseline gap-2 cursor-pointer">
-          {# Fixed-width so the dish text starts on one vertical line down the day,
-             timed or not — a ragged left edge would be worse than an empty column. #}
-          <span class="w-14 shrink-0 text-[11px] tabular-nums uppercase tracking-wide
-                       text-gray-400 group-hover:text-gray-500 transition-colors">{{ it.at or '' }}</span>
           <span class="flex-1 text-[15px] text-gray-800 leading-relaxed
                        group-hover:text-black transition-colors">{{ index_circle(loop.index) }}{{ label }}</span>
           {%- if it.get('calories') is not none or it.get('protein_g') is not none -%}
