@@ -137,12 +137,21 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   what makes corrections cheap: "that bowl was 600, not 1100" is
   `update_intake_item(item_id, calories=600)`, with no recomputing of the day, and
   removing something is `delete_record(kind="intake_item", id=…)`. `get_intake`
-  returns each day's items *with ids* plus its totals, and per-nutrient averages (each
-  over the days that carry it). The estimating is the model's job: there's no food
-  database in the server.
+  returns each day's items *with ids* plus its totals, per-nutrient averages (each
+  over the days that carry it), and the stored eating **profile** (targets, goals,
+  coaching context — kept current with `update_eating_profile`, so a new conversation
+  needs nothing pasted in). The estimating is the model's job: there's no food
+  database in the server. But the log itself is one: `find_past_items("chobani
+  drink")` fuzzily searches everything ever logged (spelling, word order and partial
+  names all land), grouped by item text with the latest numbers, times logged, and
+  last date — ranked by match quality with a recency lean, so this week's leftovers
+  surface first. The AI reuses those settled numbers when a hit is genuinely the
+  same thing and estimates fresh when it isn't — no catalog to curate, and it's
+  always as current as the last meal.
 
   In the web app, each nutrient is a ring on the day's block showing the summed total
-  against its target — **read-only**. Logging intake has exactly one path: the MCP
+  against its target (the stored profile's `targets` over the built-in defaults) —
+  **read-only**. Logging intake has exactly one path: the MCP
   tools (or the in-app chat panel, which calls the same ones). Alcohol and water have
   no tools of their own; they're nutrients on an item. (The old `drinks` and day-level
   `nutrition` tables are dormant: their rows fold into the intake log once,
@@ -554,9 +563,9 @@ in one Coolify project.
 ## Tools
 
 Split across two connectors. The **journal** server (`YOUR-DOMAIN/mcp`) carries the
-journal + intake tools through `update_intake_item`, plus a `delete_record` scoped to
-`entry`/`intake_item`. (Alcohol and water are nutrients on an intake item, not tools of
-their own — see "Intake" above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
+journal + intake tools through `update_eating_profile`, plus a `delete_record` scoped to
+`entry`/`intake_item`. (Alcohol and water are nutrients on an intake item, not
+tools of their own — see "Intake" above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
 main origin when authless) carries `save_exercise` through `update_profile`, plus its
 own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 
@@ -576,8 +585,10 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
 | `search_entries` | Full-text search for topics/events. Plain words are tokenized and quoted before hitting FTS5 (so apostrophes/punctuation are safe, terms ANDed); `raw_query=True` passes FTS5 syntax through for OR/NEAR/prefix\* |
 | `log_intake` | Log ONE thing consumed (meal, beer, glass of water) with whatever nutrients are known — calories, macros, sodium, fiber, standard drinks, water oz |
-| `get_intake` | Intake days back: each day's items *with ids* + summed totals, and per-nutrient averages (each over the days that carry it) |
+| `get_intake` | Intake days back: each day's items *with ids* + summed totals, per-nutrient averages (each over the days that carry it), and the stored eating profile |
 | `update_intake_item` | Correct one logged item by id — the day's totals re-derive themselves |
+| `find_past_items` | Fuzzy-search everything ever logged, by name — grouped by item text, latest numbers + times logged + last date, recency-weighted — so repeats reuse settled numbers instead of re-estimates |
+| `update_eating_profile` | Merge durable eating facts into the JSON profile — `targets` (daily nutrient goals, also read by the webapp's rings), goals, stats, coaching context |
 | `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
 | `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
 | `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |
@@ -588,7 +599,7 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `log_bodyweight` | Record a weigh-in (lbs); returns the change vs the prior reading |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight |
-| `delete_record` | Delete one record by `kind` + `id` — irreversible, cascades/renumbers as needed. On the journal connector `kind` is `entry`/`drink`; on the trainer connector it's `workout`/`set`/`weight` |
+| `delete_record` | Delete one record by `kind` + `id` — irreversible, cascades/renumbers as needed. On the journal connector `kind` is `entry`/`intake_item`; on the trainer connector it's `workout`/`set`/`weight` |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps

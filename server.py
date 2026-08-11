@@ -244,7 +244,22 @@ any bare day reference against them before defaulting or saving.
 Intake is its own log, not a journal entry: when the user mentions eating or drinking,
 call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls) — instead of, or
 as well as, writing an entry about it. Corrections go through update_intake_item by id;
-day totals are summed from the items, so you never recompute a day yourself.
+day totals are summed from the items, so you never recompute a day yourself. Three
+rules keep the numbers trustworthy:
+  - TOTALS COME FROM THE DB, not from a tally you keep in conversation. Other clients
+    (the phone app, another chat) may write to the same day, so your context is not
+    the day. log_intake returns `day_totals` after every write; answer "how am I
+    doing" from those or a fresh get_intake.
+  - REPEAT FOODS get looked up, not re-estimated: the intake log is its own food
+    database. When something sounds like a repeat — leftovers across several days, a
+    staple, "same as yesterday" — find_past_items(name) surfaces what it was logged
+    at before (fuzzy, so spelling doesn't matter); reuse those settled numbers when
+    it's genuinely the same thing (your judgment), estimate fresh when it isn't.
+    Novel and one-off dishes you estimate yourself, as always.
+  - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut) live in
+    the eating profile — returned by get_intake, updated via update_eating_profile —
+    not in whatever a conversation happens to say. Read it before coaching; fold in
+    durable changes as they come up, like a person's summary.
 
 Start a session with get_briefing: it loads the last two weeks of entries plus the
 summaries of everyone mentioned in the last week, so you write in context rather than
@@ -2516,8 +2531,18 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
              note: Optional[str] = None) -> dict:
     """Log ONE thing consumed — a meal, a snack, a beer, a glass of water. Call it once
     per item, not once per day: "a sandwich and a beer" is TWO calls. Each becomes its
-    own row, and the day's totals are summed from them, so nothing here is a running
-    total you have to maintain.
+    own row, and the day's totals are summed from them.
+
+    The returned `day_totals` are where the day ACTUALLY stands — read them back after
+    every write instead of keeping your own running tally. Other clients (the phone
+    app, another conversation) may be logging the same day, so your conversation
+    memory is not the day; when asked how the day is going, answer from `day_totals`
+    or a fresh get_intake, never from arithmetic in your head.
+
+    REPEAT FOODS: before estimating something that sounds like a repeat — leftovers,
+    a staple, "same as yesterday" — check find_past_items and reuse the settled
+    numbers (see its docstring for the judgment). Keep item TEXT consistent with the
+    past log when it is the same thing, so the history stays searchable.
 
     Keep `item` the thing itself, in the user's own terms, concise and concrete
     ("2 eggs, toast, black coffee", "chipotle bowl", "12oz water"). Put how it sat —
@@ -2532,10 +2557,11 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
 
     The nutrient numbers are OPTIONAL and stay NULL until filled in. Estimate them
     when the user wants numbers tracked or asks how a day is adding up (that judgment
-    is yours — the server does no food lookup); leave them out when they're just
-    telling you what they ate. Don't pass 0 for "unknown": NULL reads as unestimated,
-    0 as a real zero. A day the user says they didn't drink is `standard_drinks=0`
-    with no other numbers — that's a record that the day was accounted for.
+    is yours — the server looks up only what the user has SAVED; everything else is
+    your estimate); leave them out when they're just telling you what they ate. Don't
+    pass 0 for "unknown": NULL reads as unestimated, 0 as a real zero. A day the user
+    says they didn't drink is `standard_drinks=0` with no other numbers — that's a
+    record that the day was accounted for.
 
     To fix a logged item use update_intake_item (by `item_id`, which this returns and
     get_intake lists); to remove one, delete_record(kind="intake_item", id=...).
@@ -2597,6 +2623,12 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     a fix never involves recomputing a day. Days with nothing logged are omitted; they
     are NOT zero-calorie days.
 
+    This is also the eating session's anchor: it returns the stored `profile` —
+    targets, goals, coaching context (see update_eating_profile) — so a fresh
+    conversation needs nothing pasted in. And it is the source of truth for where a
+    day stands: other clients may have logged items your conversation never saw, so
+    trust what comes back over any tally you've been keeping.
+
     A day's totals sum only the items that carry each nutrient, and a nutrient no item
     carries is absent rather than 0. `averages` work the same way across days — each
     has its OWN denominator, so a week with protein on 7 days and sodium on 2 averages
@@ -2620,6 +2652,7 @@ def get_intake(days: int = 14, since: Optional[str] = None,
             "SELECT * FROM intake_items WHERE food_date BETWEEN ? AND ? "
             "ORDER BY food_date DESC, position, id", (since, until),
         ).fetchall()
+        prof = _get_eating_profile(conn)
     by_day: dict = {}
     for r in rows:
         by_day.setdefault(r["food_date"], []).append(r)
@@ -2637,12 +2670,15 @@ def get_intake(days: int = 14, since: Optional[str] = None,
             averages[m] = round(sum(vals) / len(vals), 1)
     window_days = (date.fromisoformat(until).toordinal()
                    - date.fromisoformat(since).toordinal() + 1)
-    return {
+    out = {
         "since": since, "until": until, "window_days": window_days,
         "logged_days": len(by_day),
         "days": out_days,
         "averages": averages,
     }
+    if prof:
+        out["profile"] = prof
+    return out
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT)
@@ -2710,6 +2746,149 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
         ).fetchall()
     return {**_item_row(cur), "updated": [k for k in sets if k != "position"],
             "day_totals": _day_totals(rows)}
+
+
+def _get_eating_profile(conn: sqlite3.Connection) -> dict:
+    row = conn.execute("SELECT value FROM settings WHERE key='eating_profile'").fetchone()
+    return json.loads(row["value"]) if row else {}
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+def update_eating_profile(profile: dict) -> dict:
+    """Merge fields into the stored eating profile (JSON) — the trainer profile's
+    twin. This is where targets and coaching context LIVE, so they survive across
+    conversations instead of being pasted into each one: get_intake returns the
+    profile, and a target changed here is changed everywhere at once (the webapp's
+    rings read `targets` too).
+
+    Pass only the keys you want to change; each top-level key you pass REPLACES that
+    key wholesale (read the current profile via get_intake first), a key set to null
+    is dropped, and unmentioned keys are preserved.
+
+    One key is structured: `targets` is a flat {nutrient: number} dict on the intake
+    nutrient keys (calories, protein_g, carbs_g, fat_g, sodium_mg, fiber_g,
+    standard_drinks, water_oz) — daily targets, e.g.
+    {"targets": {"calories": 2100, "protein_g": 150, "water_oz": 88}}. Whether a
+    number is a floor (protein) or a ceiling (sodium) stays a reading of the
+    nutrient, not stored data. Everything else is free-form — keep durable coaching
+    facts here the way you'd keep them in a person's summary: e.g.
+    {"protein_floor_g": 120, "goal": "cut to 180 by December", "stats": "6'4\", 205",
+    "context": "on semaglutide — front-load protein, watch fiber + water"}.
+    """
+    with db() as conn:
+        current = _get_eating_profile(conn)
+        current.update(profile)
+        current = {k: v for k, v in current.items() if v is not None}
+        conn.execute(
+            """INSERT INTO settings(key, value) VALUES ('eating_profile', ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (json.dumps(current),),
+        )
+    return {"profile": current}
+
+
+# --------------------------------------------------------------------------- #
+# Past-item lookup — the intake log IS the food database
+# --------------------------------------------------------------------------- #
+
+def _score_item_text(query: str, text: str) -> float:
+    """0..1 similarity of a spoken food name to a logged item's text, judged token by
+    token (an item is a phrase — "Chobani lactose-free Greek yogurt w/ whey" — so
+    whole-string similarity would punish every word the query didn't say). Each query
+    token takes its best match among the item's tokens: exact wins outright, a
+    substring hit (prefixes while typing, "yog" in "yogurt") lands just under, then
+    Jaro-Winkler with the phonetic floor for transcription noise. The item is scored
+    on the MEAN over query tokens, so "chobani drink" needs both words to land
+    somewhere, not either one."""
+    qt = re.findall(r"[a-z0-9]+", (query or "").lower())
+    tt = re.findall(r"[a-z0-9]+", (text or "").lower())
+    if not qt or not tt:
+        return 0.0
+
+    def best(q: str) -> float:
+        s = 0.0
+        for t in tt:
+            if q == t:
+                cand = 1.0
+            elif q in t or t in q:
+                cand = 0.92
+            else:
+                cand = jellyfish.jaro_winkler_similarity(q, t)
+                if phonetic(q) and phonetic(q) == phonetic(t):
+                    cand = max(cand, 0.88)
+            s = max(s, cand)
+        return s
+
+    return round(sum(best(q) for q in qt) / len(qt), 3)
+
+
+PAST_ITEM_FLOOR = 0.74  # forgiving on purpose: this returns CANDIDATES for you to
+                        # judge, never numbers that apply themselves — a loose match
+                        # costs a glance, a missed one costs a re-estimate.
+
+
+@mcp.tool(annotations=READ_ONLY)
+def find_past_items(query: str, limit: int = 8) -> dict:
+    """Search everything the user has EVER logged eating, by name — fuzzily, so
+    spelling, word order and partial names all land ("chobani yogrut", "yogurt
+    drink", "modelo"). The intake log is its own food database: when something
+    sounds like a repeat — leftovers eaten across several days, a staple, "same as
+    yesterday", "another one of those" — look it up here and REUSE the settled
+    numbers instead of re-estimating them (label-backed numbers especially: they were
+    settled once and shouldn't drift). Whether a hit really IS the same thing — the
+    190g cup vs the 10oz drink, a full vs half portion — is YOUR judgment, from the
+    item text and the numbers shown.
+
+    Matches are grouped by identical item text: each comes back once with its most
+    recent numbers (`last` — latest wins, it's the most corrected), `last_date`,
+    `times` logged, and `item_id` of that latest row. Ranked by match quality, with
+    recent items breaking ties upward — on a changing diet the version from this
+    week outranks the one from months ago.
+
+    Args:
+        query: The food as spoken, e.g. "chobani drink", "meatballs".
+        limit: Max distinct items returned.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "pass a query — the food name as the user said it"}
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM intake_items WHERE item IS NOT NULL "
+            "ORDER BY food_date DESC, position DESC, id DESC"
+        ).fetchall()
+    groups: dict[str, dict] = {}
+    for r in rows:  # newest first, so first sight of a text is its latest occurrence
+        key = r["item"].lower()
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {"row": r, "times": 1}
+        else:
+            g["times"] += 1
+    today_ord = date.fromisoformat(today()).toordinal()
+    scored = []
+    for g in groups.values():
+        r = g["row"]
+        sc = _score_item_text(query, r["item"])
+        if sc < PAST_ITEM_FLOOR:
+            continue
+        # Recency riding on top of the match score (never replacing it): a half-life
+        # of ~30 days worth up to +0.05 — enough to lift this week's version of a
+        # food over last month's near-identical twin, too small to promote a WORSE
+        # match. Deterministic arithmetic, no judgment.
+        age = max(0, today_ord - date.fromisoformat(r["food_date"]).toordinal())
+        scored.append((sc + 0.05 * (0.5 ** (age / 30)), sc, g))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    out = []
+    for _rank, sc, g in scored[:limit]:
+        r = g["row"]
+        last = {m: round(r[m], 1) for m in NUTRIENTS if r[m] is not None}
+        entry = {"item": r["item"], "item_id": r["id"], "last_date": r["food_date"],
+                 "times": g["times"], "score": sc, "last": last}
+        if r["note"]:
+            entry["note"] = r["note"]
+        out.append(entry)
+    return {"query": query, "matches": out}
 
 
 # --------------------------------------------------------------------------- #
