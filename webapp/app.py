@@ -215,9 +215,11 @@ for _name, _fn in [
 ]:
     templates.env.filters[_name] = _fn
 
-# The eating block's rings read against these; a global (not a per-route context var)
-# because the macro is reached through day_block, several call frames from the route.
-templates.env.globals["NUTRIENT_TARGETS"] = data.NUTRIENT_TARGETS
+# The eating block's rings read targets through this; a global (not a per-route
+# context var) because the macro is reached through day_block, several call frames
+# from the route. A FUNCTION, not the dict: targets can now come from the stored
+# eating profile, so they're read fresh per render (the macro calls it once per block).
+templates.env.globals["nutrient_targets"] = data.nutrient_targets
 
 
 def link_people_md(body: str, people: list[dict], base: str) -> str:
@@ -662,11 +664,10 @@ async def today_json(request: Request):
     Returns each nutrient as {total, target, ceiling}. `total` is null when nothing
     logged carries that nutrient — the SAME distinction the rings draw between "0 so
     far" and "unestimated", so a client can render a dashed/unknown state instead of
-    claiming a zero. Targets ride along because they live in the webapp
-    (`data.NUTRIENT_TARGETS`), not the DB — this is the display layer serving its own
-    display constant to another of its own surfaces, which is why targets appearing
-    here doesn't cross the "no goals in the server" line: they're still absent from
-    the schema and from every MCP tool return.
+    claiming a zero. Targets ride along from `data.nutrient_targets()` — the stored
+    eating profile's numbers over the webapp defaults, the same merge the rings
+    read — so the widget always agrees with the page and with what the model is
+    coaching against.
 
     UNITS are deliberately NOT here. They're a rendering choice that already lives in
     `macros.html`, and duplicating them server-side is how the two copies drift; a
@@ -680,16 +681,17 @@ async def today_json(request: Request):
     intake = server.get_intake(days=1, include_items=False)
     # get_intake omits days with nothing logged, so an unlogged day has no entry.
     totals = next((d["totals"] for d in intake["days"] if d["food_date"] == day), {})
-    # Keyed off server.NUTRIENTS, not NUTRIENT_TARGETS, so an UNTARGETED nutrient
+    # Keyed off server.NUTRIENTS, not the targets dict, so an UNTARGETED nutrient
     # (fat) still reports its figure with target=null — the same thing the journal
     # page does when it draws fat's ring with a dashed track and no arc. Iterating
     # the targets instead would silently drop it.
+    targets = data.nutrient_targets()
     return JSONResponse({
         "date": day,
         "nutrients": {
             key: {"total": totals.get(key),
-                  "target": (data.NUTRIENT_TARGETS.get(key) or {}).get("target"),
-                  "ceiling": (data.NUTRIENT_TARGETS.get(key) or {}).get("ceiling", False)}
+                  "target": (targets.get(key) or {}).get("target"),
+                  "ceiling": (targets.get(key) or {}).get("ceiling", False)}
             for key in server.NUTRIENTS
         },
     })

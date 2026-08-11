@@ -311,7 +311,21 @@ working.
   `NUTRIENTS` tuple drives every sum/average/render site, so adding a nutrient is one
   tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
   Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
-  estimate, made in conversation; there is no food database in the server.
+  estimate, made in conversation; there is no food database in the server — but the
+  intake log IS its own food database for repeats: `find_past_items(query)` fuzzily
+  searches everything ever logged (token-level scoring — exact/substring/Jaro-
+  Winkler/phonetic per query word — grouped by identical item text, latest numbers
+  win, ranked by match quality with a small ~30-day-half-life recency bonus so this
+  week's leftovers outrank last month's near-twin). The model REUSES those settled
+  numbers when it judges a hit is genuinely the same thing, estimates fresh when it
+  isn't — deliberately a read tool + model judgment, NOT a curated catalog: a
+  `foods` entity table was tried and rejected because the diet varies within brands
+  (which Chobani?) and a wrong-but-confident auto-resolve is worse than a
+  re-estimate; the log needs no gardening and is always as current as the last
+  meal. And day-so-far questions are answered from the DB, never from a chat-side
+  running tally (`log_intake` returns `day_totals` on every write; other clients —
+  the phone app, another conversation — may be writing the same day); both
+  contracts live in the server `instructions` + the intake docstrings.
   The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
   `macros.eating_block`) — one line per item: the item (led by its circled index) and
   its calories + protein. Those two figures are on the line because they're what the
@@ -332,9 +346,13 @@ working.
   render, dashed when unlogged, because "no water yet" is worth seeing on a day you
   mean to hit a gallon. Each nutrient renders as a ring with BOTH
   its summed figure (unit included: "1400mg") and a short label ("sod") inside it
-  (`macros.nutrient_ring`), read against `data.NUTRIENT_TARGETS` — a DISPLAY-ONLY
-  webapp constant, the `DRINK_LIMIT` pattern: the server stores no goals, so targets
-  never enter the DB or a tool return. A `ceiling` target (sodium, calories, alcohol)
+  (`macros.nutrient_ring`), read against `data.nutrient_targets()` — the stored
+  eating profile's `targets` numbers merged over the `data.NUTRIENT_TARGETS`
+  defaults, resolved per render. The NUMBERS live in the DB now (settings
+  `eating_profile`, written by `update_eating_profile`) so the rings and the model
+  coach against the same goals; what stays display-only is DIRECTION — which
+  nutrient is a ceiling vs a floor is a webapp reading, never stored. A `ceiling`
+  target (sodium, calories, alcohol)
   turns the ring clay once passed; a floor one (protein, carbs, fiber, water)
   doesn't, and an untargeted nutrient (fat) draws a DASHED track with no arc — an
   empty solid ring would read as "0% of goal" rather than "no goal set". A tapped
@@ -458,7 +476,13 @@ working.
   dedicated server tool. There is NO weight-goal/target logic in the server — the
   coaching is the model's, as everywhere else.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
-  `update_profile` and surfaced by `get_fitness_briefing`.
+  `update_profile` and surfaced by `get_fitness_briefing`, and `eating_profile`
+  (its journal-side twin: durable eating facts — goals, stats, coaching context —
+  plus the one structured key `targets`, a flat {nutrient: number} dict of daily
+  goals) merged via `update_eating_profile` and surfaced by `get_intake`, so a new
+  conversation needs no pasted preamble. The webapp's rings read `targets` too
+  (`data.nutrient_targets()` merges it over the display defaults) — one source of
+  truth for goals, ceiling/floor direction still webapp-only.
 
 ## Matching (in `find_candidates` / `score_surface_against_alias`)
 

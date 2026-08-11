@@ -104,7 +104,8 @@
    Now that the log has its own page, each item gets its OWN LINE (still led by
    its circled index); a long item wraps under itself rather than into the next.
 
-   Each nutrient is a ring (data.NUTRIENT_TARGETS supplies the goal) with its summed
+   Each nutrient is a ring (nutrient_targets() supplies the goal — the stored eating
+   profile's numbers over the webapp defaults, resolved once per block) with its summed
    figure and short label inside. All display-only — every write goes through the MCP
    tools. The day's notes hide behind a
    circled "i" at the END of that row, opening a modal (wired in food.html):
@@ -128,6 +129,7 @@
         'water_oz':  {'suffix': 'oz', 'short': 'water',  'name': 'oz water',  'label': 'Water'},
         'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks', 'label': 'Alcohol'},
     } %}
+    {% set NUTRIENT_TARGETS = nutrient_targets() %}
     {% if n['items'] %}
     <div class="space-y-1.5">
       {%- for it in n['items'] %}
@@ -215,7 +217,7 @@
    never turns clay: going over your protein target isn't a problem. Colors are custom classes (see
    base.html) so they flip with the theme like everything else.
 
-   An UNTARGETED nutrient (no entry in data.NUTRIENT_TARGETS) still gets a ring, but
+   An UNTARGETED nutrient (no entry in nutrient_targets()) still gets a ring, but
    with a DASHED track and no arc — a solid empty track would read as "0% of goal"
    rather than "no goal set".
 

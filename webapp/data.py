@@ -263,18 +263,22 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
     days.sort(key=lambda x: x["date"], reverse=True)
 
 
-# Daily targets the intake block's rings read against. DISPLAY-ONLY, the same shape
-# as graphs.js's DRINK_LIMIT: the server stores no goals (all coaching judgment lives
-# in the conversation), so these are a webapp constant, not a settings row. `ceiling`
-# marks a number you're trying to stay UNDER (sodium, calories, alcohol) rather than
-# reach — it only changes the ring's color once it's past the target.
+# DEFAULT daily targets the intake block's rings read against — the fallback when the
+# stored eating profile doesn't name a number. The NUMBERS can come from the DB now
+# (settings key 'eating_profile', its `targets` dict, written by the journal server's
+# update_eating_profile) so the rings and the model coach against the SAME goals; what
+# stays display-only is the DIRECTION: `ceiling` marks a number you're trying to stay
+# UNDER (sodium, calories, alcohol) rather than reach — it only changes the ring's
+# color once it's past the target, and it's a reading of the nutrient, not stored data.
+# Read targets through nutrient_targets(), never this dict directly.
 #
-# The macros are set so they add up to the calorie target rather than each being
-# picked on its own (130p + 200c + 75f = 1,995 kcal): protein is fixed by muscle
+# The default macros are set so they add up to the calorie target rather than each
+# being picked on its own (130p + 200c + 75f = 1,995 kcal): protein is fixed by muscle
 # preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder — which
 # is also why carbs is NOT a ceiling. It's the flex macro, and calories already has
 # a ceiling ring to catch a genuine overshoot; a second warning color the moment
-# carbs pass 200 would be noise. Fat has no target yet, so it renders a dashed ring.
+# carbs pass 200 would be noise. Fat has no default target, so it renders a dashed
+# ring until the profile gives it one.
 NUTRIENT_TARGETS = {
     "calories":  {"target": 2000, "ceiling": True},
     "protein_g": {"target": 130,  "ceiling": False},
@@ -284,6 +288,25 @@ NUTRIENT_TARGETS = {
     "water_oz":  {"target": 88,   "ceiling": False},
     "standard_drinks": {"target": 2, "ceiling": True},
 }
+
+# Ceiling-ness per nutrient, for overrides on a nutrient the defaults don't target
+# (fat): anything unlisted reads as a floor — a ring never turns clay for passing it.
+_CEILINGS = {k: v["ceiling"] for k, v in NUTRIENT_TARGETS.items()}
+
+
+def nutrient_targets() -> dict:
+    """The live targets: NUTRIENT_TARGETS defaults, overridden per nutrient by any
+    number in the stored eating profile's `targets` (see update_eating_profile in
+    server.py). Read per-request — a target changed in chat shows on the next page
+    load. Only well-formed overrides count: a real nutrient key carrying a number;
+    anything else in the blob is the model's business, not the rings'."""
+    out = {k: dict(v) for k, v in NUTRIENT_TARGETS.items()}
+    with server.db() as conn:
+        stored = server._get_eating_profile(conn).get("targets") or {}
+    for k, v in stored.items():
+        if k in server.NUTRIENTS and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            out[k] = {"target": v, "ceiling": _CEILINGS.get(k, False)}
+    return out
 
 
 def _day_nutrition(items: list) -> dict:
