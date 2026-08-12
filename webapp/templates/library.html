@@ -61,6 +61,7 @@
   {% if muscle %}<input type="hidden" name="muscle" value="{{ muscle }}" />{% endif %}
   {% if rotation %}<input type="hidden" name="rotation" value="1" />{% endif %}
   {% if hearted %}<input type="hidden" name="hearted" value="1" />{% endif %}
+  {% if archived %}<input type="hidden" name="archived" value="1" />{% endif %}
   {% if chat_enabled %}
   <button type="button" data-add-open aria-label="Add an exercise" title="Add an exercise"
           class="shrink-0 w-10 flex items-center justify-center border border-gray-200 text-gray-500 hover:border-black hover:text-black transition-colors">
@@ -68,13 +69,13 @@
   </button>
   {% endif %}
   <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
-  {% if q or muscle %}<a href="{{ lib_url(rotation=rotation, hearted=hearted) }}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+  {% if q or muscle %}<a href="{{ lib_url(rotation=rotation, hearted=hearted, archived=archived) }}" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
 </form>
 
 {# Muscle filter chips: each toggles ?muscle=, keeping any name query and rotation/hearted filter. #}
 <div class="mb-8 flex flex-wrap gap-2">
   {% for mu in muscles %}
-  <a href="{{ lib_url(q=q, muscle=mu, rotation=rotation, hearted=hearted) }}"
+  <a href="{{ lib_url(q=q, muscle=(none if muscle == mu else mu), rotation=rotation, hearted=hearted, archived=archived) }}"
      class="badge hover:border-black hover:text-black transition-colors {% if muscle == mu %}badge-dark{% endif %}">{{ mu }}</a>
   {% endfor %}
 </div>
