@@ -76,6 +76,10 @@
           <input id="disp-updated" type="checkbox" class="accent-black" {% if c.display.show_updated %}checked{% endif %}>
           <span>Updated date</span>
         </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="disp-image" type="checkbox" class="accent-black" {% if c.display.show_image %}checked{% endif %}>
+          <span>Featured image</span>
+        </label>
       </div>
       <button id="disp-apply" type="button"
               class="w-full px-3 py-2 border border-gray-200 text-gray-500 text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors">Apply</button>
@@ -122,7 +126,13 @@
       {% for it in g.rows %}
       <tr class="hover:bg-gray-50 transition-colors">
         <td class="px-5 sm:px-6 py-3">
-          <a href="{{ base }}/item/{{ it.item_id }}" class="font-medium hover:underline underline-offset-2">{{ it.title }}</a>
+          <a href="{{ base }}/item/{{ it.item_id }}" class="flex items-center gap-3 font-medium group">
+            {% if c.display.show_image and it.image_url %}
+            <img src="{{ it.image_url }}" alt="" loading="lazy" onerror="this.remove()"
+                 class="shrink-0 w-8 h-8 object-cover rounded-[3px] border border-gray-200">
+            {% endif %}
+            <span class="group-hover:underline underline-offset-2">{{ it.title }}</span>
+          </a>
         </td>
         {% for f in c.fields %}
         <td class="px-4 py-3 text-gray-600 whitespace-nowrap tabular-nums">{{ it.data_map.get(f.key, '') }}</td>
@@ -150,7 +160,12 @@
   {% endif %}
   <div class="divide-y divide-gray-100">
   {% for it in g.rows %}
-  <a href="{{ base }}/item/{{ it.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+  <a href="{{ base }}/item/{{ it.item_id }}" class="flex gap-4 px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    {% if c.display.show_image and it.image_url %}
+    <img src="{{ it.image_url }}" alt="" loading="lazy" onerror="this.remove()"
+         class="shrink-0 w-12 h-12 object-cover rounded-[3px] border border-gray-200">
+    {% endif %}
+    <div class="min-w-0 flex-1">
     <div class="flex items-baseline justify-between gap-3">
       <span class="text-sm font-medium">{{ it.title }}</span>
       {% if c.display.show_updated and it.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ it.updated | short_date }}</span>{% endif %}
@@ -162,6 +177,7 @@
     </div>
     {% endif %}
     {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}
+    </div>
   </a>
   {% endfor %}
   </div>
@@ -193,7 +209,8 @@
         sort_dir: pop.querySelector('input[name="disp-dir"]:checked').value,
         show_body: document.getElementById('disp-body').checked,
         show_tags: document.getElementById('disp-tags').checked,
-        show_updated: document.getElementById('disp-updated').checked
+        show_updated: document.getElementById('disp-updated').checked,
+        show_image: document.getElementById('disp-image').checked
       })
     }).then(function (r) { if (r.ok) location.reload(); });
   });
