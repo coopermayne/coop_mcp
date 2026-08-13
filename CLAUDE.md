@@ -521,13 +521,19 @@ working.
   onto the column, un-declares the field, and `_norm_fields` now REFUSES an
   image-ish field so it can't come back), a `data` JSON blob validated
   against the collection's fields (unknown key / bad type / bad select value come back
-  as actionable errors — facts with no field stay in the body), and `tags`. Promotion
+  as actionable errors — facts with no field stay in the body). An item had `tags`
+  too, and they're GONE: a third way to structure a thing, next to the collection
+  it sits in and that collection's fields, but nothing ever filtered by one — they
+  rendered as inert badges and their only real job was padding the FTS mirror with
+  words the title and body already carried. Dropped rather than made filterable
+  (`init_db` drops the column and rebuilds `items_fts`, which names its columns);
+  "fields stay few" argues the same way for tags. Promotion
   (note → collection item) is `move_to_collection`: pure data movement, reversible,
   NO DDL — the bespoke-table rung of the ladder stays a deliberate human+code
-  migration in `init_db()`, never an MCP call. `items_fts` (title/body/tags, same
+  migration in `init_db()`, never an MCP call. `items_fts` (title/body, same
   trigger pattern as `entries_fts`) backs `search_items`, through `_fts_query` so
   punctuation is safe. `update_item` merges `data` per key (null drops) but replaces
-  body/tags wholesale (read-before-write via `get_item`). `delete_record` gained two
+  the body wholesale (read-before-write via `get_item`). `delete_record` gained two
   kinds: `"item"` (gone for good) and `"collection"` (shell only — FK is ON DELETE
   SET NULL, so its items demote to inbox notes). The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
@@ -545,7 +551,7 @@ working.
   kept not dropped; which declared fields show as table
   columns / list badges; `group_by`/`sort_by`/`sort_dir`; the `icon` grid, which
   writes the collection's own `icon` column, not the display JSON; and the row extras —
-  notes-preview/tags/updated/featured-image) saved
+  notes-preview/updated/featured-image) saved
   to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
   `server.set_collection_display` — a NON-tool, website-only path like
   `set_archived`, invisible to the model and to tool returns. Those prefs are

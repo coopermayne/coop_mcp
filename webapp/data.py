@@ -854,7 +854,7 @@ def graph_data() -> dict:
 
 def _item_view(r, fields: list[dict] | None = None) -> dict:
     """One item shaped for a template: parsed data (ordered by the collection's
-    field order when known), tags as a list, updated day for the byline.
+    field order when known) and the updated day for the byline.
 
     `fields=None` means no collection context (inbox notes) — show whatever the
     blob carries; an EMPTY list is a real answer ("show no fields"), so it must
@@ -868,7 +868,6 @@ def _item_view(r, fields: list[dict] | None = None) -> dict:
     return {"item_id": r["id"], "title": r["title"], "body": r["body"] or "",
             "featured_image_url": r["featured_image_url"] or "",
             "data": ordered, "data_map": data_blob,
-            "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()],
             "updated": (r["updated_at"] or "")[:10]}
 
 
@@ -934,7 +933,7 @@ def search_item_titles(q: str, limit: int = 100) -> list[dict]:
     """Items across EVERY collection (and the inbox) whose TITLE matches — the
     /collections search bar. Deliberately title-only and a plain substring
     match: this is "where did I put that recipe", a lookup, not the model's
-    `search_items` (which is FTS over title/body/tags and lives on the tool
+    `search_items` (which is FTS over title and body, and lives on the tool
     side). Each hit carries its collection so the answer says where it lives."""
     needle = (q or "").strip()
     if not needle:

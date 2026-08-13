@@ -819,30 +819,34 @@ CREATE TABLE IF NOT EXISTS items (
     data          TEXT,                   -- JSON keyed by the collection's field keys
     featured_image_url TEXT,              -- http/https URL, a COLUMN not a declared
                                           -- field: EVERY item can have one
-    tags          TEXT,                   -- comma-separated lowercase labels; searchable via FTS
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_items_collection ON items(collection_id);
+"""
 
+# The items FTS mirror, split out of SCHEMA so the tags-drop migration can rebuild
+# it: an external-content fts5 table names its columns, so losing a column means
+# recreating the table and its triggers, not altering them.
+ITEMS_FTS_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts
-    USING fts5(title, body, tags, content='items', content_rowid='id');
+    USING fts5(title, body, content='items', content_rowid='id');
 
 CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
-    INSERT INTO items_fts(rowid, title, body, tags)
-    VALUES (new.id, new.title, new.body, new.tags);
+    INSERT INTO items_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
 END;
 CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
-    INSERT INTO items_fts(items_fts, rowid, title, body, tags)
-    VALUES('delete', old.id, old.title, old.body, old.tags);
+    INSERT INTO items_fts(items_fts, rowid, title, body)
+    VALUES('delete', old.id, old.title, old.body);
 END;
 CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE ON items BEGIN
-    INSERT INTO items_fts(items_fts, rowid, title, body, tags)
-    VALUES('delete', old.id, old.title, old.body, old.tags);
-    INSERT INTO items_fts(rowid, title, body, tags)
-    VALUES (new.id, new.title, new.body, new.tags);
+    INSERT INTO items_fts(items_fts, rowid, title, body)
+    VALUES('delete', old.id, old.title, old.body);
+    INSERT INTO items_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
 END;
 """
+
+SCHEMA += ITEMS_FTS_SCHEMA
 
 
 def db() -> sqlite3.Connection:
@@ -971,7 +975,7 @@ def init_db() -> None:
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(collections)")]
         if "display" not in ccols:
             # Per-collection VIEWER preferences — webapp-only JSON (hidden_fields,
-            # show_body/show_tags/show_updated). NULL = defaults (show everything).
+            # show_body/show_updated/show_image). NULL = defaults (show everything).
             # Written only by the website's Display popover via
             # set_collection_display (a non-tool path); the model never reads or
             # writes it.
@@ -1009,6 +1013,26 @@ def init_db() -> None:
                              "TO featured_image_url")
             else:
                 conn.execute("ALTER TABLE items ADD COLUMN featured_image_url TEXT")
+        if "tags" in icols:
+            # Tags were a third way to structure an item, next to the collection it
+            # sits in and the collection's declared fields — but nothing ever FILTERED
+            # by one: they rendered as inert badges and their only real job was being
+            # in the FTS mirror, where they mostly repeated words already in the title
+            # or body. Dropped rather than made filterable: "fields stay few" argues
+            # the same way for tags, and one less thing for the model to garden.
+            # The FTS table names its columns, so it and its triggers are rebuilt.
+            try:
+                conn.executescript(
+                    "DROP TRIGGER IF EXISTS items_ai; DROP TRIGGER IF EXISTS items_ad;"
+                    "DROP TRIGGER IF EXISTS items_au; DROP TABLE IF EXISTS items_fts;")
+                conn.execute("ALTER TABLE items DROP COLUMN tags")
+            except sqlite3.OperationalError:
+                # DROP COLUMN wants SQLite 3.35+. On anything older the column just
+                # stays behind as an orphan nothing reads (every INSERT here names
+                # its columns), same as intake's dead `at_time`.
+                pass
+            conn.executescript(ITEMS_FTS_SCHEMA)
+            conn.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
         # Runs every boot, not just on the ALTER: a collection created BEFORE the
         # column existed declared its own "featured image" text field, and the
         # model kept filling it after. Idempotent — see the helper.
@@ -3285,8 +3309,7 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
 
 COLLECTION_DISPLAY_DEFAULTS = {"view": "list",
                                "hidden_fields": [], "show_body": True,
-                               "show_tags": True, "show_updated": True,
-                               "show_image": True,
+                               "show_updated": True, "show_image": True,
                                # "" = don't group / the default sort. group_by
                                # and sort_by are a declared field key; sort_by
                                # also takes the two intrinsic columns below.
@@ -3309,7 +3332,6 @@ def _coll_display(row) -> dict:
 def set_collection_display(name: str, view: Optional[str] = None,
                            hidden_fields: Optional[list[str]] = None,
                            show_body: Optional[bool] = None,
-                           show_tags: Optional[bool] = None,
                            show_updated: Optional[bool] = None,
                            show_image: Optional[bool] = None,
                            group_by: Optional[str] = None,
@@ -3327,7 +3349,7 @@ def set_collection_display(name: str, view: Optional[str] = None,
     overwritten the first time the popover was opened, so presentation is now
     the browser's alone), hidden_fields (declared field keys to leave off the
     table columns / list badges),
-    show_body/show_tags/show_updated/show_image (the row extras), and
+    show_body/show_updated/show_image (the row extras), and
     how the items are arranged: group_by (a declared field key — items are
     bucketed under one heading per distinct value, ones missing it last) plus
     sort_by ('updated', 'title', or a declared field key) and sort_dir
@@ -3372,8 +3394,8 @@ def set_collection_display(name: str, view: Optional[str] = None,
             if sort_dir not in ("asc", "desc"):
                 return {"error": f"bad sort_dir {sort_dir!r}; use 'asc' or 'desc'"}
             disp["sort_dir"] = sort_dir
-        for k, v in (("show_body", show_body), ("show_tags", show_tags),
-                     ("show_updated", show_updated), ("show_image", show_image)):
+        for k, v in (("show_body", show_body), ("show_updated", show_updated),
+                     ("show_image", show_image)):
             if v is not None:
                 disp[k] = bool(v)
         conn.execute(
@@ -3406,13 +3428,6 @@ def list_icons() -> dict:
     return {"icons": icon_set.ICON_GROUPS, "default": icon_set.DEFAULT_ICON}
 
 
-def _tags_text(tags: Optional[list[str]]) -> Optional[str]:
-    if tags is None:
-        return None
-    cleaned = sorted({t.strip().lower() for t in tags if t and t.strip()})
-    return ", ".join(cleaned) if cleaned else ""
-
-
 def _clean_featured_image(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """(value, error) for a featured image URL. Http(s) only — the webapp drops
     it straight into an <img src>, so a javascript:/data: URL has no business
@@ -3441,8 +3456,6 @@ def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
     data = _item_data(r)
     if data:
         out["data"] = data
-    if r["tags"]:
-        out["tags"] = r["tags"]
     if r["featured_image_url"]:
         out["featured_image_url"] = r["featured_image_url"]
     return out
@@ -3541,7 +3554,6 @@ def save_collection(name: str, description: Optional[str] = None,
 @mcp.tool(annotations=WRITE)
 def save_item(title: str, body: Optional[str] = None,
               collection: Optional[str] = None, data: Optional[dict] = None,
-              tags: Optional[list[str]] = None,
               featured_image_url: Optional[str] = None) -> dict:
     """Save one item. No `collection` = an INBOX NOTE — the right default for
     anything that doesn't obviously belong to an existing collection; capture
@@ -3581,20 +3593,20 @@ def save_item(title: str, body: Optional[str] = None,
         data_clean = {k: v for k, v in (data or {}).items() if v is not None}
         ts = now()
         cur = conn.execute(
-            "INSERT INTO items(collection_id, title, body, data, featured_image_url, tags, "
-            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO items(collection_id, title, body, data, featured_image_url, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
             (coll_id, title, body, json.dumps(data_clean) if data_clean else None,
-             image, _tags_text(tags), ts, ts))
+             image, ts, ts))
         item_id = cur.lastrowid
     return {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] = None,
-                data: Optional[dict] = None, tags: Optional[list[str]] = None,
+                data: Optional[dict] = None,
                 featured_image_url: Optional[str] = None) -> dict:
-    """Edit one item: only the arguments you pass change. `body` and `tags`
-    replace wholesale (read first via get_item, send back the full new value);
+    """Edit one item: only the arguments you pass change. `body` replaces
+    wholesale (read first via get_item, send back the full new value);
     `data` merges per key — send just the keys you're changing, null drops a
     key. `featured_image_url` replaces the featured image; pass "" to remove it.
     Moving between collections is move_to_collection, not this."""
@@ -3620,7 +3632,7 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
                 else:
                     merged[k] = v
         conn.execute(
-            "UPDATE items SET title=?, body=?, data=?, featured_image_url=?, tags=?, "
+            "UPDATE items SET title=?, body=?, data=?, featured_image_url=?, "
             "updated_at=? WHERE id=?",
             (title if title is not None else r["title"],
              body if body is not None else r["body"],
@@ -3628,7 +3640,6 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
              # None means "unchanged"; "" cleared it, which _clean_featured_image
              # also returns as None — so the empty string is the tell.
              image if featured_image_url is not None else r["featured_image_url"],
-             _tags_text(tags) if tags is not None else r["tags"],
              now(), item_id))
     return {"item_id": item_id, "updated": True,
             **({"data": merged} if data is not None else {})}
@@ -3694,7 +3705,7 @@ def list_items(collection: Optional[str] = None, limit: int = 50,
 @mcp.tool(annotations=READ_ONLY)
 def search_items(query: str, collection: Optional[str] = None,
                  limit: int = 20, max_chars: int = 300) -> dict:
-    """Full-text search across notes and collection items (title, body, tags).
+    """Full-text search across notes and collection items (title and body).
     Plain words — tokenized and quoted like search_entries, so punctuation is
     safe and every term must appear. Scope with `collection` (a name, or
     "inbox" for unfiled notes); default searches EVERYTHING, which is usually
@@ -3725,9 +3736,9 @@ def search_items(query: str, collection: Optional[str] = None,
 
 @mcp.tool(annotations=READ_ONLY)
 def get_item(item_id: int) -> dict:
-    """Fetch one item in full — untruncated body, all data fields, tags, dates.
-    Read-before-write: this is what you read before update_item rewrites body
-    or tags."""
+    """Fetch one item in full — untruncated body, all data fields, dates.
+    Read-before-write: this is what you read before update_item rewrites the
+    body."""
     with db() as conn:
         r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
         if not r:
@@ -3736,7 +3747,7 @@ def get_item(item_id: int) -> dict:
                             (r["collection_id"],)).fetchone() if r["collection_id"] else None
     return {"item_id": r["id"], "title": r["title"], "body": r["body"],
             "collection": coll["name"] if coll else "inbox",
-            "data": _item_data(r), "tags": r["tags"],
+            "data": _item_data(r),
             **({"featured_image_url": r["featured_image_url"]} if r["featured_image_url"] else {}),
             "created_at": r["created_at"], "updated_at": r["updated_at"]}
 
