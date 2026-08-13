@@ -105,17 +105,15 @@
       </tr>
     </thead>
     <tbody class="divide-y divide-gray-100">
-      {# A group heading has to read as a BREAK, not as another row: a gray fill
-         plus muted text (the first try) looked exactly like the column header
-         it sat under. So it's whitespace above, a black rule across, and the
-         label in black — the row's own weight does the separating. #}
+      {# A group heading is a FILLED BAND — gray-100, a step darker than the
+         gray-50 row hover so it never reads as a row, with the label in black.
+         (Rules and whitespace were tried and read as page furniture; the fill
+         is what actually says "these belong together".) #}
       {% for g in c.groups %}
       {% if g.label %}
-      {# The rule lives on the CELL, not the row: tbody's `divide-y` styles
-         `tr + tr` borders and out-specifies a border class on the row itself. #}
-      <tr>
+      <tr class="bg-gray-100">
         <td colspan="{{ c.fields | length + 1 }}"
-            class="px-5 sm:px-6 pb-2 {{ 'pt-3' if loop.first else 'pt-8 border-t-2 border-black' }}">
+            class="px-5 sm:px-6 py-2.5 bg-gray-100 border-gray-200 {{ '' if loop.first else 'border-t' }}">
           <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
           <span class="ml-2 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
         </td>
@@ -139,16 +137,18 @@
 {% else %}
 {# 'list' — the quiet stack, and the fallback for any unrecognized hint. Badges
    show only VISIBLE fields (it.data is built from them); the extras honor the
-   Display prefs. Grouped, each bucket is its own bordered stack under a quiet
-   heading; ungrouped, there's exactly one bucket and it reads as before. #}
+   Display prefs. Grouped, each bucket is its own bordered stack CAPPED by a
+   gray-100 band (the table view's heading, same fill) so the label belongs to
+   the stack under it; ungrouped, there's one bucket and it reads as before. #}
 {% for g in c.groups %}
-{% if g.label %}
-<div class="flex items-baseline justify-between mb-2 pb-1.5 border-b-2 border-black {% if not loop.first %}mt-10{% endif %}">
-  <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
-  <span class="text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
-</div>
-{% endif %}
-<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+<div class="border border-gray-200 rounded-[4px] overflow-hidden {% if not loop.first %}mt-6{% endif %}">
+  {% if g.label %}
+  <div class="flex items-baseline justify-between bg-gray-100 border-b border-gray-200 px-5 sm:px-6 py-2.5">
+    <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
+    <span class="text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
+  </div>
+  {% endif %}
+  <div class="divide-y divide-gray-100">
   {% for it in g.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
     <div class="flex items-baseline justify-between gap-3">
@@ -164,6 +164,7 @@
     {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}
   </a>
   {% endfor %}
+  </div>
 </div>
 {% endfor %}
 {% endif %}
