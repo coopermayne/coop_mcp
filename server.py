@@ -3336,8 +3336,7 @@ def set_collection_display(name: str, view: Optional[str] = None,
                            show_image: Optional[bool] = None,
                            group_by: Optional[str] = None,
                            sort_by: Optional[str] = None,
-                           sort_dir: Optional[str] = None,
-                           icon: Optional[str] = None) -> dict:
+                           sort_dir: Optional[str] = None) -> dict:
     """Set how the webapp renders one collection — the collection page's Display
     popover. A NON-tool, website-only path (like set_archived/create_exercise):
     the model proposes a collection's FIELDS, but what actually shows on the page
@@ -3356,15 +3355,13 @@ def set_collection_display(name: str, view: Optional[str] = None,
     ('asc'|'desc'). Grouping and sorting apply to BOTH views; sorting runs
     within each group.
 
-    `icon` is the same collection column save_collection writes (the model
-    proposes a glyph; the user's pick from the popover's grid wins), so it lands
-    on the row, not in the display JSON.
+    The collection's `icon` is NOT here: it's the model's (save_collection's
+    `icon`), a property of the collection rather than a rendering preference,
+    and the website doesn't write it at all.
 
     Args left None are unchanged; pass hidden_fields=[] to unhide everything,
     and group_by='' / sort_by='' to go back to ungrouped / newest-updated.
     Unknown field keys error rather than silently sticking."""
-    if icon is not None and (bad := _bad_icon(icon)):
-        return bad
     if view is not None and view not in COLLECTION_VIEWS:
         return {"error": f"bad view {view!r}; use one of {list(COLLECTION_VIEWS)}"}
     with db() as conn:
@@ -3398,11 +3395,9 @@ def set_collection_display(name: str, view: Optional[str] = None,
                      ("show_image", show_image)):
             if v is not None:
                 disp[k] = bool(v)
-        conn.execute(
-            "UPDATE collections SET display=?, icon=COALESCE(?, icon) WHERE id=?",
-            (json.dumps(disp), (icon or None) if icon is not None else None, row["id"]))
-    return {"collection": row["name"],
-            "icon": icon or row["icon"] or icon_set.DEFAULT_ICON, **disp}
+        conn.execute("UPDATE collections SET display=? WHERE id=?",
+                     (json.dumps(disp), row["id"]))
+    return {"collection": row["name"], **disp}
 
 
 def _bad_icon(icon: str) -> Optional[dict]:

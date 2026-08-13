@@ -18,22 +18,8 @@
             class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Display</button>
     <div id="disp-pop" hidden
          class="absolute right-0 top-7 z-20 w-60 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
-      {# Icon picker — the same `icon` column save_collection writes, so the
-         model proposes a glyph and the user's pick simply wins. A scrolling
-         grid of the whole vendored set, grouped the way list_icons() groups it
-         for the model; the chosen one is boxed in black. #}
-      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Icon</p>
-      <div class="mb-4 max-h-32 overflow-y-auto border border-gray-200 rounded-[4px] p-1.5">
-        {% for group, names in icon_groups.items() %}
-        <p class="px-1 pt-1 pb-0.5 text-[9px] uppercase tracking-widest text-gray-300">{{ group }}</p>
-        <div class="grid grid-cols-7 gap-0.5 mb-1">
-          {% for n in names %}
-          <button type="button" data-icon="{{ n }}" title="{{ n }}"
-                  class="flex items-center justify-center p-1 rounded-[3px] border text-gray-500 hover:text-black hover:border-gray-300 transition-colors {{ 'border-black text-black' if c.icon == n else 'border-transparent' }}">{{ m.icon(n, "w-4 h-4") }}</button>
-          {% endfor %}
-        </div>
-        {% endfor %}
-      </div>
+      {# No icon picker here: the glyph is the MODEL's (save_collection's `icon`),
+         not a display pref — this popover is layout only. #}
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">View</p>
       <div class="space-y-1.5 mb-4">
         {% for h in ['list', 'table'] %}
@@ -208,18 +194,6 @@
     if (!pop.hidden && !pop.contains(e.target) && !btn.contains(e.target)) pop.hidden = true;
   });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.hidden = true; });
-  // Icon picker: selection is local until Apply, like every other control here.
-  var icon = {{ (c.icon or '') | tojson }};
-  pop.addEventListener('click', function (e) {
-    var b = e.target.closest('[data-icon]');
-    if (!b) return;
-    icon = b.dataset.icon;
-    Array.prototype.forEach.call(pop.querySelectorAll('[data-icon]'), function (o) {
-      o.classList.toggle('border-black', o === b);
-      o.classList.toggle('text-black', o === b);
-      o.classList.toggle('border-transparent', o !== b);
-    });
-  });
   document.getElementById('disp-apply').addEventListener('click', function () {
     var hidden = Array.prototype.filter.call(
       pop.querySelectorAll('input[name="disp-field"]'), function (i) { return !i.checked; }
@@ -235,8 +209,7 @@
         sort_dir: pop.querySelector('input[name="disp-dir"]:checked').value,
         show_body: document.getElementById('disp-body').checked,
         show_updated: document.getElementById('disp-updated').checked,
-        show_image: document.getElementById('disp-image').checked,
-        icon: icon
+        show_image: document.getElementById('disp-image').checked
       })
     }).then(function (r) { if (r.ok) location.reload(); });
   });

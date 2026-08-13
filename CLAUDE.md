@@ -504,7 +504,8 @@ working.
   default; a collection is model-proposed, user-approved (`save_collection` blocks
   near-duplicate names with "did you mean?" candidates unless `force=True`), wears an
   `icon` (a name from the vendored Lucide set — see `icons.py`; NULL draws the default
-  folder), and
+  folder — written ONLY by `save_collection`: the glyph is part of what a collection IS,
+  so it's the model's like `fields`, not a rendering pref the Display popover touches), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
   text|number|date|select). Shape is the model's; LAYOUT is not — the legacy
   `display_hint` column is dormant, the view lives in the webapp-only `display`
@@ -553,8 +554,7 @@ working.
   visit overwrote it, so one concern had two homes and only the browser's ever
   won. `init_db` folds the old column into the JSON once and it's dormant after,
   kept not dropped; which declared fields show as table
-  columns / list badges; `group_by`/`sort_by`/`sort_dir`; the `icon` grid, which
-  writes the collection's own `icon` column, not the display JSON; and the row extras —
+  columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
   notes-preview/updated/featured-image) saved
   to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
   `server.set_collection_display` — a NON-tool, website-only path like
