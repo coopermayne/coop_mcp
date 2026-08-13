@@ -333,6 +333,12 @@ working.
   not a search. `_fts_query` tokenizes and quotes each term into a literal (terms
   ANDed); `raw_query=True` opts back into real FTS5 syntax (OR/NEAR/prefix*) and
   returns any syntax error as a correctable `{"error": …}` rather than raising.
+  Each literal is a PREFIX query (`"term"*`) — shared by `search_entries` and
+  `notes_search`. The load-bearing reason is CJK: unicode61 tokenizes a run of
+  Chinese as ONE token, so a recipe titled 宫保鸡丁 was reachable only by typing
+  the whole name (`宫保` matched nothing), and the same character fixes the
+  everyday English case (`doubanji` → doubanjiang). It is NOT substring matching —
+  a word's TAIL still misses; that needs the trigram tokenizer and an FTS rebuild.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
@@ -359,7 +365,11 @@ working.
   `sodium_mg`, `fiber_g`, `standard_drinks`, `water_oz`) are per-item and OPTIONAL,
   staying NULL until filled in, so a day described only in words is "unestimated",
   never a zero-calorie day; a nutrient no item carries is ABSENT from the day's
-  totals rather than 0. `intake_summary`'s averages are per nutrient over the days
+  totals rather than 0. Range-checked by the shared `_bad_nutrients` (both
+  `intake_log` and `intake_update`, so the two can't drift): no negatives, and a
+  generous per-item ceiling (`NUTRIENT_MAX`) purely as a typo guard — since day
+  totals are DERIVED, one absurd row silently skews that day and every average
+  built on it, nowhere near the item that caused it. `intake_summary`'s averages are per nutrient over the days
   that carry it, so each has its OWN denominator (returned with `logged_days`). The
   `NUTRIENTS` tuple drives every sum/average/render site, so adding a nutrient is one
   tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
@@ -369,7 +379,14 @@ working.
   searches everything ever logged (token-level scoring — exact/substring/Jaro-
   Winkler/phonetic per query word — grouped by identical item text, latest numbers
   win, ranked by match quality with a small ~30-day-half-life recency bonus so this
-  week's leftovers outrank last month's near-twin). The model REUSES those settled
+  week's leftovers outrank last month's near-twin). Both similarity rules are
+  LENGTH-GUARDED, because the defaults scored junk above the 0.74 floor and this
+  tool's whole job is telling a genuine repeat from a near-twin: the substring
+  rule needs 3+ characters (ungated it paid 0.92 for a single letter, so the query
+  "a" scored a PERFECT 1.0 against "half a medium eggplant"), and Jaro-Winkler is
+  damped when the two tokens' lengths are far apart (its prefix bonus scored
+  "chipotel"≈"pot" at 0.792, which put hot pot vegetables top of a search for a
+  chipotle bowl). The model REUSES those settled
   numbers when it judges a hit is genuinely the same thing, estimates fresh when it
   isn't — deliberately a read tool + model judgment, NOT a curated catalog: a
   `foods` entity table was tried and rejected because the diet varies within brands
@@ -537,7 +554,16 @@ working.
   folder — written ONLY by `collections_save`: the glyph is part of what a collection IS,
   so it's the model's like `fields`, not a rendering pref the Display popover touches), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
-  text|number|date|select). Shape is the model's; LAYOUT is not — the legacy
+  text|number|date|select — a `select` MUST carry a non-empty, duplicate-free
+  `options` list, since `_bad_data` can only constrain a value when options exist
+  and the webapp groups in their declared order: an optionless select silently
+  degraded into a text field that merely CLAIMED to be a closed set). Because
+  `fields` REPLACES the list, an edit that forgets a field un-declares it and
+  STRANDS its values on every item — invisible (only declared fields render) and
+  blocking (`notes_file` validates the whole merged blob). `collections_save`
+  doesn't delete those values, but it now reports them as `stranded`
+  {key: item count} with the fix, since silence is exactly how the
+  `featured_image` orphans survived 16 items unnoticed. Shape is the model's; LAYOUT is not — the legacy
   `display_hint` column is dormant, the view lives in the webapp-only `display`
   JSON (see the popover below). Items hold markdown `body` (the prose), a `featured_image_url` (the
   FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
@@ -632,7 +658,12 @@ working.
   goals) merged via `intake_set_profile` and surfaced by `intake_summary`, so a new
   conversation needs no pasted preamble. The webapp's rings read `targets` too
   (`data.nutrient_targets()` merges it over the display defaults) — one source of
-  truth for goals, ceiling/floor direction still webapp-only.
+  truth for goals, ceiling/floor direction still webapp-only. The rest of the blob
+  is free-form, but `targets` is VALIDATED (`_bad_targets`: a real nutrient key,
+  a positive number, closest-name suggestion on a typo) precisely BECAUSE the
+  rings read it: `nutrient_targets()` skips any override that isn't well-formed,
+  so an unvalidated write reported success while the ring you were aiming at
+  silently kept the old number, with nothing anywhere to say why.
 
 ## Matching (in `find_candidates` / `score_surface_against_alias`)
 

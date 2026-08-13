@@ -596,15 +596,12 @@ CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
 END;
 
 -- ----------------------------------------------------------------------- --
--- Drinking tracker. EXACTLY ONE row per day (drink_date is unique): the first
--- log of the day creates it, later logs accumulate onto it (standard_drinks add
--- up, kinds merge into a deduped list).
---
--- A row with standard_drinks = 0 is meaningful: it's a day CONFIRMED sober,
--- distinct from a day with no row, which merely wasn't logged. Aggregates treat
--- both as sober (a 0 row is not a drinking day and doesn't break a streak) — the
--- difference is only that the UI can show "0" instead of an empty glass.
--- Aggregation (daily totals, streaks) is deterministic SQL.
+-- LEGACY drinking tracker — one row per day, dormant. Alcohol is an intake item
+-- now (standard_drinks on intake_items). Kept, not dropped: it's the fold-in
+-- migration's source and the only copy of the per-day `kind` ("beer, wine"),
+-- which an item row has no column for. NOTHING reads or writes it — the
+-- log/summary/update functions that did are deleted; a stale reader here is
+-- what made the /graphs drinks series go quiet after the fold.
 -- ----------------------------------------------------------------------- --
 CREATE TABLE IF NOT EXISTS drinks (
     id              INTEGER PRIMARY KEY,
@@ -1904,7 +1901,9 @@ def search_entries(query: str, limit: int = 20, max_chars: int = 400,
 
     Pass `query` as PLAIN WORDS ("chipotle bowl", "Tom's birthday"). It's tokenized
     and each term is quoted before it reaches FTS5, so apostrophes, question marks
-    and stray punctuation are safe and every term must appear (AND). Set
+    and stray punctuation are safe and every term must appear (AND). Terms match
+    as PREFIXES, not substrings — "birthd" finds birthday, the tail of a word
+    finds nothing. Set
     `raw_query=True` to pass FTS5 syntax through verbatim instead — for OR, NEAR(),
     prefix* or "quoted phrases"; a syntax error then comes back as an error you can
     correct rather than a crash."""
@@ -1947,8 +1946,16 @@ def _fts_query(q: str) -> str:
     string is the double quote, and the token pattern can't produce one. Terms are
     ANDed, FTS5's default. Callers wanting real FTS5 syntax (OR, NEAR, prefix*) opt
     out via search_entries(raw_query=True).
+
+    Each term is a PREFIX query ("term"*). Two reasons, one of them load-bearing
+    here: FTS5's unicode61 tokenizer treats a run of CJK as ONE token, so half the
+    recipe titles ("宫保鸡丁") were reachable only by typing the whole name —
+    "宫保" matched nothing. Prefixing fixes that and the everyday English case
+    ("doubanji" now finds doubanjiang) in the same character. It does NOT give
+    substring matching — a search for the TAIL of a word or a CJK name still
+    misses; that needs the trigram tokenizer and an FTS rebuild.
     """
-    return " ".join(f'"{t}"' for t in re.findall(r"[\w']+", q or ""))
+    return " ".join(f'"{t}"*' for t in re.findall(r"[\w']+", q or ""))
 
 
 def _snippet(body: str, surface: str, window: int = 60) -> str:
@@ -2854,6 +2861,30 @@ def update_drink(drink_id: int, standard_drinks: Optional[float] = None,
 # share one shape and one code path — no parallel table, no per-nutrient special case.
 NUTRIENTS = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g",
              "standard_drinks", "water_oz")
+# Per-ITEM sanity ceilings. Deliberately far above any real meal — this is a
+# typo guard (a stray exponent, a doubled zero), not a judgment about how much
+# anyone should eat. It matters because day totals are DERIVED: one absurd row
+# silently poisons that day's totals and every average built on it, and the
+# damage isn't visible next to the item that caused it.
+NUTRIENT_MAX = {"calories": 20000, "protein_g": 2000, "carbs_g": 2000,
+                "fat_g": 2000, "sodium_mg": 100000, "fiber_g": 2000,
+                "standard_drinks": 100, "water_oz": 512}
+
+
+def _bad_nutrients(values: dict) -> Optional[dict]:
+    """Range-check per-item nutrients. Shared by intake_log and intake_update so
+    the two can't drift. Same spirit as _bad_set: the error names the fix."""
+    for k, v in values.items():
+        if v is None:
+            continue
+        if v < 0:
+            return {"error": f"{k} must not be negative, got {v}"}
+        if k in NUTRIENT_MAX and v > NUTRIENT_MAX[k]:
+            return {"error": f"{k}={v} is past the sane ceiling for ONE item "
+                             f"({NUTRIENT_MAX[k]}) — check for a typo. Day totals "
+                             "are summed from items, so a wrong one skews the "
+                             "day and its averages."}
+    return None
 
 
 def _item_row(r) -> dict:
@@ -2943,9 +2974,8 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     nutrients = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
                  "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
                  "standard_drinks": standard_drinks, "water_oz": water_oz}
-    for k, v in nutrients.items():
-        if v is not None and v < 0:
-            return {"error": f"{k} must not be negative, got {v}"}
+    if err := _bad_nutrients(nutrients):
+        return err
     if not item and all(v is None for v in nutrients.values()):
         return {"error": "nothing to log — pass an item and/or a nutrient amount"}
     d = food_date or today()
@@ -3001,6 +3031,13 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     """
     if err := _bad_date(since, "since") or _bad_date(until, "until"):
         return err
+    # A backwards window matched nothing and reported it as a NEGATIVE
+    # window_days — an empty result that reads like "you logged nothing then",
+    # which is a different and far more alarming fact than "you asked
+    # backwards". Say which it is.
+    if since and until and since > until:
+        return {"error": f"since {since!r} is after until {until!r} — the window "
+                         "runs earliest to latest; swap them"}
     until = until or today()
     if since is None:
         since = date.fromordinal(
@@ -3077,9 +3114,8 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
               "calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
               "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
               "standard_drinks": standard_drinks, "water_oz": water_oz}
-    for m in NUTRIENTS:
-        if fields[m] is not None and fields[m] < 0:
-            return {"error": f"{m} must not be negative, got {fields[m]}"}
+    if err := _bad_nutrients({m: fields[m] for m in NUTRIENTS}):
+        return err
     sets = {k: v for k, v in fields.items() if v is not None}
     if not sets:
         return {"item_id": item_id, "updated": []}
@@ -3112,6 +3148,34 @@ def _get_eating_profile(conn: sqlite3.Connection) -> dict:
     return json.loads(row["value"]) if row else {}
 
 
+def _bad_targets(targets) -> Optional[str]:
+    """Check the profile's one STRUCTURED key. The rest of the blob is free-form
+    on purpose, but `targets` is read by machinery — the webapp's rings — which
+    accepts only a real nutrient key carrying a positive number and silently
+    keeps its default otherwise. Without this the two disagree in the worst
+    direction: the write reports success, and the ring you were aiming at goes
+    on reading the old number with nothing to say why. Same actionable-error
+    habit as _bad_data/_bad_set/_bad_icon."""
+    if targets is None:
+        return None
+    if not isinstance(targets, dict):
+        return (f"targets must be a {{nutrient: number}} dict, got {targets!r}; "
+                f"the nutrients are {list(NUTRIENTS)}")
+    for k, v in targets.items():
+        if k not in NUTRIENTS:
+            # Closest name in the error, the _bad_icon habit: a typo'd nutrient
+            # ("protien_g") should be fixable from the message in one go.
+            near = max(NUTRIENTS,
+                       key=lambda n: jellyfish.jaro_winkler_similarity(str(k), n))
+            return (f"unknown nutrient {k!r} in targets — did you mean {near!r}? "
+                    f"The nutrients are {list(NUTRIENTS)}")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+            return (f"targets[{k!r}] must be a positive number, got {v!r} — a "
+                    "daily target of zero or a string is not something the app "
+                    "can render; drop the key instead")
+    return None
+
+
 @mcp.tool(name="intake_set_profile", annotations=WRITE_IDEMPOTENT)
 def update_eating_profile(profile: dict) -> dict:
     """Merge fields into the stored eating profile (JSON) — the trainer profile's
@@ -3134,6 +3198,8 @@ def update_eating_profile(profile: dict) -> dict:
     {"protein_floor_g": 120, "goal": "cut to 180 by December", "stats": "6'4\", 205",
     "context": "on semaglutide — front-load protein, watch fiber + water"}.
     """
+    if (err := _bad_targets(profile.get("targets"))):
+        return {"error": err}
     with db() as conn:
         current = _get_eating_profile(conn)
         current.update(profile)
@@ -3155,11 +3221,21 @@ def _score_item_text(query: str, text: str) -> float:
     token (an item is a phrase — "Chobani lactose-free Greek yogurt w/ whey" — so
     whole-string similarity would punish every word the query didn't say). Each query
     token takes its best match among the item's tokens: exact wins outright, a
-    substring hit (prefixes while typing, "yog" in "yogurt") lands just under, then
-    Jaro-Winkler with the phonetic floor for transcription noise. The item is scored
+    substring hit of 3+ characters (prefixes while typing, "yog" in "yogurt") lands
+    just under, then Jaro-Winkler — damped when the two tokens' lengths are far
+    apart — with the phonetic floor for transcription noise. The item is scored
     on the MEAN over query tokens, so "chobani drink" needs both words to land
-    somewhere, not either one."""
-    qt = re.findall(r"[a-z0-9]+", (query or "").lower())
+    somewhere, not either one.
+
+    The two length guards exist because this tool's whole job is telling a genuine
+    repeat from a near-twin, and both defaults scored junk above PAST_ITEM_FLOOR —
+    see the comments inline."""
+    # Single-character query tokens are dropped, not scored. One letter identifies
+    # no food, but it matches EXACTLY against the "a" in "half a medium eggplant"
+    # — a perfect 1.0 on a word carrying no information — and inside a longer
+    # query it drags the mean up with it. Items keep their short tokens; they're
+    # only ever match targets.
+    qt = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(t) > 1]
     tt = re.findall(r"[a-z0-9]+", (text or "").lower())
     if not qt or not tt:
         return 0.0
@@ -3169,10 +3245,24 @@ def _score_item_text(query: str, text: str) -> float:
         for t in tt:
             if q == t:
                 cand = 1.0
-            elif q in t or t in q:
+            elif len(q) >= 3 and len(t) >= 3 and (q in t or t in q):
+                # LENGTH-GUARDED substring. Ungated, this paid 0.92 for a single
+                # character, so the query "a" scored a PERFECT 1.0 against "half a
+                # medium eggplant" — every item containing an "a" came back looking
+                # like a settled repeat. A substring only means something once
+                # there's enough of it to mean something.
                 cand = 0.92
             else:
                 cand = jellyfish.jaro_winkler_similarity(q, t)
+                # Jaro-Winkler pays a prefix bonus that short strings can't earn
+                # honestly: "chipotel" vs "pot" scored 0.792, which cleared the
+                # 0.74 floor and put hot pot vegetables at the top of a search for
+                # a chipotle bowl. Damp it when the two lengths are far apart —
+                # the shorter the overlap relative to the longer word, the less a
+                # shared opening is evidence of the same food.
+                ratio = min(len(q), len(t)) / max(len(q), len(t))
+                if ratio < 0.6:
+                    cand *= 0.5 + 0.5 * ratio
                 if phonetic(q) and phonetic(q) == phonetic(t):
                     cand = max(cand, 0.88)
             s = max(s, cand)
@@ -3211,6 +3301,7 @@ def find_past_items(query: str, limit: int = 8) -> dict:
     query = (query or "").strip()
     if not query:
         return {"error": "pass a query — the food name as the user said it"}
+    limit, _ = _page(limit)
     with db() as conn:
         rows = conn.execute(
             "SELECT * FROM intake_items WHERE item IS NOT NULL "
@@ -3293,7 +3384,18 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
         norm = {"key": key, "label": (f.get("label") or key.replace("_", " ")).strip(),
                 "type": ftype}
         opts = [str(o).strip() for o in (f.get("options") or []) if str(o).strip()]
-        if ftype == "select" and opts:
+        if ftype == "select":
+            # A select IS its options: _bad_data only checks a value against them
+            # when they exist, so an optionless select silently degraded into a
+            # text field that merely CLAIMED to be a closed set — and the webapp
+            # groups a select in its declared order, which an empty list can't
+            # give. Say so instead of accepting a field that can't do its job.
+            if not opts:
+                return [], (f"select field {key!r} needs an `options` list — without "
+                            "one it can't constrain anything; use type 'text' if the "
+                            "values really are open-ended")
+            if len(set(opts)) != len(opts):
+                return [], f"duplicate options in select field {key!r}: {opts}"
             norm["options"] = opts
         out.append(norm)
     return out, None
@@ -3460,6 +3562,28 @@ def set_collection_display(name: str, view: Optional[str] = None,
     return {"collection": row["name"], **disp}
 
 
+def _page(limit: int, offset: int = 0) -> tuple[int, int]:
+    """Clamp a limit/offset pair. SQLite reads a NEGATIVE limit as "no limit", so
+    `limit=-5` quietly returned the whole table — the opposite of what a negative
+    limit looks like it asks for, and the kind of thing that turns a token-compact
+    return into a flood."""
+    return max(1, min(int(limit), 200)), max(0, int(offset))
+
+
+def _stranded_keys(conn: sqlite3.Connection, collection_id: int,
+                   fields: list[dict]) -> dict:
+    """{data key: how many items still carry it} for keys `fields` no longer
+    declares. Counts only — the caller reports, it never deletes."""
+    declared = {f["key"] for f in fields}
+    out: dict[str, int] = {}
+    for r in conn.execute("SELECT data FROM items WHERE collection_id=?",
+                          (collection_id,)):
+        for k in _item_data(r):
+            if k not in declared:
+                out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def _bad_icon(icon: str) -> Optional[dict]:
     """None if `icon` is in the vendored set (or "" — which clears it), else an
     error carrying the CLOSEST names: a rejected guess should land the model on
@@ -3548,7 +3672,12 @@ def save_collection(name: str, description: Optional[str] = None,
     """Create a collection, or evolve an existing one (matched by exact name,
     case-insensitive): only the arguments you pass change. `fields` REPLACES the
     whole list — read the current one from collections_list first and send it
-    back with your change, like a contact list.
+    back with your change, like a contact list. Leaving one out UN-DECLARES it,
+    and its values stay on the items, where nothing renders them and notes_file
+    then rejects the item; the return names them as `stranded` {key: how many
+    items} so you can re-declare the field or clear each with
+    notes_update(item_id, data={key: None}). A `select` field needs a non-empty
+    `options` list — without one it constrains nothing, so use 'text' instead.
 
     Creating is DELIBERATE: propose it and get the user's yes first — a stray
     one-off belongs in the inbox, not a new near-empty collection. A new name
@@ -3575,7 +3704,7 @@ def save_collection(name: str, description: Optional[str] = None,
         return {"error": "name is required"}
     if icon is not None and (err := _bad_icon(icon)):
         return err
-    norm_fields = None
+    norm_fields, stranded = None, None
     if fields is not None:
         norm_fields, err = _norm_fields(fields)
         if err:
@@ -3604,10 +3733,26 @@ def save_collection(name: str, description: Optional[str] = None,
                 vals.append(row["id"])
                 conn.execute(f"UPDATE collections SET {', '.join(sets)} WHERE id=?", vals)
             created = False
+            # `fields` REPLACES the list, so an edit that forgets to send a field
+            # back UN-DECLARES it — and the values stay in every item's data, where
+            # nothing renders them (the app draws declared fields only) and
+            # notes_file then refuses to move the item ("unknown data key"). The
+            # values aren't destroyed here — dropping a declaration shouldn't
+            # destroy data — but silence is what made the featured_image orphans
+            # survive 16 items unnoticed, so the drop is REPORTED and the fix
+            # named. See _fold_image_fields for the image-shaped version of this.
+            if norm_fields is not None:
+                stranded = _stranded_keys(conn, row["id"], norm_fields)
         out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
-    return {"id": out["id"], "name": out["name"], "description": out["description"],
-            "fields": _coll_fields(out),
-            "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
+    res = {"id": out["id"], "name": out["name"], "description": out["description"],
+           "fields": _coll_fields(out),
+           "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
+    if stranded:
+        res["stranded"] = stranded
+        res["note"] = ("these keys are still on items but no longer declared, so they "
+                       "render nowhere and block notes_file: re-declare the field, or "
+                       "clear each with notes_update(item_id, data={key: None})")
+    return res
 
 
 @mcp.tool(name="notes_save", annotations=WRITE)
@@ -3742,6 +3887,7 @@ def list_items(collection: Optional[str] = None, limit: int = 50,
     given — newest-updated first, bodies truncated to max_chars (notes_get for
     the full text). This is the read for "show my recipes"; for finding
     something by content, notes_search."""
+    limit, offset = _page(limit, offset)
     with db() as conn:
         if collection:
             row, cands = _resolve_collection(conn, collection)
@@ -3767,9 +3913,12 @@ def search_items(query: str, collection: Optional[str] = None,
                  limit: int = 20, max_chars: int = 300) -> dict:
     """Full-text search across notes and collection items (title and body).
     Plain words — tokenized and quoted for you, so punctuation is safe
-    ("Tom's", "how was my week?") and every term must appear. Scope with `collection` (a name, or
+    ("Tom's", "how was my week?") and every term must appear. Terms match as
+    PREFIXES, not substrings: "doubanji" finds doubanjiang and "宫保" finds
+    宫保鸡丁, but the tail of a word won't. Scope with `collection` (a name, or
     "inbox" for unfiled notes); default searches EVERYTHING, which is usually
     right — you don't always know where something was filed."""
+    limit, _ = _page(limit)
     match = _fts_query(query)
     if not match.strip():
         return {"results": [], "count": 0, "note": f"no searchable terms in {query!r}"}
