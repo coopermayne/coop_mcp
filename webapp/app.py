@@ -1417,17 +1417,17 @@ async def collection(request: Request, name: str):
 
 @app.post("/collections/{name}/display")
 async def collection_display(request: Request, name: str):
-    """Save the collection page's Display popover: view (display_hint), which
+    """Save the collection page's Display popover: the view, which
     declared fields show, how the items are grouped/sorted, and the list view's
     extras. A website-only write path through server.set_collection_display
     (never a FastMCP tool — the model proposes a collection's shape at creation;
-    what renders is the user's call). Body: {display_hint?, hidden_fields?,
+    what renders is the user's call). Body: {view?, hidden_fields?,
     group_by?, sort_by?, sort_dir?, show_body?, show_tags?, show_updated?}."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     res = server.set_collection_display(
         name,
-        display_hint=body.get("display_hint"),
+        view=body.get("view"),
         hidden_fields=body.get("hidden_fields"),
         group_by=body.get("group_by"), sort_by=body.get("sort_by"),
         sort_dir=body.get("sort_dir"),

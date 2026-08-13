@@ -506,8 +506,9 @@ working.
   `icon` (a name from the vendored Lucide set — see `icons.py`; NULL draws the default
   folder), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
-  text|number|date|select) and a `display_hint` (list|table) the webapp
-  renders from. Items hold markdown `body` (the prose), an `featured_image_url` (the
+  text|number|date|select). Shape is the model's; LAYOUT is not — the legacy
+  `display_hint` column is dormant, the view lives in the webapp-only `display`
+  JSON (see the popover below). Items hold markdown `body` (the prose), a `featured_image_url` (the
   FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
   item carries one whether or not it's filed and no collection has to declare
   an image field; http/https only, since the webapp drops it straight into an
@@ -530,15 +531,18 @@ working.
   kinds: `"item"` (gone for good) and `"collection"` (shell only — FK is ON DELETE
   SET NULL, so its items demote to inbox notes). The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
-  collection's own fields/display_hint — no per-domain view code), OUTSIDE the
+  collection's own fields + view prefs — no per-domain view code), OUTSIDE the
   journal lock like `/food`, strictly read-only for CONTENT like everything else.
   Collections are a PRIMARY section: the fourth icon on the nav strip (so the number
   shortcuts run 1-4 in nav order, then 5 graphs / 6 trainer), and `/collections` is a
   GRID of icon cards rather than a list — the icon is what you aim at, and a stack of
   near-identical text rows made every collection look alike.
   The one thing the browser writes is PRESENTATION: each collection page has a
-  **Display** popover (view = the same `display_hint` column the model proposes at
-  creation, so the user's pick simply wins; which declared fields show as table
+  **Display** popover (`view` = list|table, webapp-only: it was a model-written
+  `display_hint` column until that guess proved worthless — the first popover
+  visit overwrote it, so one concern had two homes and only the browser's ever
+  won. `init_db` folds the old column into the JSON once and it's dormant after,
+  kept not dropped; which declared fields show as table
   columns / list badges; `group_by`/`sort_by`/`sort_dir`; the `icon` grid, which
   writes the collection's own `icon` column, not the display JSON; and the row extras —
   notes-preview/tags/updated/featured-image) saved

@@ -801,7 +801,10 @@ CREATE TABLE IF NOT EXISTS collections (
     name         TEXT NOT NULL UNIQUE,     -- lowercased slug-ish ("recipes", "vacation spots")
     description  TEXT,                     -- one line: what belongs here (the model reads this)
     fields       TEXT NOT NULL DEFAULT '[]',  -- JSON [{key,label,type,options?}] — types: text|number|date|select
-    display_hint TEXT NOT NULL DEFAULT 'list',-- webapp rendering: 'list' | 'table'
+    display_hint TEXT NOT NULL DEFAULT 'list',-- LEGACY, dormant. The view used to be a
+                                              -- model-written column; it's `view` inside
+                                              -- `display` now (webapp-only). Kept, not
+                                              -- dropped; nothing reads it.
     icon         TEXT,                        -- a name from icons.ICON_NAMES (Lucide subset);
                                               -- NULL = the default folder glyph
     created_at   TEXT NOT NULL
@@ -973,11 +976,25 @@ def init_db() -> None:
             # set_collection_display (a non-tool path); the model never reads or
             # writes it.
             conn.execute("ALTER TABLE collections ADD COLUMN display TEXT")
-        # 'checklist' was a third display_hint that rendered exactly like 'list'
-        # (there is no done-state on an item to check off), so it was dropped.
-        # Any row still carrying it becomes what it already looked like.
-        conn.execute("UPDATE collections SET display_hint='list' "
-                     "WHERE display_hint='checklist'")
+        # The view moved OUT of the model-facing `display_hint` column and into
+        # the webapp-only `display` JSON as `view`: the model's guess at
+        # list-vs-table was overwritten the first time the popover was opened,
+        # so one concern had two homes and only one of them won. Fold each row's
+        # column value in once ('checklist' — a third view that rendered exactly
+        # like 'list', since an item has no done-state to check — becomes what it
+        # already looked like). Idempotent: a display JSON that already names a
+        # view is left alone, and the column is dormant afterwards.
+        for r in conn.execute("SELECT id, display, display_hint FROM collections"):
+            try:
+                disp = json.loads(r["display"] or "{}")
+            except ValueError:
+                disp = {}
+            if not isinstance(disp, dict) or "view" in disp:
+                continue
+            hint = r["display_hint"]
+            disp["view"] = hint if hint in COLLECTION_VIEWS else "list"
+            conn.execute("UPDATE collections SET display=? WHERE id=?",
+                         (json.dumps(disp), r["id"]))
         if "icon" not in ccols:
             # Collection icon (a name from the vendored Lucide subset). NULL on
             # every existing row — they draw the default folder until named.
@@ -3175,7 +3192,9 @@ def find_past_items(query: str, limit: int = 8) -> dict:
 # --------------------------------------------------------------------------- #
 
 FIELD_TYPES = ("text", "number", "date", "select")
-DISPLAY_HINTS = ("list", "table")
+# How the webapp lays a collection out. Webapp-only: it lives in the `display`
+# JSON and the model never sets it (see set_collection_display).
+COLLECTION_VIEWS = ("list", "table")
 # Below-exact-but-close on a collection name: block creation and surface the
 # near-match instead (the create_collection "did you mean?" — same idea as
 # EX_CONFIDENT: a wrong-but-confident auto-create is worse than one question).
@@ -3264,7 +3283,8 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
     return None, [{"name": r["name"], "score": round(sc, 2)} for sc, r in cands[:3]]
 
 
-COLLECTION_DISPLAY_DEFAULTS = {"hidden_fields": [], "show_body": True,
+COLLECTION_DISPLAY_DEFAULTS = {"view": "list",
+                               "hidden_fields": [], "show_body": True,
                                "show_tags": True, "show_updated": True,
                                "show_image": True,
                                # "" = don't group / the default sort. group_by
@@ -3286,7 +3306,7 @@ def _coll_display(row) -> dict:
     return disp
 
 
-def set_collection_display(name: str, display_hint: Optional[str] = None,
+def set_collection_display(name: str, view: Optional[str] = None,
                            hidden_fields: Optional[list[str]] = None,
                            show_body: Optional[bool] = None,
                            show_tags: Optional[bool] = None,
@@ -3298,15 +3318,16 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
                            icon: Optional[str] = None) -> dict:
     """Set how the webapp renders one collection — the collection page's Display
     popover. A NON-tool, website-only path (like set_archived/create_exercise):
-    the model proposes fields and a display_hint when a collection is created,
-    but what actually shows on the page is the USER's call, so these preferences
-    are written only from the UI and never surface in tool returns.
+    the model proposes a collection's FIELDS, but what actually shows on the page
+    is the USER's call, so every preference here is written only from the UI and
+    never surfaces in tool returns.
 
-    display_hint switches the view (list|table — the same column the
-    model sets at creation, so the user's pick simply wins until the model
-    writes it again); everything else lives in the webapp-only `display` JSON:
-    hidden_fields (declared field keys to leave off the table columns / list
-    badges), show_body/show_tags/show_updated/show_image (the row extras), and
+    All of it lives in the webapp-only `display` JSON: `view` (list|table — this
+    used to be a model-written `display_hint` column, but its guess was
+    overwritten the first time the popover was opened, so presentation is now
+    the browser's alone), hidden_fields (declared field keys to leave off the
+    table columns / list badges),
+    show_body/show_tags/show_updated/show_image (the row extras), and
     how the items are arranged: group_by (a declared field key — items are
     bucketed under one heading per distinct value, ones missing it last) plus
     sort_by ('updated', 'title', or a declared field key) and sort_dir
@@ -3322,14 +3343,15 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
     Unknown field keys error rather than silently sticking."""
     if icon is not None and (bad := _bad_icon(icon)):
         return bad
-    if display_hint is not None and display_hint not in DISPLAY_HINTS:
-        return {"error": f"bad display_hint {display_hint!r}; "
-                         f"use one of {list(DISPLAY_HINTS)}"}
+    if view is not None and view not in COLLECTION_VIEWS:
+        return {"error": f"bad view {view!r}; use one of {list(COLLECTION_VIEWS)}"}
     with db() as conn:
         row, cands = _resolve_collection(conn, name)
         if not row:
             return {"error": f"no collection named {name!r}", "candidates": cands}
         disp = _coll_display(row)
+        if view is not None:
+            disp["view"] = view
         keys = {f["key"] for f in _coll_fields(row)}
         if hidden_fields is not None:
             if bad := [k for k in hidden_fields if k not in keys]:
@@ -3355,12 +3377,9 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
             if v is not None:
                 disp[k] = bool(v)
         conn.execute(
-            "UPDATE collections SET display=?, "
-            "display_hint=COALESCE(?, display_hint), icon=COALESCE(?, icon) WHERE id=?",
-            (json.dumps(disp), display_hint, (icon or None) if icon is not None else None,
-             row["id"]))
+            "UPDATE collections SET display=?, icon=COALESCE(?, icon) WHERE id=?",
+            (json.dumps(disp), (icon or None) if icon is not None else None, row["id"]))
     return {"collection": row["name"],
-            "display_hint": display_hint or row["display_hint"],
             "icon": icon or row["icon"] or icon_set.DEFAULT_ICON, **disp}
 
 
@@ -3431,8 +3450,8 @@ def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 def list_collections() -> dict:
-    """The collections map: every collection (name, description, fields,
-    display_hint, item count) plus the inbox note count and the most recent
+    """The collections map: every collection (name, description, fields, icon,
+    item count) plus the inbox note count and the most recent
     inbox titles. CHEAP — consult it before deciding where anything goes, and
     before proposing a new collection (the near-twin you'd create probably
     already exists). When several inbox notes cluster around one topic, that's
@@ -3442,7 +3461,7 @@ def list_collections() -> dict:
         counts = {r["collection_id"]: r["n"] for r in conn.execute(
             "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
         colls = [{"name": r["name"], "description": r["description"],
-                  "fields": _coll_fields(r), "display_hint": r["display_hint"],
+                  "fields": _coll_fields(r),
                   "icon": r["icon"] or icon_set.DEFAULT_ICON,
                   "items": counts.get(r["id"], 0)}
                  for r in conn.execute("SELECT * FROM collections ORDER BY name")]
@@ -3456,7 +3475,6 @@ def list_collections() -> dict:
 @mcp.tool(annotations=WRITE_IDEMPOTENT)
 def save_collection(name: str, description: Optional[str] = None,
                     fields: Optional[list[CollectionField]] = None,
-                    display_hint: Optional[str] = None,
                     icon: Optional[str] = None,
                     force: bool = False) -> dict:
     """Create a collection, or evolve an existing one (matched by exact name,
@@ -3472,7 +3490,8 @@ def save_collection(name: str, description: Optional[str] = None,
     fields FEW — a field earns its place by being worth scanning in a list.
     Never declare an image/photo field: every item already has a featured image
     (save_item's `featured_image_url`), which the app renders as an actual picture.
-    display_hint tells the webapp how to render: 'list' | 'table'.
+    How the page LAYS THIS OUT (list vs table, grouping, sorting) isn't yours to
+    set — that's the user's, through the website's Display popover.
 
     `icon` is the collection's glyph on the /collections grid. It must be a name
     from the app's CURATED LUCIDE SET — call list_icons() to see them (they're
@@ -3482,8 +3501,6 @@ def save_collection(name: str, description: Optional[str] = None,
     n = (name or "").strip().lower()
     if not n:
         return {"error": "name is required"}
-    if display_hint is not None and display_hint not in DISPLAY_HINTS:
-        return {"error": f"bad display_hint {display_hint!r}; use one of {list(DISPLAY_HINTS)}"}
     if icon is not None and (err := _bad_icon(icon)):
         return err
     norm_fields = None
@@ -3499,10 +3516,9 @@ def save_collection(name: str, description: Optional[str] = None,
                         "note": f"no collection {n!r}, but these are close — reuse one, "
                                 "or pass force=True if it's genuinely distinct"}
             conn.execute(
-                "INSERT INTO collections(name, description, fields, display_hint, "
-                "icon, created_at) VALUES (?,?,?,?,?,?)",
-                (n, description, json.dumps(norm_fields or []),
-                 display_hint or "list", icon or None, now()))
+                "INSERT INTO collections(name, description, fields, icon, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (n, description, json.dumps(norm_fields or []), icon or None, now()))
             created = True
         else:
             sets, vals = [], []
@@ -3510,8 +3526,6 @@ def save_collection(name: str, description: Optional[str] = None,
                 sets.append("description=?"); vals.append(description)
             if norm_fields is not None:
                 sets.append("fields=?"); vals.append(json.dumps(norm_fields))
-            if display_hint is not None:
-                sets.append("display_hint=?"); vals.append(display_hint)
             if icon is not None:
                 sets.append("icon=?"); vals.append(icon or None)
             if sets:
@@ -3520,7 +3534,7 @@ def save_collection(name: str, description: Optional[str] = None,
             created = False
         out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
     return {"name": out["name"], "description": out["description"],
-            "fields": _coll_fields(out), "display_hint": out["display_hint"],
+            "fields": _coll_fields(out),
             "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
 
 
