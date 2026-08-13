@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ it.title }} · Journal{% endblock %}
+{% block content %}
+
+{% if it.collection %}
+<a href="{{ base }}/collections/{{ it.collection }}" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← {{ it.collection }}</a>
+{% else %}
+<a href="{{ base }}/collections" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Inbox</a>
+{% endif %}
+
+<h1 class="mt-4 text-2xl font-bold tracking-tight">{{ it.title }}</h1>
+
+{% if it.data or it.tags %}
+<div class="flex flex-wrap items-center gap-2 mt-3">
+  {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
+  {% for t in it.tags %}<span class="badge">{{ t }}</span>{% endfor %}
+</div>
+{% endif %}
+
+{% if it.body %}
+{# Body is markdown, rendered through the same [data-md] → chat-md pipeline the
+   journal feed uses, so notes read identically everywhere. #}
+<div class="mt-6 text-[15px] leading-relaxed text-gray-800 chat-md" data-md>{{ it.body }}</div>
+{% endif %}
+
+<p class="mt-10 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">
+  Added {{ it.created | short_date }}{% if it.updated and it.updated != it.created %} · updated {{ it.updated | short_date }}{% endif %}
+</p>
+
+{% endblock %}

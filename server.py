@@ -139,6 +139,17 @@ class PlannedExercise(TypedDict):
     target_rpe: NotRequired[Optional[float]]
 
 
+class CollectionField(TypedDict):
+    """One field of a collection's shape. `key` is snake_case and is what item
+    `data` blobs are keyed by; `type` is one of text|number|date|select (select
+    with an `options` list). Keep fields FEW — a field earns its place by being
+    worth scanning in a list, not by existing in the prose anyway."""
+    key: str
+    label: NotRequired[str]
+    type: NotRequired[str]
+    options: NotRequired[list[str]]
+
+
 def _build_auth(public_url: Optional[str] = None):
     """Return a Google OAuth provider if creds are set, else None (authless).
 
@@ -260,6 +271,21 @@ rules keep the numbers trustworthy:
     the eating profile — returned by get_intake, updated via update_eating_profile —
     not in whatever a conversation happens to say. Read it before coaching; fold in
     durable changes as they come up, like a person's summary.
+
+Beyond the journal and the eating log there is one FLEXIBLE layer — notes &
+collections — for everything else the user wants kept (recipes, trip ideas, books,
+whatever comes up). Three rules govern it:
+  - CAPTURE FIRST, FILE SECOND. "Save this" always succeeds: if it clearly fits an
+    existing collection (check list_collections — it's cheap), file it there; otherwise
+    save_item with no collection leaves it as an inbox note. Never block a save on
+    deciding structure.
+  - STRUCTURE IS PROPOSED, NEVER IMPOSED. When inbox notes cluster around one topic
+    (a handful on the same theme), SUGGEST a collection and create it only on the
+    user's yes — then promote the notes with move_to_collection, extracting each
+    note's fields from its own text. One stray idea never warrants a new collection.
+  - FIELDS STAY FEW. A field earns its place by being worth scanning in a list
+    (status, a date, a rating); everything else is prose in the item's body. Facts
+    with no matching field go in the body — don't invent data keys.
 
 Start a session with get_briefing: it loads the last two weeks of entries plus the
 summaries of everyone mentioned in the last week, so you write in context rather than
@@ -666,6 +692,58 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- ----------------------------------------------------------------------- --
+-- Notes & collections — the FLEXIBLE layer (plan-2026-08-13-collections.md).
+-- Everything that doesn't need bespoke schema lives here: free-form notes in
+-- an inbox (collection_id NULL), promotable into model-defined collections
+-- (recipes, trips, …). The promotion ladder: note -> collection item -> and
+-- only when a real computation/invariant demands it, a bespoke table written
+-- deliberately in this file — NEVER DDL over MCP. A collection's `fields` are
+-- metadata (JSON list of {key,label,type}), the items' `data` a JSON blob keyed
+-- by them: promoting notes is data movement, not schema change, and stays
+-- reversible. Same split as everywhere: the MODEL decides when a pile of notes
+-- deserves structure; this layer only stores, indexes, and renders.
+-- ----------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS collections (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,     -- lowercased slug-ish ("recipes", "vacation spots")
+    description  TEXT,                     -- one line: what belongs here (the model reads this)
+    fields       TEXT NOT NULL DEFAULT '[]',  -- JSON [{key,label,type,options?}] — types: text|number|date|select
+    display_hint TEXT NOT NULL DEFAULT 'list',-- webapp rendering: 'list' | 'table' | 'checklist'
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id            INTEGER PRIMARY KEY,
+    collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,  -- NULL = inbox note;
+                                          -- deleting a collection demotes its items to notes
+    title         TEXT NOT NULL,
+    body          TEXT,                   -- markdown prose (the note itself / the item's writeup)
+    data          TEXT,                   -- JSON keyed by the collection's field keys
+    tags          TEXT,                   -- comma-separated lowercase labels; searchable via FTS
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_items_collection ON items(collection_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS items_fts
+    USING fts5(title, body, tags, content='items', content_rowid='id');
+
+CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
+    INSERT INTO items_fts(rowid, title, body, tags)
+    VALUES (new.id, new.title, new.body, new.tags);
+END;
+CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, title, body, tags)
+    VALUES('delete', old.id, old.title, old.body, old.tags);
+END;
+CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE ON items BEGIN
+    INSERT INTO items_fts(items_fts, rowid, title, body, tags)
+    VALUES('delete', old.id, old.title, old.body, old.tags);
+    INSERT INTO items_fts(rowid, title, body, tags)
+    VALUES (new.id, new.title, new.body, new.tags);
+END;
 """
 
 
@@ -1832,11 +1910,19 @@ def _delete_record(kind: str, id: int) -> dict:
     `kind` to its table, deletes the row, and (for sets) renumbers the remaining
     set_index so it stays contiguous."""
     tables = {"entry": "entries", "drink": "drinks", "intake_item": "intake_items",
-              "workout": "workouts", "set": "sets", "weight": "body_weight"}
+              "workout": "workouts", "set": "sets", "weight": "body_weight",
+              "item": "items", "collection": "collections"}
     table = tables.get(kind)
     if not table:
         return {"error": f"unknown kind {kind!r}; use one of {sorted(tables)}"}
     with db() as conn:
+        demoted = None
+        if kind == "collection":
+            # FK is ON DELETE SET NULL, so the items survive as inbox notes —
+            # deleting a collection un-files, it never destroys the notes.
+            demoted = conn.execute(
+                "SELECT COUNT(*) AS n FROM items WHERE collection_id=?", (id,)
+            ).fetchone()["n"]
         ctx = None
         if kind == "set":
             ctx = conn.execute(
@@ -1854,7 +1940,10 @@ def _delete_record(kind: str, id: int) -> dict:
             ).fetchall()
             for i, row in enumerate(remaining, start=1):
                 conn.execute("UPDATE sets SET set_index=? WHERE id=?", (i, row["id"]))
-    return {"kind": kind, "id": id, "deleted": True}
+    out = {"kind": kind, "id": id, "deleted": True}
+    if demoted is not None:
+        out["items_demoted_to_inbox"] = demoted
+    return out
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -1865,12 +1954,17 @@ def delete_record(kind: str, id: int) -> dict:
       - "entry" — a journal entry (its mentions go too; FTS stays in sync).
       - "intake_item" — one logged thing (a meal, a beer, a glass of water). The
         day's totals re-derive from what's left, so nothing else needs fixing.
-    Find ids with get_entry/search_entries, or get_intake/log_intake for items.
+      - "item" — one note/collection item. Gone for good, unlike…
+      - "collection" — the collection SHELL only: its items survive, demoted to
+        inbox notes (returned as items_demoted_to_inbox). Un-files, never
+        destroys the notes.
+    Find ids with get_entry/search_entries, get_intake/log_intake for intake,
+    search_items/list_items for notes.
     (Workouts and sets are deleted via the trainer server's own delete_record.)"""
-    if kind not in ("entry", "intake_item"):
+    if kind not in ("entry", "intake_item", "item", "collection"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['entry', 'intake_item'] (use the trainer server "
-                         "for workout/set)"}
+                         "['entry', 'intake_item', 'item', 'collection'] "
+                         "(use the trainer server for workout/set)"}
     return _delete_record(kind, id)
 
 
@@ -2889,6 +2983,390 @@ def find_past_items(query: str, limit: int = 8) -> dict:
             entry["note"] = r["note"]
         out.append(entry)
     return {"query": query, "matches": out}
+
+
+# --------------------------------------------------------------------------- #
+# Notes & collections — the flexible layer (plan-2026-08-13-collections.md).
+# The model decides when a pile of notes deserves structure; these tools only
+# store, index, and validate shape. No DDL ever happens here: a collection's
+# `fields` are metadata and items' `data` is JSON, so promotion is data
+# movement. The bespoke-table rung of the ladder is a deliberate human+code
+# migration in init_db(), never an MCP call.
+# --------------------------------------------------------------------------- #
+
+FIELD_TYPES = ("text", "number", "date", "select")
+DISPLAY_HINTS = ("list", "table", "checklist")
+# Below-exact-but-close on a collection name: block creation and surface the
+# near-match instead (the create_collection "did you mean?" — same idea as
+# EX_CONFIDENT: a wrong-but-confident auto-create is worse than one question).
+COLL_NEAR = 0.82
+
+
+def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
+    """Normalize/validate a collection's field defs. Returns (fields, error)."""
+    out, seen = [], set()
+    for f in fields or []:
+        key = (f.get("key") or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key):
+            return [], f"bad field key {key!r}: use snake_case (letters/digits/_)"
+        if key in seen:
+            return [], f"duplicate field key {key!r}"
+        seen.add(key)
+        ftype = (f.get("type") or "text").strip().lower()
+        if ftype not in FIELD_TYPES:
+            return [], f"bad type {ftype!r} for field {key!r}; use one of {list(FIELD_TYPES)}"
+        norm = {"key": key, "label": (f.get("label") or key.replace("_", " ")).strip(),
+                "type": ftype}
+        opts = [str(o).strip() for o in (f.get("options") or []) if str(o).strip()]
+        if ftype == "select" and opts:
+            norm["options"] = opts
+        out.append(norm)
+    return out, None
+
+
+def _bad_data(data: dict, fields: list[dict], *, allow_null: bool = False) -> Optional[str]:
+    """Check an item's data blob against its collection's fields. Actionable
+    errors, same spirit as _bad_set — the model needs the fix, not a traceback."""
+    valid = {f["key"]: f for f in fields}
+    for k, v in (data or {}).items():
+        f = valid.get(k)
+        if not f:
+            known = sorted(valid) or ["<none — the collection has no fields>"]
+            return (f"unknown data key {k!r}; this collection's fields are {known}. "
+                    "Add the field first with save_collection, or put the fact in the body.")
+        if v is None:
+            if allow_null:
+                continue  # update-merge: null drops the key
+            return f"data[{k!r}] is null — omit the key instead of sending null"
+        if f["type"] == "number" and (isinstance(v, bool) or not isinstance(v, (int, float))):
+            return f"data[{k!r}] must be a number, got {v!r}"
+        if f["type"] == "date":
+            err = _bad_date(str(v), f"data[{k}]")
+            if err:
+                return err["error"]
+        if f["type"] == "select" and f.get("options") and str(v) not in f["options"]:
+            return f"data[{k!r}] must be one of {f['options']}, got {v!r}"
+        if f["type"] in ("text", "select") and not isinstance(v, str):
+            return f"data[{k!r}] must be a string, got {v!r}"
+    return None
+
+
+def _coll_fields(row) -> list[dict]:
+    try:
+        v = json.loads(row["fields"] or "[]")
+    except (ValueError, TypeError):
+        return []
+    return v if isinstance(v, list) else []
+
+
+def _resolve_collection(conn: sqlite3.Connection, name: str):
+    """Resolve a collection by name: exact (case-insensitive) match or bust —
+    plus the near-misses, so callers can offer 'did you mean?' instead of
+    silently creating a twin. Returns (row, candidates)."""
+    n = (name or "").strip().lower()
+    row = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
+    if row:
+        return row, []
+    cands = []
+    for r in conn.execute("SELECT * FROM collections").fetchall():
+        sc = jellyfish.jaro_winkler_similarity(n, r["name"].lower())
+        if sc >= COLL_NEAR:
+            cands.append((sc, r))
+    cands.sort(key=lambda t: t[0], reverse=True)
+    return None, [{"name": r["name"], "score": round(sc, 2)} for sc, r in cands[:3]]
+
+
+def _tags_text(tags: Optional[list[str]]) -> Optional[str]:
+    if tags is None:
+        return None
+    cleaned = sorted({t.strip().lower() for t in tags if t and t.strip()})
+    return ", ".join(cleaned) if cleaned else ""
+
+
+def _item_data(r) -> dict:
+    try:
+        v = json.loads(r["data"] or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
+    out = {"item_id": r["id"], "title": r["title"],
+           "collection": coll_name or "inbox"}
+    if r["body"]:
+        out["body"] = _truncate(r["body"], max_chars)
+    data = _item_data(r)
+    if data:
+        out["data"] = data
+    if r["tags"]:
+        out["tags"] = r["tags"]
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_collections() -> dict:
+    """The collections map: every collection (name, description, fields,
+    display_hint, item count) plus the inbox note count and the most recent
+    inbox titles. CHEAP — consult it before deciding where anything goes, and
+    before proposing a new collection (the near-twin you'd create probably
+    already exists). When several inbox notes cluster around one topic, that's
+    the signal to PROPOSE promoting them into a collection — ask the user,
+    never create one unasked."""
+    with db() as conn:
+        counts = {r["collection_id"]: r["n"] for r in conn.execute(
+            "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
+        colls = [{"name": r["name"], "description": r["description"],
+                  "fields": _coll_fields(r), "display_hint": r["display_hint"],
+                  "items": counts.get(r["id"], 0)}
+                 for r in conn.execute("SELECT * FROM collections ORDER BY name")]
+        inbox = conn.execute(
+            "SELECT title FROM items WHERE collection_id IS NULL "
+            "ORDER BY updated_at DESC LIMIT 10").fetchall()
+    return {"collections": colls, "inbox_count": counts.get(None, 0),
+            "recent_inbox_titles": [r["title"] for r in inbox]}
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+def save_collection(name: str, description: Optional[str] = None,
+                    fields: Optional[list[CollectionField]] = None,
+                    display_hint: Optional[str] = None,
+                    force: bool = False) -> dict:
+    """Create a collection, or evolve an existing one (matched by exact name,
+    case-insensitive): only the arguments you pass change. `fields` REPLACES the
+    whole list — read the current one from list_collections first and send it
+    back with your change, like a contact list.
+
+    Creating is DELIBERATE: propose it and get the user's yes first — a stray
+    one-off belongs in the inbox, not a new near-empty collection. A new name
+    close to an existing collection's comes back as `candidates` instead of
+    creating (pass force=True only after the user confirms it's genuinely
+    distinct). Keep names short and plural ("recipes", "vacation spots"), keep
+    fields FEW — a field earns its place by being worth scanning in a list.
+    display_hint tells the webapp how to render: 'list' | 'table' | 'checklist'."""
+    n = (name or "").strip().lower()
+    if not n:
+        return {"error": "name is required"}
+    if display_hint is not None and display_hint not in DISPLAY_HINTS:
+        return {"error": f"bad display_hint {display_hint!r}; use one of {list(DISPLAY_HINTS)}"}
+    norm_fields = None
+    if fields is not None:
+        norm_fields, err = _norm_fields(fields)
+        if err:
+            return {"error": err}
+    with db() as conn:
+        row, cands = _resolve_collection(conn, n)
+        if row is None:
+            if cands and not force:
+                return {"candidates": cands,
+                        "note": f"no collection {n!r}, but these are close — reuse one, "
+                                "or pass force=True if it's genuinely distinct"}
+            conn.execute(
+                "INSERT INTO collections(name, description, fields, display_hint, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (n, description, json.dumps(norm_fields or []),
+                 display_hint or "list", now()))
+            created = True
+        else:
+            sets, vals = [], []
+            if description is not None:
+                sets.append("description=?"); vals.append(description)
+            if norm_fields is not None:
+                sets.append("fields=?"); vals.append(json.dumps(norm_fields))
+            if display_hint is not None:
+                sets.append("display_hint=?"); vals.append(display_hint)
+            if sets:
+                vals.append(row["id"])
+                conn.execute(f"UPDATE collections SET {', '.join(sets)} WHERE id=?", vals)
+            created = False
+        out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
+    return {"name": out["name"], "description": out["description"],
+            "fields": _coll_fields(out), "display_hint": out["display_hint"],
+            "created": created}
+
+
+@mcp.tool(annotations=WRITE)
+def save_item(title: str, body: Optional[str] = None,
+              collection: Optional[str] = None, data: Optional[dict] = None,
+              tags: Optional[list[str]] = None) -> dict:
+    """Save one item. No `collection` = an INBOX NOTE — the right default for
+    anything that doesn't obviously belong to an existing collection; capture
+    never blocks on filing. With a `collection` (exact name from
+    list_collections), `data` carries the structured fields; put everything
+    else in `body` (markdown prose, the user's words cleaned up — same habit
+    as a journal entry). A near-miss collection name comes back as candidates
+    rather than saving to the wrong place; an unknown data key comes back as an
+    error naming the valid ones. Facts with no matching field stay in the body —
+    don't invent keys."""
+    title = (title or "").strip()
+    if not title:
+        return {"error": "title is required"}
+    with db() as conn:
+        coll_id, coll_name = None, None
+        if collection:
+            row, cands = _resolve_collection(conn, collection)
+            if row is None:
+                return {"error": f"no collection {collection!r}", "candidates": cands,
+                        "note": "use an exact name from list_collections, or save "
+                                "with no collection to leave it in the inbox"}
+            coll_id, coll_name = row["id"], row["name"]
+            err = _bad_data(data or {}, _coll_fields(row))
+            if err:
+                return {"error": err}
+        elif data:
+            return {"error": "inbox notes carry no data — put the facts in the body, "
+                             "or pick a collection whose fields they fit"}
+        data_clean = {k: v for k, v in (data or {}).items() if v is not None}
+        ts = now()
+        cur = conn.execute(
+            "INSERT INTO items(collection_id, title, body, data, tags, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (coll_id, title, body, json.dumps(data_clean) if data_clean else None,
+             _tags_text(tags), ts, ts))
+        item_id = cur.lastrowid
+    return {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] = None,
+                data: Optional[dict] = None, tags: Optional[list[str]] = None) -> dict:
+    """Edit one item: only the arguments you pass change. `body` and `tags`
+    replace wholesale (read first via get_item, send back the full new value);
+    `data` merges per key — send just the keys you're changing, null drops a
+    key. Moving between collections is move_to_collection, not this."""
+    with db() as conn:
+        r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if not r:
+            return {"error": f"no item with id {item_id}"}
+        coll = conn.execute("SELECT * FROM collections WHERE id=?",
+                            (r["collection_id"],)).fetchone() if r["collection_id"] else None
+        merged = _item_data(r)
+        if data is not None:
+            if coll is None:
+                return {"error": "inbox notes carry no data — move_to_collection first"}
+            err = _bad_data(data, _coll_fields(coll), allow_null=True)
+            if err:
+                return {"error": err}
+            for k, v in data.items():
+                if v is None:
+                    merged.pop(k, None)
+                else:
+                    merged[k] = v
+        conn.execute(
+            "UPDATE items SET title=?, body=?, data=?, tags=?, updated_at=? WHERE id=?",
+            (title if title is not None else r["title"],
+             body if body is not None else r["body"],
+             json.dumps(merged) if merged else None,
+             _tags_text(tags) if tags is not None else r["tags"],
+             now(), item_id))
+    return {"item_id": item_id, "updated": True,
+            **({"data": merged} if data is not None else {})}
+
+
+@mcp.tool(annotations=WRITE_IDEMPOTENT)
+def move_to_collection(item_id: int, collection: str,
+                       data: Optional[dict] = None) -> dict:
+    """File an item into a collection (or back to "inbox") — THE promotion
+    primitive. Promoting a clustered topic is one call per note: read the note,
+    extract its `data` fields from the text, move it; the prose stays as the
+    item's body, so nothing is lost and the move is reversible. Only promote
+    into a collection the user has agreed to create."""
+    with db() as conn:
+        r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if not r:
+            return {"error": f"no item with id {item_id}"}
+        if (collection or "").strip().lower() == "inbox":
+            conn.execute("UPDATE items SET collection_id=NULL, updated_at=? WHERE id=?",
+                         (now(), item_id))
+            return {"item_id": item_id, "collection": "inbox"}
+        row, cands = _resolve_collection(conn, collection)
+        if row is None:
+            return {"error": f"no collection {collection!r}", "candidates": cands}
+        merged = _item_data(r)
+        merged.update({k: v for k, v in (data or {}).items() if v is not None})
+        err = _bad_data(merged, _coll_fields(row))
+        if err:
+            return {"error": err}
+        conn.execute("UPDATE items SET collection_id=?, data=?, updated_at=? WHERE id=?",
+                     (row["id"], json.dumps(merged) if merged else None, now(), item_id))
+    return {"item_id": item_id, "collection": row["name"],
+            **({"data": merged} if merged else {})}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_items(collection: Optional[str] = None, limit: int = 50,
+               offset: int = 0, max_chars: int = 200) -> dict:
+    """Browse one collection (exact name), or the inbox when no collection is
+    given — newest-updated first, bodies truncated to max_chars (get_item for
+    the full text). This is the read for "show my recipes"; for finding
+    something by content, search_items."""
+    with db() as conn:
+        if collection:
+            row, cands = _resolve_collection(conn, collection)
+            if row is None:
+                return {"error": f"no collection {collection!r}", "candidates": cands}
+            rows = conn.execute(
+                "SELECT * FROM items WHERE collection_id=? "
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (row["id"], limit, offset)).fetchall()
+            name = row["name"]
+        else:
+            rows = conn.execute(
+                "SELECT * FROM items WHERE collection_id IS NULL "
+                "ORDER BY updated_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            name = None
+    return {"collection": name or "inbox",
+            "items": [_item_brief(r, name, max_chars) for r in rows],
+            "count": len(rows)}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def search_items(query: str, collection: Optional[str] = None,
+                 limit: int = 20, max_chars: int = 300) -> dict:
+    """Full-text search across notes and collection items (title, body, tags).
+    Plain words — tokenized and quoted like search_entries, so punctuation is
+    safe and every term must appear. Scope with `collection` (a name, or
+    "inbox" for unfiled notes); default searches EVERYTHING, which is usually
+    right — you don't always know where something was filed."""
+    match = _fts_query(query)
+    if not match.strip():
+        return {"results": [], "count": 0, "note": f"no searchable terms in {query!r}"}
+    where, params = "", []
+    if collection:
+        if collection.strip().lower() == "inbox":
+            where = "AND i.collection_id IS NULL"
+        else:
+            with db() as conn:
+                row, cands = _resolve_collection(conn, collection)
+            if row is None:
+                return {"error": f"no collection {collection!r}", "candidates": cands}
+            where, params = "AND i.collection_id=?", [row["id"]]
+    with db() as conn:
+        rows = conn.execute(
+            f"""SELECT i.*, c.name AS coll_name
+                FROM items_fts f JOIN items i ON i.id = f.rowid
+                LEFT JOIN collections c ON c.id = i.collection_id
+                WHERE items_fts MATCH ? {where} ORDER BY rank LIMIT ?""",
+            (match, *params, limit)).fetchall()
+    return {"results": [_item_brief(r, r["coll_name"], max_chars) for r in rows],
+            "count": len(rows)}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_item(item_id: int) -> dict:
+    """Fetch one item in full — untruncated body, all data fields, tags, dates.
+    Read-before-write: this is what you read before update_item rewrites body
+    or tags."""
+    with db() as conn:
+        r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if not r:
+            return {"error": f"no item with id {item_id}"}
+        coll = conn.execute("SELECT name FROM collections WHERE id=?",
+                            (r["collection_id"],)).fetchone() if r["collection_id"] else None
+    return {"item_id": r["id"], "title": r["title"], "body": r["body"],
+            "collection": coll["name"] if coll else "inbox",
+            "data": _item_data(r), "tags": r["tags"],
+            "created_at": r["created_at"], "updated_at": r["updated_at"]}
 
 
 # --------------------------------------------------------------------------- #

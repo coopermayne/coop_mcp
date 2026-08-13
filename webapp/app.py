@@ -1381,6 +1381,34 @@ def _chat_context(body: dict):
         return None
 
 
+# Notes & collections — the flexible layer's browse pages. Like /food these sit
+# OUTSIDE the journal lock (recipes and trip ideas are glanceable; the knock
+# guards the journal's prose) and are strictly read-only: the MCP tools are the
+# one write path, so the browser only renders what conversation has filed.
+@app.get("/collections")
+async def collections(request: Request):
+    return page(request, "collections.html", active="collections",
+                **data.collections_overview())
+
+
+@app.get("/collections/{name}")
+async def collection(request: Request, name: str):
+    c = data.collection_page(name)
+    if c is None:
+        return page(request, "notfound.html", active="collections",
+                    status_code=404, what="collection")
+    return page(request, "collection.html", active="collections", c=c)
+
+
+@app.get("/item/{item_id}")
+async def item(request: Request, item_id: int):
+    it = data.item_page(item_id)
+    if it is None:
+        return page(request, "notfound.html", active="collections",
+                    status_code=404, what="item")
+    return page(request, "item.html", active="collections", it=it)
+
+
 @app.get("/people")
 async def people(request: Request, q: str = ""):
     q = (q or "").strip()

@@ -475,6 +475,29 @@ working.
   the reading onto each session by date, shown inline, and as a header trend), not a
   dedicated server tool. There is NO weight-goal/target logic in the server — the
   coaching is the model's, as everywhere else.
+- `collections` + `items` — the FLEXIBLE layer (design: `plan-2026-08-13-collections.md`):
+  everything the user wants kept that doesn't need bespoke schema (recipes, trip
+  ideas, …). An item with `collection_id` NULL is an **inbox note** — the capture
+  default; a collection is model-proposed, user-approved (`save_collection` blocks
+  near-duplicate names with "did you mean?" candidates unless `force=True`), and
+  carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
+  text|number|date|select) and a `display_hint` (list|table|checklist) the webapp
+  renders from. Items hold markdown `body` (the prose), a `data` JSON blob validated
+  against the collection's fields (unknown key / bad type / bad select value come back
+  as actionable errors — facts with no field stay in the body), and `tags`. Promotion
+  (note → collection item) is `move_to_collection`: pure data movement, reversible,
+  NO DDL — the bespoke-table rung of the ladder stays a deliberate human+code
+  migration in `init_db()`, never an MCP call. `items_fts` (title/body/tags, same
+  trigger pattern as `entries_fts`) backs `search_items`, through `_fts_query` so
+  punctuation is safe. `update_item` merges `data` per key (null drops) but replaces
+  body/tags wholesale (read-before-write via `get_item`). `delete_record` gained two
+  kinds: `"item"` (gone for good) and `"collection"` (shell only — FK is ON DELETE
+  SET NULL, so its items demote to inbox notes). The webapp browses it at
+  `/collections` (+ per-collection and per-item pages, rendered generically from the
+  collection's own fields/display_hint — no per-domain view code), OUTSIDE the
+  journal lock like `/food`, strictly read-only like everything else. The three
+  judgment rules (capture first/file second; structure proposed, never imposed;
+  fields stay few) live in the journal server `instructions`.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
   `update_profile` and surfaced by `get_fitness_briefing`, and `eating_profile`
   (its journal-side twin: durable eating facts — goals, stats, coaching context —
