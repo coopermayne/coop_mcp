@@ -179,8 +179,15 @@ There is no exercise-selection or progression logic in the server either.
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.
-- `scripts/` — `seed_dev.py` (load throwaway dev data) and `gen_icons.py` (regenerate
-  the PWA icon set).
+- `icons.py` — GENERATED (`scripts/build_icon_set.py`): the collection icon set, a
+  curated ~130-name subset of **Lucide** vendored as raw SVG shapes, plus its
+  grouping. The pack matters because the MODEL picks the name: `list_icons()` ships
+  the set over MCP and `_bad_icon` rejects anything else with the closest matches, so
+  it can't invent a Lucide name the app doesn't carry. Lucide because the nav bar's
+  hand-written icons already are Lucide strokes. Re-run the script (needs npm once)
+  only to add names or move Lucide versions — nothing fetches at runtime.
+- `scripts/` — `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
+  the PWA icon set), and `build_icon_set.py` (regenerate `icons.py`, above).
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
@@ -495,7 +502,9 @@ working.
   everything the user wants kept that doesn't need bespoke schema (recipes, trip
   ideas, …). An item with `collection_id` NULL is an **inbox note** — the capture
   default; a collection is model-proposed, user-approved (`save_collection` blocks
-  near-duplicate names with "did you mean?" candidates unless `force=True`), and
+  near-duplicate names with "did you mean?" candidates unless `force=True`), wears an
+  `icon` (a name from the vendored Lucide set — see `icons.py`; NULL draws the default
+  folder), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
   text|number|date|select) and a `display_hint` (list|table) the webapp
   renders from. Items hold markdown `body` (the prose), an `image_url` (the
@@ -519,10 +528,15 @@ working.
   `/collections` (+ per-collection and per-item pages, rendered generically from the
   collection's own fields/display_hint — no per-domain view code), OUTSIDE the
   journal lock like `/food`, strictly read-only for CONTENT like everything else.
+  Collections are a PRIMARY section: the fourth icon on the nav strip (so the number
+  shortcuts run 1-4 in nav order, then 5 graphs / 6 trainer), and `/collections` is a
+  GRID of icon cards rather than a list — the icon is what you aim at, and a stack of
+  near-identical text rows made every collection look alike.
   The one thing the browser writes is PRESENTATION: each collection page has a
   **Display** popover (view = the same `display_hint` column the model proposes at
   creation, so the user's pick simply wins; which declared fields show as table
-  columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
+  columns / list badges; `group_by`/`sort_by`/`sort_dir`; the `icon` grid, which
+  writes the collection's own `icon` column, not the display JSON; and the row extras —
   notes-preview/tags/updated/featured-image) saved
   to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
   `server.set_collection_display` — a NON-tool, website-only path like

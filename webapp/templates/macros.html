@@ -1,5 +1,14 @@
 {# Reusable pieces shared across pages. #}
 
+{% macro icon(name, cls="w-5 h-5") %}
+{#- One collection glyph from the vendored Lucide subset (icons.py). The shapes
+    come from the generated table; the wrapper is written here so every icon
+    inherits currentColor and the same stroke as the hand-drawn nav icons. An
+    unknown name falls back to the default rather than drawing nothing. -#}
+<svg class="{{ cls }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ icon_paths.get(name, icon_paths[default_icon]) | safe }}</svg>
+{%- endmacro %}
+
 {% macro stat(value, label) %}
 <div>
   <p class="text-2xl sm:text-3xl font-semibold tracking-tight">{{ value }}</p>

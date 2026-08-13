@@ -953,7 +953,8 @@ def collections_overview() -> dict:
         counts = {r["collection_id"]: r["n"] for r in conn.execute(
             "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
         colls = [{"name": r["name"], "description": r["description"] or "",
-                  "display_hint": r["display_hint"], "count": counts.get(r["id"], 0)}
+                  "display_hint": r["display_hint"], "count": counts.get(r["id"], 0),
+                  "icon": r["icon"] or server.icon_set.DEFAULT_ICON}
                  for r in conn.execute("SELECT * FROM collections ORDER BY name")]
         notes = [_item_view(r) for r in conn.execute(
             "SELECT * FROM items WHERE collection_id IS NULL ORDER BY updated_at DESC")]
@@ -991,6 +992,7 @@ def collection_page(name: str) -> dict | None:
                                   display["sort_dir"] == "desc", ftypes)
     return {"name": c["name"], "description": c["description"] or "",
             "display_hint": c["display_hint"], "fields": visible,
+            "icon": c["icon"] or server.icon_set.DEFAULT_ICON,
             "all_fields": fields, "display": display,
             "groups": groups, "rows": items,
             # Label for the popover's current sort, so the header can say it.

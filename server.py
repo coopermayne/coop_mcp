@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import icons as icon_set   # generated Lucide subset; see scripts/build_icon_set.py
 import jellyfish
 # typing_extensions, NOT typing: pydantic (which generates the tool schemas) refuses a
 # typing.TypedDict on Python < 3.12, and the local venv is 3.11 while the image is 3.12.
@@ -801,6 +802,8 @@ CREATE TABLE IF NOT EXISTS collections (
     description  TEXT,                     -- one line: what belongs here (the model reads this)
     fields       TEXT NOT NULL DEFAULT '[]',  -- JSON [{key,label,type,options?}] — types: text|number|date|select
     display_hint TEXT NOT NULL DEFAULT 'list',-- webapp rendering: 'list' | 'table'
+    icon         TEXT,                        -- a name from icons.ICON_NAMES (Lucide subset);
+                                              -- NULL = the default folder glyph
     created_at   TEXT NOT NULL
 );
 
@@ -926,6 +929,10 @@ def init_db() -> None:
         # Any row still carrying it becomes what it already looked like.
         conn.execute("UPDATE collections SET display_hint='list' "
                      "WHERE display_hint='checklist'")
+        if "icon" not in ccols:
+            # Collection icon (a name from the vendored Lucide subset). NULL on
+            # every existing row — they draw the default folder until named.
+            conn.execute("ALTER TABLE collections ADD COLUMN icon TEXT")
         icols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
         if "image_url" not in icols:
             # Featured image, available to EVERY item (see the items table).
@@ -3220,7 +3227,8 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
                            show_image: Optional[bool] = None,
                            group_by: Optional[str] = None,
                            sort_by: Optional[str] = None,
-                           sort_dir: Optional[str] = None) -> dict:
+                           sort_dir: Optional[str] = None,
+                           icon: Optional[str] = None) -> dict:
     """Set how the webapp renders one collection — the collection page's Display
     popover. A NON-tool, website-only path (like set_archived/create_exercise):
     the model proposes fields and a display_hint when a collection is created,
@@ -3238,9 +3246,15 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
     ('asc'|'desc'). Grouping and sorting apply to BOTH views; sorting runs
     within each group.
 
+    `icon` is the same collection column save_collection writes (the model
+    proposes a glyph; the user's pick from the popover's grid wins), so it lands
+    on the row, not in the display JSON.
+
     Args left None are unchanged; pass hidden_fields=[] to unhide everything,
     and group_by='' / sort_by='' to go back to ungrouped / newest-updated.
     Unknown field keys error rather than silently sticking."""
+    if icon is not None and (bad := _bad_icon(icon)):
+        return bad
     if display_hint is not None and display_hint not in DISPLAY_HINTS:
         return {"error": f"bad display_hint {display_hint!r}; "
                          f"use one of {list(DISPLAY_HINTS)}"}
@@ -3275,10 +3289,35 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
                 disp[k] = bool(v)
         conn.execute(
             "UPDATE collections SET display=?, "
-            "display_hint=COALESCE(?, display_hint) WHERE id=?",
-            (json.dumps(disp), display_hint, row["id"]))
+            "display_hint=COALESCE(?, display_hint), icon=COALESCE(?, icon) WHERE id=?",
+            (json.dumps(disp), display_hint, (icon or None) if icon is not None else None,
+             row["id"]))
     return {"collection": row["name"],
-            "display_hint": display_hint or row["display_hint"], **disp}
+            "display_hint": display_hint or row["display_hint"],
+            "icon": icon or row["icon"] or icon_set.DEFAULT_ICON, **disp}
+
+
+def _bad_icon(icon: str) -> Optional[dict]:
+    """None if `icon` is in the vendored set (or "" — which clears it), else an
+    error carrying the CLOSEST names: a rejected guess should land the model on
+    the right one in a single correction, not send it back to list_icons()."""
+    name = (icon or "").strip().lower()
+    if not name or name in icon_set.ICON_PATHS:
+        return None
+    near = sorted(icon_set.ICON_NAMES,
+                  key=lambda n: -jellyfish.jaro_winkler_similarity(name, n))[:5]
+    return {"error": f"no icon {icon!r} in the app's icon set", "closest": near,
+            "note": "call list_icons() for the full set — it's a curated Lucide "
+                    "subset, not all of Lucide"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_icons() -> dict:
+    """Every icon a collection can wear, grouped by theme — the picker for
+    save_collection's `icon`. The set is a CURATED subset of Lucide vendored
+    into the app, so a name you remember from Lucide may not be here; pick from
+    what this returns. Names are stable; a collection with none draws a folder."""
+    return {"icons": icon_set.ICON_GROUPS, "default": icon_set.DEFAULT_ICON}
 
 
 def _tags_text(tags: Optional[list[str]]) -> Optional[str]:
@@ -3337,6 +3376,7 @@ def list_collections() -> dict:
             "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
         colls = [{"name": r["name"], "description": r["description"],
                   "fields": _coll_fields(r), "display_hint": r["display_hint"],
+                  "icon": r["icon"] or icon_set.DEFAULT_ICON,
                   "items": counts.get(r["id"], 0)}
                  for r in conn.execute("SELECT * FROM collections ORDER BY name")]
         inbox = conn.execute(
@@ -3350,6 +3390,7 @@ def list_collections() -> dict:
 def save_collection(name: str, description: Optional[str] = None,
                     fields: Optional[list[CollectionField]] = None,
                     display_hint: Optional[str] = None,
+                    icon: Optional[str] = None,
                     force: bool = False) -> dict:
     """Create a collection, or evolve an existing one (matched by exact name,
     case-insensitive): only the arguments you pass change. `fields` REPLACES the
@@ -3362,12 +3403,20 @@ def save_collection(name: str, description: Optional[str] = None,
     creating (pass force=True only after the user confirms it's genuinely
     distinct). Keep names short and plural ("recipes", "vacation spots"), keep
     fields FEW — a field earns its place by being worth scanning in a list.
-    display_hint tells the webapp how to render: 'list' | 'table'."""
+    display_hint tells the webapp how to render: 'list' | 'table'.
+
+    `icon` is the collection's glyph on the /collections grid. It must be a name
+    from the app's CURATED LUCIDE SET — call list_icons() to see them (they're
+    grouped by theme) rather than guessing a Lucide name from memory, since only
+    a subset is vendored. A name that isn't in the set is rejected with the
+    closest ones, and a collection with no icon draws a plain folder."""
     n = (name or "").strip().lower()
     if not n:
         return {"error": "name is required"}
     if display_hint is not None and display_hint not in DISPLAY_HINTS:
         return {"error": f"bad display_hint {display_hint!r}; use one of {list(DISPLAY_HINTS)}"}
+    if icon is not None and (err := _bad_icon(icon)):
+        return err
     norm_fields = None
     if fields is not None:
         norm_fields, err = _norm_fields(fields)
@@ -3381,10 +3430,10 @@ def save_collection(name: str, description: Optional[str] = None,
                         "note": f"no collection {n!r}, but these are close — reuse one, "
                                 "or pass force=True if it's genuinely distinct"}
             conn.execute(
-                "INSERT INTO collections(name, description, fields, display_hint, created_at) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO collections(name, description, fields, display_hint, "
+                "icon, created_at) VALUES (?,?,?,?,?,?)",
                 (n, description, json.dumps(norm_fields or []),
-                 display_hint or "list", now()))
+                 display_hint or "list", icon or None, now()))
             created = True
         else:
             sets, vals = [], []
@@ -3394,6 +3443,8 @@ def save_collection(name: str, description: Optional[str] = None,
                 sets.append("fields=?"); vals.append(json.dumps(norm_fields))
             if display_hint is not None:
                 sets.append("display_hint=?"); vals.append(display_hint)
+            if icon is not None:
+                sets.append("icon=?"); vals.append(icon or None)
             if sets:
                 vals.append(row["id"])
                 conn.execute(f"UPDATE collections SET {', '.join(sets)} WHERE id=?", vals)
@@ -3401,7 +3452,7 @@ def save_collection(name: str, description: Optional[str] = None,
         out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
     return {"name": out["name"], "description": out["description"],
             "fields": _coll_fields(out), "display_hint": out["display_hint"],
-            "created": created}
+            "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
 
 
 @mcp.tool(annotations=WRITE)
