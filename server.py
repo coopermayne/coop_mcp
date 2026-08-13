@@ -215,8 +215,110 @@ class AllowlistMiddleware(Middleware):
         return await call_next(context)
 
 
-_auth = _build_auth()
-mcp = FastMCP("journal", auth=_auth, instructions="""\
+# Tools hidden from the journal MCP connector (see HiddenToolsMiddleware).
+# Everything people/entry-shaped: the user does all journal capture through the
+# app's own chat, so the connector surface is intake + collections only. Keep
+# this set in sync when adding a journal tool.
+CONNECTOR_HIDDEN_TOOLS = frozenset({
+    "add_journal_entry", "link_mentions", "save_person", "update_contact",
+    "list_pending_mentions", "list_people", "get_person_history",
+    "search_entries", "get_entry", "update_entry", "reorder_entries",
+    "merge_people", "get_related_people", "get_briefing",
+})
+
+
+class HiddenToolsMiddleware(Middleware):
+    """Hide the journal's people/entry tools from the MCP connector surface.
+
+    Journal capture happens in the app's own chat, which drives this server's
+    functions in-process and BYPASSES middleware (webapp/chat.py lifts schemas
+    via list_tools(run_middleware=False) and dispatches direct function calls) —
+    so hiding here shapes only what connectors see; the chat keeps the full tool
+    set. on_list_tools drops the hidden names from discovery; on_call_tool
+    rejects them too (a name a model happens to know must not work where it
+    isn't advertised) and closes the one indirect path, delete_record on a
+    journal entry.
+    """
+
+    async def on_list_tools(self, context, call_next):
+        tools = await call_next(context)
+        return [t for t in tools if t.name not in CONNECTOR_HIDDEN_TOOLS]
+
+    async def on_call_tool(self, context, call_next):
+        if context.message.name in CONNECTOR_HIDDEN_TOOLS:
+            raise ToolError(f"Unknown tool: {context.message.name!r}")
+        if (context.message.name == "delete_record"
+                and (context.message.arguments or {}).get("kind") == "entry"):
+            raise ToolError("Journal entries are managed in the app's own chat, "
+                            "not on this connector.")
+        return await call_next(context)
+
+
+# ---------------------------------------------------------------------------
+# Model-facing instructions — one journal server, two surfaces. The MCP
+# connector sees only the eating log + notes & collections (people/entry tools
+# hidden by HiddenToolsMiddleware); the app's own chat drives the FULL tool set
+# in-process and takes JOURNAL_CHAT_INSTRUCTIONS as its system prompt
+# (webapp/chat.py). The shared blocks are written once and composed into both
+# texts so the surfaces can't drift; the Pacific block is parameterized on the
+# tool that carries `now`, because get_briefing is hidden from the connector —
+# there, get_intake is the clock.
+# ---------------------------------------------------------------------------
+
+def _pacific_block(anchor_tool: str) -> str:
+    return f"""\
+All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
+on Pacific time. {anchor_tool} returns `now` (current Pacific date/time) with
+`date`/`yesterday`/`tomorrow` precomputed: use those EXACT strings for "today"/
+"yesterday"/"tomorrow" rather than computing or shifting dates yourself, and resolve
+any bare day reference against them before defaulting or saving."""
+
+
+_INTAKE_BLOCK = """\
+Eating and drinking are logged as intake items: when the user mentions eating or
+drinking, call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls).
+Corrections go through update_intake_item by id; day totals are summed from the
+items, so you never recompute a day yourself. Three rules keep the numbers
+trustworthy:
+  - TOTALS COME FROM THE DB, not from a tally you keep in conversation. Other clients
+    (the phone app, another chat) may write to the same day, so your context is not
+    the day. log_intake returns `day_totals` after every write; answer "how am I
+    doing" from those or a fresh get_intake.
+  - REPEAT FOODS get looked up, not re-estimated: the intake log is its own food
+    database. When something sounds like a repeat — leftovers across several days, a
+    staple, "same as yesterday" — find_past_items(name) surfaces what it was logged
+    at before (fuzzy, so spelling doesn't matter); reuse those settled numbers when
+    it's genuinely the same thing (your judgment), estimate fresh when it isn't.
+    Novel and one-off dishes you estimate yourself, as always.
+  - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut) live in
+    the eating profile — returned by get_intake, updated via update_eating_profile —
+    not in whatever a conversation happens to say. Read it before coaching; fold in
+    durable changes as they come up, like a person's summary."""
+
+
+_COLLECTIONS_BLOCK = """\
+Beyond the structured logs there is one FLEXIBLE layer — notes & collections — for
+everything else the user wants kept (recipes, trip ideas, books, whatever comes up).
+Three rules govern it:
+  - CAPTURE FIRST, FILE SECOND. "Save this" always succeeds: if it clearly fits an
+    existing collection (check list_collections — it's cheap), file it there; otherwise
+    save_item with no collection leaves it as an inbox note. Never block a save on
+    deciding structure.
+  - STRUCTURE IS PROPOSED, NEVER IMPOSED. When inbox notes cluster around one topic
+    (a handful on the same theme), SUGGEST a collection and create it only on the
+    user's yes — then promote the notes with move_to_collection, extracting each
+    note's fields from its own text. One stray idea never warrants a new collection.
+  - FIELDS STAY FEW. A field earns its place by being worth scanning in a list
+    (status, a date, a rating); everything else is prose in the item's body. Facts
+    with no matching field go in the body — don't invent data keys."""
+
+
+_TRAINER_NOTE = "(Workouts/training live on a separate `trainer` MCP server.)"
+
+
+# The app chat's system prompt for the journal surface — the FULL contract,
+# journal included. Consumed by webapp/chat.py; NOT what the connector sees.
+JOURNAL_CHAT_INSTRUCTIONS = f"""\
 Single-user life log: a conversational journal (people are resolved to stable
 entities, not name strings) plus an eating log. The server only stores and matches —
 the judgment (which person a mention means) is yours.
@@ -246,55 +348,43 @@ Every entry is classified `kind`: "log" (an interaction/event/fact — the defau
 out of per-person history, so the CRM view stays real interactions. add_journal_entry
 tells them apart.
 
-All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
-on Pacific time. get_briefing returns `now` (current Pacific date/time) with
-`date`/`yesterday`/`tomorrow` precomputed: use those EXACT strings for "today"/
-"yesterday"/"tomorrow" rather than computing or shifting dates yourself, and resolve
-any bare day reference against them before defaulting or saving.
+{_pacific_block("get_briefing")}
 
-Intake is its own log, not a journal entry: when the user mentions eating or drinking,
-call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls) — instead of, or
-as well as, writing an entry about it. Corrections go through update_intake_item by id;
-day totals are summed from the items, so you never recompute a day yourself. Three
-rules keep the numbers trustworthy:
-  - TOTALS COME FROM THE DB, not from a tally you keep in conversation. Other clients
-    (the phone app, another chat) may write to the same day, so your context is not
-    the day. log_intake returns `day_totals` after every write; answer "how am I
-    doing" from those or a fresh get_intake.
-  - REPEAT FOODS get looked up, not re-estimated: the intake log is its own food
-    database. When something sounds like a repeat — leftovers across several days, a
-    staple, "same as yesterday" — find_past_items(name) surfaces what it was logged
-    at before (fuzzy, so spelling doesn't matter); reuse those settled numbers when
-    it's genuinely the same thing (your judgment), estimate fresh when it isn't.
-    Novel and one-off dishes you estimate yourself, as always.
-  - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut) live in
-    the eating profile — returned by get_intake, updated via update_eating_profile —
-    not in whatever a conversation happens to say. Read it before coaching; fold in
-    durable changes as they come up, like a person's summary.
+Intake is its own log, not a journal entry — log eating and drinking with log_intake
+instead of, or as well as, writing an entry about it.
+{_INTAKE_BLOCK}
 
-Beyond the journal and the eating log there is one FLEXIBLE layer — notes &
-collections — for everything else the user wants kept (recipes, trip ideas, books,
-whatever comes up). Three rules govern it:
-  - CAPTURE FIRST, FILE SECOND. "Save this" always succeeds: if it clearly fits an
-    existing collection (check list_collections — it's cheap), file it there; otherwise
-    save_item with no collection leaves it as an inbox note. Never block a save on
-    deciding structure.
-  - STRUCTURE IS PROPOSED, NEVER IMPOSED. When inbox notes cluster around one topic
-    (a handful on the same theme), SUGGEST a collection and create it only on the
-    user's yes — then promote the notes with move_to_collection, extracting each
-    note's fields from its own text. One stray idea never warrants a new collection.
-  - FIELDS STAY FEW. A field earns its place by being worth scanning in a list
-    (status, a date, a rating); everything else is prose in the item's body. Facts
-    with no matching field go in the body — don't invent data keys.
+{_COLLECTIONS_BLOCK}
 
 Start a session with get_briefing: it loads the last two weeks of entries plus the
 summaries of everyone mentioned in the last week, so you write in context rather than
 from a blank slate. Everyone else comes back in a compact `roster` (no summary) —
 still enough to resolve a name; pull their full profile with get_person_history when
 they come up.
-(Workouts/training live on a separate `trainer` MCP server.)""")
+{_TRAINER_NOTE}"""
+
+
+_auth = _build_auth()
+mcp = FastMCP("journal", auth=_auth, instructions=f"""\
+Single-user life log. This connector carries its EATING LOG and its NOTES &
+COLLECTIONS layer; the journal proper (people, entries) is captured through the
+app's own chat and is not exposed here, so treat "log my lunch" or "save this
+idea" as the whole job. The server only stores and sums — turning "a chipotle
+bowl" into numbers is your judgment.
+
+{_pacific_block("get_intake")}
+
+{_INTAKE_BLOCK}
+
+{_COLLECTIONS_BLOCK}
+
+Start an eating session with get_intake: it returns `now`, the recent days with
+their summed totals, and the stored eating profile (targets, goals, coaching
+context), so you coach in context rather than from a blank slate.
+{_TRAINER_NOTE}""")
 if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
+mcp.add_middleware(HiddenToolsMiddleware())
 
 # The trainer is a SEPARATE MCP server living in the SAME process and sharing this DB,
 # so a Claude project connected to it loads ONLY the training tools. It gets its OWN
@@ -821,6 +911,14 @@ def init_db() -> None:
             # keeps its old id order at the top) and LAST in the newest-first lists; a
             # newly captured entry gets a real position and appends below the NULLs.
             conn.execute("ALTER TABLE entries ADD COLUMN day_position INTEGER")
+        ccols = [r["name"] for r in conn.execute("PRAGMA table_info(collections)")]
+        if "display" not in ccols:
+            # Per-collection VIEWER preferences — webapp-only JSON (hidden_fields,
+            # show_body/show_tags/show_updated). NULL = defaults (show everything).
+            # Written only by the website's Display popover via
+            # set_collection_display (a non-tool path); the model never reads or
+            # writes it.
+            conn.execute("ALTER TABLE collections ADD COLUMN display TEXT")
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
         for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
@@ -1951,7 +2049,9 @@ def delete_record(kind: str, id: int) -> dict:
     """Permanently delete one journal-side record. Irreversible — confirm first.
 
     `kind` selects what `id` refers to:
-      - "entry" — a journal entry (its mentions go too; FTS stays in sync).
+      - "entry" — a journal entry (its mentions go too; FTS stays in sync). App
+        chat only — on the MCP connector this kind is rejected, like the rest of
+        the journal surface.
       - "intake_item" — one logged thing (a meal, a beer, a glass of water). The
         day's totals re-derive from what's left, so nothing else needs fixing.
       - "item" — one note/collection item. Gone for good, unlike…
@@ -2717,7 +2817,9 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     a fix never involves recomputing a day. Days with nothing logged are omitted; they
     are NOT zero-calorie days.
 
-    This is also the eating session's anchor: it returns the stored `profile` —
+    This is also the eating session's anchor: it returns `now` (current Pacific
+    date/time with `date`/`yesterday`/`tomorrow` precomputed — resolve bare day
+    references against those exact strings) and the stored `profile` —
     targets, goals, coaching context (see update_eating_profile) — so a fresh
     conversation needs nothing pasted in. And it is the source of truth for where a
     day stands: other clients may have logged items your conversation never saw, so
@@ -2765,6 +2867,7 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     window_days = (date.fromisoformat(until).toordinal()
                    - date.fromisoformat(since).toordinal() + 1)
     out = {
+        "now": current_clock(),
         "since": since, "until": until, "window_days": window_days,
         "logged_days": len(by_day),
         "days": out_days,
@@ -3074,6 +3177,65 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
             cands.append((sc, r))
     cands.sort(key=lambda t: t[0], reverse=True)
     return None, [{"name": r["name"], "score": round(sc, 2)} for sc, r in cands[:3]]
+
+
+COLLECTION_DISPLAY_DEFAULTS = {"hidden_fields": [], "show_body": True,
+                               "show_tags": True, "show_updated": True}
+
+
+def _coll_display(row) -> dict:
+    """Parse a collection row's webapp-only `display` JSON over the defaults.
+    Always returns every key, so templates can read it without guarding."""
+    disp = dict(COLLECTION_DISPLAY_DEFAULTS)
+    try:
+        disp.update(json.loads(row["display"] or "{}"))
+    except Exception:
+        pass
+    return disp
+
+
+def set_collection_display(name: str, display_hint: Optional[str] = None,
+                           hidden_fields: Optional[list[str]] = None,
+                           show_body: Optional[bool] = None,
+                           show_tags: Optional[bool] = None,
+                           show_updated: Optional[bool] = None) -> dict:
+    """Set how the webapp renders one collection — the collection page's Display
+    popover. A NON-tool, website-only path (like set_archived/create_exercise):
+    the model proposes fields and a display_hint when a collection is created,
+    but what actually shows on the page is the USER's call, so these preferences
+    are written only from the UI and never surface in tool returns.
+
+    display_hint switches the view (list|table|checklist — the same column the
+    model sets at creation, so the user's pick simply wins until the model
+    writes it again); everything else lives in the webapp-only `display` JSON:
+    hidden_fields (declared field keys to leave off the table columns / list
+    badges) and show_body/show_tags/show_updated (the list view's extras).
+    Args left None are unchanged; pass hidden_fields=[] to unhide everything.
+    Unknown field keys error rather than silently sticking."""
+    if display_hint is not None and display_hint not in DISPLAY_HINTS:
+        return {"error": f"bad display_hint {display_hint!r}; "
+                         f"use one of {list(DISPLAY_HINTS)}"}
+    with db() as conn:
+        row, cands = _resolve_collection(conn, name)
+        if not row:
+            return {"error": f"no collection named {name!r}", "candidates": cands}
+        disp = _coll_display(row)
+        if hidden_fields is not None:
+            keys = {f["key"] for f in _coll_fields(row)}
+            if bad := [k for k in hidden_fields if k not in keys]:
+                return {"error": f"unknown field keys {bad}; "
+                                 f"declared: {sorted(keys)}"}
+            disp["hidden_fields"] = list(dict.fromkeys(hidden_fields))
+        for k, v in (("show_body", show_body), ("show_tags", show_tags),
+                     ("show_updated", show_updated)):
+            if v is not None:
+                disp[k] = bool(v)
+        conn.execute(
+            "UPDATE collections SET display=?, "
+            "display_hint=COALESCE(?, display_hint) WHERE id=?",
+            (json.dumps(disp), display_hint, row["id"]))
+    return {"collection": row["name"],
+            "display_hint": display_hint or row["display_hint"], **disp}
 
 
 def _tags_text(tags: Optional[list[str]]) -> Optional[str]:

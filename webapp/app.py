@@ -1383,8 +1383,10 @@ def _chat_context(body: dict):
 
 # Notes & collections — the flexible layer's browse pages. Like /food these sit
 # OUTSIDE the journal lock (recipes and trip ideas are glanceable; the knock
-# guards the journal's prose) and are strictly read-only: the MCP tools are the
-# one write path, so the browser only renders what conversation has filed.
+# guards the journal's prose) and are strictly read-only for CONTENT: the MCP
+# tools are the one write path for items, so the browser only renders what
+# conversation has filed. The one thing the browser does write is PRESENTATION —
+# the Display popover below, the library-★/♥ pattern applied to rendering.
 @app.get("/collections")
 async def collections(request: Request):
     return page(request, "collections.html", active="collections",
@@ -1398,6 +1400,25 @@ async def collection(request: Request, name: str):
         return page(request, "notfound.html", active="collections",
                     status_code=404, what="collection")
     return page(request, "collection.html", active="collections", c=c)
+
+
+@app.post("/collections/{name}/display")
+async def collection_display(request: Request, name: str):
+    """Save the collection page's Display popover: view (display_hint), which
+    declared fields show, and the list view's extras. A website-only write path
+    through server.set_collection_display (never a FastMCP tool — the model
+    proposes a collection's shape at creation; what renders is the user's call).
+    Body: {display_hint?, hidden_fields?, show_body?, show_tags?, show_updated?}."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    res = server.set_collection_display(
+        name,
+        display_hint=body.get("display_hint"),
+        hidden_fields=body.get("hidden_fields"),
+        show_body=body.get("show_body"), show_tags=body.get("show_tags"),
+        show_updated=body.get("show_updated"))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
 
 
 @app.get("/item/{item_id}")

@@ -6,7 +6,56 @@
 
 <div class="mt-4 flex items-baseline justify-between mb-2">
   <h1 class="text-2xl font-bold tracking-tight">{{ c.name }}</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ c.rows | length }}</span>
+  <div class="relative flex items-baseline gap-4">
+    <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ c.rows | length }}</span>
+    {# The Display popover — the one thing the browser writes: PRESENTATION.
+       Saves via POST /collections/<name>/display (server.set_collection_display,
+       a website-only path); content still only enters through the MCP tools. #}
+    <button id="disp-btn" type="button"
+            class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Display</button>
+    <div id="disp-pop" hidden
+         class="absolute right-0 top-7 z-20 w-60 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">View</p>
+      <div class="space-y-1.5 mb-4">
+        {% for h in ['list', 'table', 'checklist'] %}
+        <label class="flex items-center gap-2 cursor-pointer capitalize">
+          <input type="radio" name="disp-view" value="{{ h }}" class="accent-black"
+                 {% if c.display_hint == h %}checked{% endif %}>
+          <span>{{ h }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% if c.all_fields %}
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Fields</p>
+      <div class="space-y-1.5 mb-4">
+        {% for f in c.all_fields %}
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="disp-field" value="{{ f.key }}" class="accent-black"
+                 {% if f.key not in c.display.hidden_fields %}checked{% endif %}>
+          <span>{{ f.label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Show</p>
+      <div class="space-y-1.5 mb-4">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="disp-body" type="checkbox" class="accent-black" {% if c.display.show_body %}checked{% endif %}>
+          <span>Notes preview</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="disp-tags" type="checkbox" class="accent-black" {% if c.display.show_tags %}checked{% endif %}>
+          <span>Tags</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="disp-updated" type="checkbox" class="accent-black" {% if c.display.show_updated %}checked{% endif %}>
+          <span>Updated date</span>
+        </label>
+      </div>
+      <button id="disp-apply" type="button"
+              class="w-full px-3 py-2 border border-gray-200 text-gray-500 text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors">Apply</button>
+    </div>
+  </div>
 </div>
 {% if c.description %}<p class="text-sm text-gray-500 mb-6">{{ c.description }}</p>{% else %}<div class="mb-6"></div>{% endif %}
 
@@ -14,8 +63,9 @@
 <p class="text-sm text-gray-400">Nothing here yet.</p>
 
 {% elif c.display_hint == 'table' and c.fields %}
-{# Table hint: one row per item, one column per declared field. Wide tables
-   scroll inside their own container so the page never scrolls sideways. #}
+{# Table hint: one row per item, one column per VISIBLE field (c.fields is
+   already filtered by the Display prefs). Wide tables scroll inside their own
+   container so the page never scrolls sideways. #}
 <div class="border border-gray-200 rounded-[4px] overflow-x-auto">
   <table class="w-full text-sm">
     <thead>
@@ -41,24 +91,53 @@
 
 {% else %}
 {# 'list' and 'checklist' render the same quiet stack; a checklist's status-ish
-   select field already reads as the leading badge. #}
+   select field already reads as the leading badge. Badges show only VISIBLE
+   fields (it.data is built from them); the extras honor the Display prefs. #}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for it in c.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
     <div class="flex items-baseline justify-between gap-3">
       <span class="text-sm font-medium">{{ it.title }}</span>
-      {% if it.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ it.updated | short_date }}</span>{% endif %}
+      {% if c.display.show_updated and it.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ it.updated | short_date }}</span>{% endif %}
     </div>
-    {% if it.data or it.tags %}
+    {% if it.data or (c.display.show_tags and it.tags) %}
     <div class="flex flex-wrap items-center gap-2 mt-1.5">
       {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
-      {% for t in it.tags %}<span class="badge">{{ t }}</span>{% endfor %}
+      {% if c.display.show_tags %}{% for t in it.tags %}<span class="badge">{{ t }}</span>{% endfor %}{% endif %}
     </div>
     {% endif %}
-    {% if it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}
+    {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}
   </a>
   {% endfor %}
 </div>
 {% endif %}
+
+<script>
+(function () {
+  var btn = document.getElementById('disp-btn'), pop = document.getElementById('disp-pop');
+  if (!btn) return;
+  btn.addEventListener('click', function () { pop.hidden = !pop.hidden; });
+  document.addEventListener('click', function (e) {
+    if (!pop.hidden && !pop.contains(e.target) && !btn.contains(e.target)) pop.hidden = true;
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.hidden = true; });
+  document.getElementById('disp-apply').addEventListener('click', function () {
+    var hidden = Array.prototype.filter.call(
+      pop.querySelectorAll('input[name="disp-field"]'), function (i) { return !i.checked; }
+    ).map(function (i) { return i.value; });
+    fetch("{{ base }}/collections/{{ c.name | urlencode }}/display", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        display_hint: pop.querySelector('input[name="disp-view"]:checked').value,
+        hidden_fields: hidden,
+        show_body: document.getElementById('disp-body').checked,
+        show_tags: document.getElementById('disp-tags').checked,
+        show_updated: document.getElementById('disp-updated').checked
+      })
+    }).then(function (r) { if (r.ok) location.reload(); });
+  });
+})();
+</script>
 
 {% endblock %}

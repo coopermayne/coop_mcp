@@ -562,12 +562,19 @@ in one Coolify project.
 
 ## Tools
 
-Split across two connectors. The **journal** server (`YOUR-DOMAIN/mcp`) carries the
-journal + intake tools through `update_eating_profile`, plus a `delete_record` scoped to
-`entry`/`intake_item`. (Alcohol and water are nutrients on an intake item, not
+Split across two connectors and the app's own chat. The **journal** server
+(`YOUR-DOMAIN/mcp`) exposes to MCP clients only the intake tools (`log_intake` through
+`update_eating_profile`) and the notes-&-collections tools, plus a scoped
+`delete_record` — the journal-capture tools (`add_journal_entry` through
+`search_entries` below) are hidden from connectors by `HiddenToolsMiddleware`
+(neither listed nor callable), because journal capture happens in the app's own
+chat, which drives the full tool set in-process and isn't affected. (Alcohol and
+water are nutrients on an intake item, not
 tools of their own — see "Intake" above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
 main origin when authless) carries `save_exercise` through `update_profile`, plus its
-own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
+own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB. (The
+notes-&-collections tools — `save_item`, `list_collections`, `search_items`, … — are
+newer than this table; see CLAUDE.md's `collections` section for the full contract.)
 
 | Tool | Purpose |
 |---|---|
@@ -599,7 +606,7 @@ own `delete_record` scoped to `workout`/`set`/`weight`. Both hit the same DB.
 | `log_bodyweight` | Record a weigh-in (lbs); returns the change vs the prior reading |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight |
-| `delete_record` | Delete one record by `kind` + `id` — irreversible, cascades/renumbers as needed. On the journal connector `kind` is `entry`/`intake_item`; on the trainer connector it's `workout`/`set`/`weight` |
+| `delete_record` | Delete one record by `kind` + `id` — irreversible, cascades/renumbers as needed. On the journal side `kind` is `entry` (app chat only — rejected on the connector)/`intake_item`/`item`/`collection`; on the trainer connector it's `workout`/`set`/`weight` |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps

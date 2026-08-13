@@ -880,18 +880,27 @@ def collections_overview() -> dict:
 
 
 def collection_page(name: str) -> dict | None:
-    """One collection with its items, newest-updated first, or None."""
+    """One collection with its items, newest-updated first, or None.
+
+    `fields` is filtered to what the user chose to SHOW (the Display popover's
+    prefs, `server._coll_display`) so the table columns and list badges honor
+    it without template logic; `all_fields` keeps the full declared set for the
+    popover itself, and `display` carries the rest of the prefs."""
     with server.db() as conn:
         c = conn.execute("SELECT * FROM collections WHERE lower(name)=?",
                          ((name or "").strip().lower(),)).fetchone()
         if not c:
             return None
         fields = server._coll_fields(c)
-        items = [_item_view(r, fields) for r in conn.execute(
+        display = server._coll_display(c)
+        hidden = set(display["hidden_fields"])
+        visible = [f for f in fields if f["key"] not in hidden]
+        items = [_item_view(r, visible) for r in conn.execute(
             "SELECT * FROM items WHERE collection_id=? ORDER BY updated_at DESC",
             (c["id"],))]
     return {"name": c["name"], "description": c["description"] or "",
-            "display_hint": c["display_hint"], "fields": fields, "rows": items}
+            "display_hint": c["display_hint"], "fields": visible,
+            "all_fields": fields, "display": display, "rows": items}
 
 
 def item_page(item_id: int) -> dict | None:
