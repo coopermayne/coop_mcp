@@ -514,7 +514,11 @@ working.
   `<img src>`, and `""` clears it via `update_item`. Rendered as a thumbnail on
   every item row — collection page, inbox, search — and full-width on the item
   page, each with `onerror="this.remove()"` so a dead URL leaves nothing rather
-  than a broken-image box), a `data` JSON blob validated
+  than a broken-image box. Collections predating the column DECLARED their own
+  "featured image" field, so the URL rendered as a badge with the link spelled
+  out — `_fold_image_fields` (runs every boot, idempotent) lifts those values
+  onto the column, un-declares the field, and `_norm_fields` now REFUSES an
+  image-ish field so it can't come back), a `data` JSON blob validated
   against the collection's fields (unknown key / bad type / bad select value come back
   as actionable errors — facts with no field stay in the body), and `tags`. Promotion
   (note → collection item) is `move_to_collection`: pure data movement, reversible,

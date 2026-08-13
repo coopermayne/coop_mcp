@@ -898,6 +898,55 @@ def _merge_notes(*notes: Optional[str]) -> Optional[str]:
     return "; ".join(seen) or None
 
 
+# A declared field whose name says "picture": what a collection used to need
+# before items had an image_url column of their own.
+_IMAGE_FIELD = re.compile(r"image|photo|picture|thumbnail|cover", re.I)
+
+
+def _fold_image_fields(conn: sqlite3.Connection) -> None:
+    """Move image URLs out of declared FIELDS and into items.image_url.
+
+    A collection made before the column existed declared its own "featured
+    image" text field, so the URLs sat in the `data` blob and rendered as a
+    badge with the URL spelled out — a picture listed instead of shown. This
+    lifts every http(s) value under an image-ish key onto the column, drops the
+    key from the blob, and un-declares the field once no item still holds a
+    non-URL value for it (so the model stops refilling it and uses image_url).
+
+    Idempotent: it only ever reads keys that still exist, and only fills an
+    image_url that is still NULL."""
+    for coll in conn.execute("SELECT * FROM collections").fetchall():
+        keys = [f["key"] for f in _coll_fields(coll)
+                if _IMAGE_FIELD.search(f["key"]) or _IMAGE_FIELD.search(f.get("label") or "")]
+        if not keys:
+            continue
+        leftover = set()
+        for r in conn.execute("SELECT * FROM items WHERE collection_id=?",
+                              (coll["id"],)).fetchall():
+            blob, url = _item_data(r), None
+            for k in keys:
+                v = blob.get(k)
+                if not isinstance(v, str) or not v.strip():
+                    blob.pop(k, None)
+                    continue
+                if v.strip().lower().startswith(("http://", "https://")):
+                    url = url or v.strip()
+                    blob.pop(k, None)
+                else:
+                    leftover.add(k)          # not a URL — leave it alone
+            if url and not r["image_url"]:
+                conn.execute("UPDATE items SET image_url=?, data=? WHERE id=?",
+                             (url, json.dumps(blob) if blob else None, r["id"]))
+            elif blob != _item_data(r):
+                conn.execute("UPDATE items SET data=? WHERE id=?",
+                             (json.dumps(blob) if blob else None, r["id"]))
+        keep = [f for f in _coll_fields(coll)
+                if f["key"] not in keys or f["key"] in leftover]
+        if len(keep) != len(_coll_fields(coll)):
+            conn.execute("UPDATE collections SET fields=? WHERE id=?",
+                         (json.dumps(keep), coll["id"]))
+
+
 def init_db() -> None:
     with db() as conn:
         conn.executescript(SCHEMA)
@@ -937,6 +986,10 @@ def init_db() -> None:
         if "image_url" not in icols:
             # Featured image, available to EVERY item (see the items table).
             conn.execute("ALTER TABLE items ADD COLUMN image_url TEXT")
+        # Runs every boot, not just on the ALTER: a collection created BEFORE the
+        # column existed declared its own "featured image" text field, and the
+        # model kept filling it after. Idempotent — see the helper.
+        _fold_image_fields(conn)
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
         for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
@@ -3133,6 +3186,14 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
         if key in seen:
             return [], f"duplicate field key {key!r}"
         seen.add(key)
+        # Every item already HAS a picture slot (items.image_url), which the app
+        # renders as an actual image. A declared one only ever produced a badge
+        # with the URL spelled out — see _fold_image_fields, which cleaned up the
+        # collections that had one.
+        if _IMAGE_FIELD.search(key) or _IMAGE_FIELD.search(f.get("label") or ""):
+            return [], (f"don't declare an image field ({key!r}) — every item has a "
+                        "featured image already: pass image_url= to save_item/"
+                        "update_item and the app renders the picture itself")
         ftype = (f.get("type") or "text").strip().lower()
         if ftype not in FIELD_TYPES:
             return [], f"bad type {ftype!r} for field {key!r}; use one of {list(FIELD_TYPES)}"
@@ -3403,6 +3464,8 @@ def save_collection(name: str, description: Optional[str] = None,
     creating (pass force=True only after the user confirms it's genuinely
     distinct). Keep names short and plural ("recipes", "vacation spots"), keep
     fields FEW — a field earns its place by being worth scanning in a list.
+    Never declare an image/photo field: every item already has a featured image
+    (save_item's `image_url`), which the app renders as an actual picture.
     display_hint tells the webapp how to render: 'list' | 'table'.
 
     `icon` is the collection's glyph on the /collections grid. It must be a name
