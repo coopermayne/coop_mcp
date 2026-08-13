@@ -7,7 +7,9 @@ COPY requirements.txt ./requirements-base.txt
 COPY webapp/requirements.txt ./requirements-web.txt
 RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 
-COPY server.py .
+# server.py imports `icons` at module level — a missing icons.py is an import-time crash,
+# not a degraded feature, so it ships with the server.
+COPY server.py icons.py ./
 COPY webapp ./webapp
 # Maintenance/seed scripts (e.g. import_exercises.py for seeding the exercise library) —
 # run inside the container against the mounted DB.
