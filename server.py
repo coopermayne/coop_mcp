@@ -915,7 +915,7 @@ _IMAGE_FIELD = re.compile(r"image|photo|picture|thumbnail|cover", re.I)
 
 
 def _fold_image_fields(conn: sqlite3.Connection) -> None:
-    """Move image URLs out of declared FIELDS and into items.featured_image_url.
+    """Move image URLs out of item `data` and into items.featured_image_url.
 
     A collection made before the column existed declared its own "featured
     image" text field, so the URLs sat in the `data` blob and rendered as a
@@ -924,17 +924,25 @@ def _fold_image_fields(conn: sqlite3.Connection) -> None:
     key from the blob, and un-declares the field once no item still holds a
     non-URL value for it (so the model stops refilling it and uses featured_image_url).
 
+    It sweeps image-ish keys found in the BLOB, not just the ones still
+    DECLARED, because those two can come apart: drop the declaration by hand
+    (or let _norm_fields refuse it on the next collections_save) and the values
+    strand — invisible, since the app renders only declared fields, and
+    poisonous, since notes_file validates the whole merged blob and rejects the
+    unknown key. Keyed off the declaration alone, this pass would skip the very
+    collection that needs it.
+
     Idempotent: it only ever reads keys that still exist, and only fills an
     featured_image_url that is still NULL."""
     for coll in conn.execute("SELECT * FROM collections").fetchall():
-        keys = [f["key"] for f in _coll_fields(coll)
-                if _IMAGE_FIELD.search(f["key"]) or _IMAGE_FIELD.search(f.get("label") or "")]
-        if not keys:
-            continue
+        declared = [f["key"] for f in _coll_fields(coll)
+                    if _IMAGE_FIELD.search(f["key"]) or _IMAGE_FIELD.search(f.get("label") or "")]
         leftover = set()
         for r in conn.execute("SELECT * FROM items WHERE collection_id=?",
                               (coll["id"],)).fetchall():
             blob, url = _item_data(r), None
+            keys = declared + [k for k in blob
+                               if k not in declared and _IMAGE_FIELD.search(k)]
             for k in keys:
                 v = blob.get(k)
                 if not isinstance(v, str) or not v.strip():
@@ -952,7 +960,7 @@ def _fold_image_fields(conn: sqlite3.Connection) -> None:
                 conn.execute("UPDATE items SET data=? WHERE id=?",
                              (json.dumps(blob) if blob else None, r["id"]))
         keep = [f for f in _coll_fields(coll)
-                if f["key"] not in keys or f["key"] in leftover]
+                if f["key"] not in declared or f["key"] in leftover]
         if len(keep) != len(_coll_fields(coll)):
             conn.execute("UPDATE collections SET fields=? WHERE id=?",
                          (json.dumps(keep), coll["id"]))
@@ -1001,6 +1009,21 @@ def init_db() -> None:
                 continue
             hint = r["display_hint"]
             disp["view"] = hint if hint in COLLECTION_VIEWS else "list"
+            conn.execute("UPDATE collections SET display=? WHERE id=?",
+                         (json.dumps(disp), r["id"]))
+        # show_image (a boolean) became image_size, which carries the same
+        # "don't" as its 'off' value — a size and a visibility flag were the
+        # same question asked twice, and two keys can disagree. Fold the old
+        # key into the new one once; idempotent (it pops what it reads).
+        for r in conn.execute("SELECT id, display FROM collections"):
+            try:
+                disp = json.loads(r["display"] or "{}")
+            except ValueError:
+                continue
+            if not isinstance(disp, dict) or "show_image" not in disp:
+                continue
+            shown = disp.pop("show_image")
+            disp.setdefault("image_size", "medium" if shown else "off")
             conn.execute("UPDATE collections SET display=? WHERE id=?",
                          (json.dumps(disp), r["id"]))
         if "icon" not in ccols:
@@ -3282,14 +3305,18 @@ def _bad_data(data: dict, fields: list[dict], *, allow_null: bool = False) -> Op
     valid = {f["key"]: f for f in fields}
     for k, v in (data or {}).items():
         f = valid.get(k)
-        if not f:
-            known = sorted(valid) or ["<none — the collection has no fields>"]
-            return (f"unknown data key {k!r}; this collection's fields are {known}. "
-                    "Add the field first with collections_save, or put the fact in the body.")
+        # The null-drop is checked BEFORE the unknown-key check on purpose: a null
+        # asks to REMOVE the key, and that's exactly what you need for a key the
+        # collection no longer declares (a stranded blob value — see
+        # _fold_image_fields). Rejecting it would make the orphan unremovable.
         if v is None:
             if allow_null:
                 continue  # update-merge: null drops the key
             return f"data[{k!r}] is null — omit the key instead of sending null"
+        if not f:
+            known = sorted(valid) or ["<none — the collection has no fields>"]
+            return (f"unknown data key {k!r}; this collection's fields are {known}. "
+                    "Add the field first with collections_save, or put the fact in the body.")
         if f["type"] == "number" and (isinstance(v, bool) or not isinstance(v, (int, float))):
             return f"data[{k!r}] must be a number, got {v!r}"
         if f["type"] == "date":
@@ -3330,13 +3357,19 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
 
 COLLECTION_DISPLAY_DEFAULTS = {"view": "list",
                                "hidden_fields": [], "show_body": True,
-                               "show_updated": True, "show_image": True,
+                               "show_updated": True, "image_size": "medium",
                                # "" = don't group / the default sort. group_by
                                # and sort_by are a declared field key; sort_by
                                # also takes the two intrinsic columns below.
                                "group_by": "", "sort_by": "", "sort_dir": "desc"}
 # Sort keys that aren't declared fields: every item has these.
 SORT_INTRINSICS = ("updated", "title")
+# How big the featured image renders in the item rows — "off" is the old
+# show_image=False. ONE pref rather than a boolean plus a size: "don't show it"
+# is the small end of the same question, and two keys could disagree (shown but
+# sized off?). The pixel values are the webapp's — see collection.html — because
+# how big is a rendering call, exactly like which fields show.
+COLLECTION_IMAGE_SIZES = ("off", "small", "medium", "large")
 
 
 def _coll_display(row) -> dict:
@@ -3354,7 +3387,7 @@ def set_collection_display(name: str, view: Optional[str] = None,
                            hidden_fields: Optional[list[str]] = None,
                            show_body: Optional[bool] = None,
                            show_updated: Optional[bool] = None,
-                           show_image: Optional[bool] = None,
+                           image_size: Optional[str] = None,
                            group_by: Optional[str] = None,
                            sort_by: Optional[str] = None,
                            sort_dir: Optional[str] = None) -> dict:
@@ -3369,7 +3402,9 @@ def set_collection_display(name: str, view: Optional[str] = None,
     overwritten the first time the popover was opened, so presentation is now
     the browser's alone), hidden_fields (declared field keys to leave off the
     table columns / list badges),
-    show_body/show_updated/show_image (the row extras), and
+    show_body/show_updated (the row extras) plus image_size
+    ('off'|'small'|'medium'|'large' — how big the featured image renders in a
+    row, 'off' being not at all), and
     how the items are arranged: group_by (a declared field key — items are
     bucketed under one heading per distinct value, ones missing it last) plus
     sort_by ('updated', 'title', or a declared field key) and sort_dir
@@ -3385,6 +3420,9 @@ def set_collection_display(name: str, view: Optional[str] = None,
     Unknown field keys error rather than silently sticking."""
     if view is not None and view not in COLLECTION_VIEWS:
         return {"error": f"bad view {view!r}; use one of {list(COLLECTION_VIEWS)}"}
+    if image_size is not None and image_size not in COLLECTION_IMAGE_SIZES:
+        return {"error": f"bad image_size {image_size!r}; use one of "
+                         f"{list(COLLECTION_IMAGE_SIZES)}"}
     with db() as conn:
         row, cands = _resolve_collection(conn, name)
         if not row:
@@ -3412,8 +3450,9 @@ def set_collection_display(name: str, view: Optional[str] = None,
             if sort_dir not in ("asc", "desc"):
                 return {"error": f"bad sort_dir {sort_dir!r}; use 'asc' or 'desc'"}
             disp["sort_dir"] = sort_dir
-        for k, v in (("show_body", show_body), ("show_updated", show_updated),
-                     ("show_image", show_image)):
+        if image_size is not None:
+            disp["image_size"] = image_size
+        for k, v in (("show_body", show_body), ("show_updated", show_updated)):
             if v is not None:
                 disp[k] = bool(v)
         conn.execute("UPDATE collections SET display=? WHERE id=?",

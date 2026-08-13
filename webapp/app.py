@@ -1421,7 +1421,7 @@ async def collection_display(request: Request, name: str):
     extras. A website-only write path through server.set_collection_display
     (never a FastMCP tool — the model proposes a collection's shape at creation;
     what renders is the user's call). Body: {view?, hidden_fields?,
-    group_by?, sort_by?, sort_dir?, show_body?, show_updated?, show_image?}."""
+    group_by?, sort_by?, sort_dir?, show_body?, show_updated?, image_size?}."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     res = server.set_collection_display(
@@ -1431,7 +1431,7 @@ async def collection_display(request: Request, name: str):
         group_by=body.get("group_by"), sort_by=body.get("sort_by"),
         sort_dir=body.get("sort_dir"),
         show_body=body.get("show_body"),
-        show_updated=body.get("show_updated"), show_image=body.get("show_image"))
+        show_updated=body.get("show_updated"), image_size=body.get("image_size"))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 

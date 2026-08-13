@@ -227,6 +227,32 @@
     html[data-theme="dark"] .chat-md th, html[data-theme="dark"] .chat-md td { border-color: #262626; }
     html[data-theme="dark"] .chat-md blockquote { border-left-color: #262626; color: #a3a3a3; }
     html[data-theme="dark"] .chat-md hr { border-top-color: #262626; }
+
+    /* Pictures in prose are THUMBNAILS, not illustrations that own the page. A
+       recipe body carries several step photos; at full width each one pushed the
+       method itself a screen further down, so the text stopped being the thing
+       you read. Uniform tiles (fixed box + object-fit) let several sit side by
+       side as a contact sheet whatever their native aspect, and the full image is
+       one click away in the lightbox — see [data-zoom] below. Same treatment for
+       .item-hero, the item page's featured image. */
+    .chat-md img, .item-hero {
+      display: inline-block; vertical-align: top;
+      object-fit: cover; border-radius: 4px; border: 1px solid #e5e7eb;
+      cursor: zoom-in; background: #f9fafb;
+    }
+    .chat-md img { width: 8rem; height: 6rem; margin: 0.35rem 0.35rem 0.35rem 0; }
+    .item-hero   { width: 12rem; height: 9rem; }
+    html[data-theme="dark"] .chat-md img, html[data-theme="dark"] .item-hero {
+      border-color: #262626; background: #171717;
+    }
+
+    /* Lightbox: the expanded view of any zoomable image. Backdrop-only chrome —
+       click anywhere (or Esc) closes, which is why the whole overlay is zoom-out. */
+    #lightbox { position: fixed; inset: 0; z-index: 60; display: none;
+                align-items: center; justify-content: center;
+                background: rgba(0,0,0,0.88); padding: 1.25rem; cursor: zoom-out; }
+    #lightbox[data-open] { display: flex; }
+    #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
   </style>
   {% block head %}{% endblock %}
 </head>
@@ -573,6 +599,38 @@
         requestAnimationFrame(frame);
       }
       requestAnimationFrame(frame);
+    })();
+  </script>
+  {# Lightbox. Prose images and the item hero render as small tiles (see the CSS
+     above), so the full picture needs somewhere to go. ONE delegated listener on
+     the document covers every image on every page — including ones rendered after
+     load (marked's output, the chat panel's feed swap), which a per-image binding
+     would miss. The click is stopped as well as prevented because an image can sit
+     inside a link (the person page's entry_card wraps its whole body in an <a>);
+     without that, expanding a photo would navigate away instead. #}
+  <div id="lightbox" role="dialog" aria-modal="true" aria-label="Expanded image"><img alt=""></div>
+  <script>
+    (function () {
+      var box = document.getElementById('lightbox'), img = box.querySelector('img');
+      function close() {
+        box.removeAttribute('data-open');
+        img.removeAttribute('src');          // stop decoding a full-size image we've hidden
+        document.body.style.overflow = '';
+      }
+      document.addEventListener('click', function (e) {
+        if (box.hasAttribute('data-open')) { close(); return; }
+        var t = e.target;
+        if (!t || t.tagName !== 'IMG') return;
+        if (!t.matches('.chat-md img, [data-zoom]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        img.src = t.currentSrc || t.src;
+        box.setAttribute('data-open', '1');
+        document.body.style.overflow = 'hidden';
+      }, true);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && box.hasAttribute('data-open')) close();
+      });
     })();
   </script>
   {% block scripts %}{% endblock %}
