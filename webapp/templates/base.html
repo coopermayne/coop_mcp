@@ -256,10 +256,14 @@
          [hidden] and closes it on outside-click / Escape. #}
       <div class="relative">
         <button type="button" data-menu-toggle aria-label="Menu" aria-haspopup="true" aria-expanded="false" title="Menu"
-                class="flex hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">
+                class="flex hover:text-black transition-colors {% if active in ('graphs', 'collections') %}text-black{% endif %}">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div data-menu hidden class="absolute right-0 top-full mt-2 w-44 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-20">
+          <a href="{{ base }}/collections" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'collections' %}text-black{% else %}text-gray-500{% endif %}">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <span>Collections</span>
+          </a>
           <a href="{{ base }}/graphs" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'graphs' %}text-black{% else %}text-gray-500{% endif %}">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
             <span>Graphs</span>

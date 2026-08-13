@@ -843,3 +843,66 @@ def graph_data() -> dict:
     return {"weight": weight, "drinks": drinks, "exercises": exercises,
             "rotation_ids": rotation_ids, "today": server.today(),
             "weight_goal": goal}
+
+
+# --------------------------------------------------------------------------- #
+# Notes & collections — the flexible layer's browse reads. Rendering is driven
+# by each collection's own metadata (fields + display_hint), so a new collection
+# gets a page without any code here changing. Writes stay on the MCP tools.
+# --------------------------------------------------------------------------- #
+
+def _item_view(r, fields: list[dict] | None = None) -> dict:
+    """One item shaped for a template: parsed data (ordered by the collection's
+    field order when known), tags as a list, updated day for the byline."""
+    data_blob = server._item_data(r)
+    if fields:
+        ordered = [(f["key"], f["label"], data_blob.get(f["key"]))
+                   for f in fields if f["key"] in data_blob]
+    else:
+        ordered = [(k, k.replace("_", " "), v) for k, v in data_blob.items()]
+    return {"item_id": r["id"], "title": r["title"], "body": r["body"] or "",
+            "data": ordered, "data_map": data_blob,
+            "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()],
+            "updated": (r["updated_at"] or "")[:10]}
+
+
+def collections_overview() -> dict:
+    """Every collection (with item count) plus the inbox notes — /collections."""
+    with server.db() as conn:
+        counts = {r["collection_id"]: r["n"] for r in conn.execute(
+            "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
+        colls = [{"name": r["name"], "description": r["description"] or "",
+                  "display_hint": r["display_hint"], "count": counts.get(r["id"], 0)}
+                 for r in conn.execute("SELECT * FROM collections ORDER BY name")]
+        notes = [_item_view(r) for r in conn.execute(
+            "SELECT * FROM items WHERE collection_id IS NULL ORDER BY updated_at DESC")]
+    return {"collections": colls, "notes": notes}
+
+
+def collection_page(name: str) -> dict | None:
+    """One collection with its items, newest-updated first, or None."""
+    with server.db() as conn:
+        c = conn.execute("SELECT * FROM collections WHERE lower(name)=?",
+                         ((name or "").strip().lower(),)).fetchone()
+        if not c:
+            return None
+        fields = server._coll_fields(c)
+        items = [_item_view(r, fields) for r in conn.execute(
+            "SELECT * FROM items WHERE collection_id=? ORDER BY updated_at DESC",
+            (c["id"],))]
+    return {"name": c["name"], "description": c["description"] or "",
+            "display_hint": c["display_hint"], "fields": fields, "rows": items}
+
+
+def item_page(item_id: int) -> dict | None:
+    """One item in full, with its collection context for the kicker/labels."""
+    with server.db() as conn:
+        r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if not r:
+            return None
+        c = conn.execute("SELECT * FROM collections WHERE id=?",
+                         (r["collection_id"],)).fetchone() if r["collection_id"] else None
+        view = _item_view(r, server._coll_fields(c) if c else None)
+    view["collection"] = c["name"] if c else None
+    view["created"] = (r["created_at"] or "")[:10]
+    return view

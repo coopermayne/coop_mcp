@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ c.name }} · Journal{% endblock %}
+{% block content %}
+
+<a href="{{ base }}/collections" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Collections</a>
+
+<div class="mt-4 flex items-baseline justify-between mb-2">
+  <h1 class="text-2xl font-bold tracking-tight">{{ c.name }}</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ c.rows | length }}</span>
+</div>
+{% if c.description %}<p class="text-sm text-gray-500 mb-6">{{ c.description }}</p>{% else %}<div class="mb-6"></div>{% endif %}
+
+{% if not c.rows %}
+<p class="text-sm text-gray-400">Nothing here yet.</p>
+
+{% elif c.display_hint == 'table' and c.fields %}
+{# Table hint: one row per item, one column per declared field. Wide tables
+   scroll inside their own container so the page never scrolls sideways. #}
+<div class="border border-gray-200 rounded-[4px] overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-[10px] uppercase tracking-widest text-gray-400 border-b border-gray-200">
+        <th class="px-5 sm:px-6 py-2.5 font-medium">Title</th>
+        {% for f in c.fields %}<th class="px-4 py-2.5 font-medium whitespace-nowrap">{{ f.label }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for it in c.rows %}
+      <tr class="hover:bg-gray-50 transition-colors">
+        <td class="px-5 sm:px-6 py-3">
+          <a href="{{ base }}/item/{{ it.item_id }}" class="font-medium hover:underline underline-offset-2">{{ it.title }}</a>
+        </td>
+        {% for f in c.fields %}
+        <td class="px-4 py-3 text-gray-600 whitespace-nowrap tabular-nums">{{ it.data_map.get(f.key, '') }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+{# 'list' and 'checklist' render the same quiet stack; a checklist's status-ish
+   select field already reads as the leading badge. #}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for it in c.rows %}
+  <a href="{{ base }}/item/{{ it.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    <div class="flex items-baseline justify-between gap-3">
+      <span class="text-sm font-medium">{{ it.title }}</span>
+      {% if it.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ it.updated | short_date }}</span>{% endif %}
+    </div>
+    {% if it.data or it.tags %}
+    <div class="flex flex-wrap items-center gap-2 mt-1.5">
+      {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
+      {% for t in it.tags %}<span class="badge">{{ t }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}
