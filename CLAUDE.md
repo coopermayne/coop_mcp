@@ -24,10 +24,12 @@ origin.
 capture through the app's own chat, so the journal server's people/entry tools
 (`add_journal_entry` … `get_briefing`; the `CONNECTOR_HIDDEN_TOOLS` set) are hidden
 from MCP clients by `HiddenToolsMiddleware` — dropped from `tools/list`, rejected on
-`tools/call`, plus a gate on `delete_record(kind="entry")`. The app chat is untouched
+`tools/call`. Deleting an entry needs no special gate — it's its own tool
+(`journal_delete_entry`), hidden like the rest, rather than a `kind` on a shared
+delete. The app chat is untouched
 because it bypasses middleware (`list_tools(run_middleware=False)` + direct function
 calls). Same split for the model-facing prose: the `mcp` instance's `instructions`
-are the CONNECTOR text (intake + collections; `get_intake` carries `now` since
+are the CONNECTOR text (intake + collections; `intake_summary` carries `now` since
 `get_briefing` is hidden there), while the chat's journal agent takes
 `JOURNAL_CHAT_INSTRUCTIONS`, the full contract — shared blocks are composed into
 both strings so the surfaces can't drift. Adding a journal tool = adding its name to
@@ -141,12 +143,41 @@ There is no exercise-selection or progression logic in the server either.
   `openWorldHint` is False everywhere (one local SQLite file, no network — the no-LLM rule
   showing up in the protocol). They're advisory metadata; the real guard is
   `AllowlistMiddleware`.
+- **Connector tool names are `domain_verb`, and the domain prefix is load-bearing.**
+  The journal connector carries two unrelated domains at once — the eating log and
+  the notes/collections layer — so every tool it advertises is prefixed `intake_*`,
+  `notes_*` or `collections_*` (`intake_log`, `notes_search`, `collections_save`, …).
+  Two reasons, both about the model rather than tidiness. First, **"item" was
+  ambiguous**: an intake item (a beer) and a collection item (a recipe) are different
+  things, and the old `find_past_items` (eating) sat in the tool list next to
+  `search_items` (notes) with nothing to tell them apart. Second, clients render
+  `tools/list` in name order, so the prefix makes the list group itself by domain.
+  The MCP name is set with `@mcp.tool(name=…)` and the PYTHON function keeps its
+  original name — the webapp calls these functions directly (`webapp/app.py`,
+  `webapp/chat.py`), so renaming only the wire name keeps that surface untouched.
+  Note the one asymmetry: `webapp/chat.py` dispatches by the MCP name (it lifts tools
+  from `list_tools`), so its `_WRITE_TOOLS` set and `_tool_chip` branches key off the
+  NEW names. The trainer server is a single domain on its own connector and needs no
+  prefix. Adding a connector tool = giving it a domain prefix.
+- **Destructive tools are narrow, not kind-scoped — on the journal side.** The journal
+  server has four deletes (`journal_delete_entry`, `intake_delete`, `notes_delete`,
+  `collections_delete`) rather than one `delete_record(kind=…)`. A `kind` string is a
+  thing the model can get wrong on an irreversible call, and it forced the awkward
+  case where ONE kind (`entry`) had to be blocked on the connector while the others
+  stayed — which was a special case inside `HiddenToolsMiddleware.on_call_tool`. As
+  separate tools, hiding the journal delete is just its name in
+  `CONNECTOR_HIDDEN_TOOLS`, like every other journal tool. They all still call the
+  shared `_delete_record` helper, so the table mapping and the set-renumbering live in
+  one place. The TRAINER keeps its kind-scoped `delete_record` (`workout`/`set`/
+  `weight`): one domain, one connector, nothing to disambiguate.
 
 ## Files
 
 - `server.py` — everything: schema, matching, both FastMCP instances (`mcp` =
   journal+eating, `trainer_mcp` = training), all tools, shared auth wiring, the
-  shared `_delete_record` helper (each server exposes a kind-scoped `delete_record`),
+  shared `_delete_record` helper (the trainer exposes it as a kind-scoped
+  `delete_record`; the journal splits it into four narrow tools — see the naming
+  convention below),
   and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
 - `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): serves the
   journal MCP + browser UI (`/app`) on the main origin, and the trainer MCP either on
@@ -181,7 +212,7 @@ There is no exercise-selection or progression logic in the server either.
   which it imports `server.py` from.
 - `icons.py` — GENERATED (`scripts/build_icon_set.py`): the collection icon set, a
   curated ~130-name subset of **Lucide** vendored as raw SVG shapes, plus its
-  grouping. The pack matters because the MODEL picks the name: `list_icons()` ships
+  grouping. The pack matters because the MODEL picks the name: `collections_list_icons()` ships
   the set over MCP and `_bad_icon` rejects anything else with the closest matches, so
   it can't invent a Lucide name the app doesn't carry. Lucide because the nav bar's
   hand-written icons already are Lucide strokes. Re-run the script (needs npm once)
@@ -313,14 +344,13 @@ working.
   row, a beer is a row, a 12oz glass of water is a row — food, alcohol and water are
   the same kind of fact, so they share one table, one tool path, and one set of
   columns. There is no per-nutrient special case anywhere above this table.
-  `log_intake` inserts ONE item (the model calls it once per thing; `position` is the
+  `intake_log` inserts ONE item (the model calls it once per thing; `position` is the
   server-assigned order within the day, the same append as entries' `day_position`);
   there is deliberately NO time-of-day on an item — a day is a day, and `position`
   already carries the sequence (a short-lived `at_time` column was tried and removed;
   a DB that ran that version keeps the orphan column, which nothing reads — every
   INSERT here names its columns, so it's inert either way);
-  `update_intake_item` edits one by id; `delete_record(kind="intake_item")` removes
-  one.
+  `intake_update` edits one by id; `intake_delete` removes one.
   **Day totals are DERIVED, never stored** (`SUM ... GROUP BY food_date`). That's the
   load-bearing decision: a stored total drifts from the items it claims to summarize,
   and correcting one item would mean re-deriving the day by hand — i.e. asking an LLM
@@ -329,13 +359,13 @@ working.
   `sodium_mg`, `fiber_g`, `standard_drinks`, `water_oz`) are per-item and OPTIONAL,
   staying NULL until filled in, so a day described only in words is "unestimated",
   never a zero-calorie day; a nutrient no item carries is ABSENT from the day's
-  totals rather than 0. `get_intake`'s averages are per nutrient over the days
+  totals rather than 0. `intake_summary`'s averages are per nutrient over the days
   that carry it, so each has its OWN denominator (returned with `logged_days`). The
   `NUTRIENTS` tuple drives every sum/average/render site, so adding a nutrient is one
   tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
   Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
   estimate, made in conversation; there is no food database in the server — but the
-  intake log IS its own food database for repeats: `find_past_items(query)` fuzzily
+  intake log IS its own food database for repeats: `intake_find_past(query)` fuzzily
   searches everything ever logged (token-level scoring — exact/substring/Jaro-
   Winkler/phonetic per query word — grouped by identical item text, latest numbers
   win, ranked by match quality with a small ~30-day-half-life recency bonus so this
@@ -346,7 +376,7 @@ working.
   (which Chobani?) and a wrong-but-confident auto-resolve is worse than a
   re-estimate; the log needs no gardening and is always as current as the last
   meal. And day-so-far questions are answered from the DB, never from a chat-side
-  running tally (`log_intake` returns `day_totals` on every write; other clients —
+  running tally (`intake_log` returns `day_totals` on every write; other clients —
   the phone app, another conversation — may be writing the same day); both
   contracts live in the server `instructions` + the intake docstrings.
   The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
@@ -372,7 +402,7 @@ working.
   (`macros.nutrient_ring`), read against `data.nutrient_targets()` — the stored
   eating profile's `targets` numbers merged over the `data.NUTRIENT_TARGETS`
   defaults, resolved per render. The NUMBERS live in the DB now (settings
-  `eating_profile`, written by `update_eating_profile`) so the rings and the model
+  `eating_profile`, written by `intake_set_profile`) so the rings and the model
   coach against the same goals; what stays display-only is DIRECTION — which
   nutrient is a ceiling vs a floor is a webapp reading, never stored. A `ceiling`
   target (sodium, calories, alcohol)
@@ -501,10 +531,10 @@ working.
 - `collections` + `items` — the FLEXIBLE layer (design: `plan-2026-08-13-collections.md`):
   everything the user wants kept that doesn't need bespoke schema (recipes, trip
   ideas, …). An item with `collection_id` NULL is an **inbox note** — the capture
-  default; a collection is model-proposed, user-approved (`save_collection` blocks
+  default; a collection is model-proposed, user-approved (`collections_save` blocks
   near-duplicate names with "did you mean?" candidates unless `force=True`), wears an
   `icon` (a name from the vendored Lucide set — see `icons.py`; NULL draws the default
-  folder — written ONLY by `save_collection`: the glyph is part of what a collection IS,
+  folder — written ONLY by `collections_save`: the glyph is part of what a collection IS,
   so it's the model's like `fields`, not a rendering pref the Display popover touches), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
   text|number|date|select). Shape is the model's; LAYOUT is not — the legacy
@@ -513,7 +543,7 @@ working.
   FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
   item carries one whether or not it's filed and no collection has to declare
   an image field; http/https only, since the webapp drops it straight into an
-  `<img src>`, and `""` clears it via `update_item`. Rendered as a thumbnail on
+  `<img src>`, and `""` clears it via `notes_update`. Rendered as a thumbnail on
   every item row — collection page, inbox, search — and full-width on the item
   page, each with `onerror="this.remove()"` so a dead URL leaves nothing rather
   than a broken-image box. Collections predating the column DECLARED their own
@@ -529,16 +559,16 @@ working.
   words the title and body already carried. Dropped rather than made filterable
   (`init_db` drops the column and rebuilds `items_fts`, which names its columns);
   "fields stay few" argues the same way for tags. Promotion
-  (note → collection item) is `move_to_collection`: pure data movement, reversible,
+  (note → collection item) is `notes_file`: pure data movement, reversible,
   NO DDL — the bespoke-table rung of the ladder stays a deliberate human+code
   migration in `init_db()`, never an MCP call. `items_fts` (title/body, same
-  trigger pattern as `entries_fts`) backs `search_items`, through `_fts_query` so
-  punctuation is safe. `update_item` merges `data` per key (null drops) but replaces
-  the body wholesale (read-before-write via `get_item`). `delete_record` gained two
-  kinds: `"item"` (gone for good) and `"collection"` (shell only — FK is ON DELETE
+  trigger pattern as `entries_fts`) backs `notes_search`, through `_fts_query` so
+  punctuation is safe. `notes_update` merges `data` per key (null drops) but replaces
+  the body wholesale (read-before-write via `notes_get`). Deletes are two tools:
+  `notes_delete` (gone for good) and `collections_delete` (shell only — FK is ON DELETE
   SET NULL, so its items demote to inbox notes). Collections are addressed by NAME
-  everywhere else (`save_item`, `move_to_collection`), so `list_collections` and
-  `save_collection` both return the `id` that this one kind needs — without it a
+  everywhere else (`notes_save`, `notes_file`), so `collections_list` and
+  `collections_save` both return the `id` that this one kind needs — without it a
   collection was undeletable over MCP — reachable by name but not by handle.
   The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
@@ -569,14 +599,14 @@ working.
   an item has no done-state to check), migrated to `list` in `init_db`.
   `/collections` also carries a title-only search across every collection AND the
   inbox (`data.search_item_titles`, plain LIKE) — a "where did I file that"
-  lookup, deliberately not the model's FTS `search_items`. The three
+  lookup, deliberately not the model's FTS `notes_search`. The three
   judgment rules (capture first/file second; structure proposed, never imposed;
   fields stay few) live in the journal server `instructions`.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
   `update_profile` and surfaced by `get_fitness_briefing`, and `eating_profile`
   (its journal-side twin: durable eating facts — goals, stats, coaching context —
   plus the one structured key `targets`, a flat {nutrient: number} dict of daily
-  goals) merged via `update_eating_profile` and surfaced by `get_intake`, so a new
+  goals) merged via `intake_set_profile` and surfaced by `intake_summary`, so a new
   conversation needs no pasted preamble. The webapp's rings read `targets` too
   (`data.nutrient_targets()` merges it over the display defaults) — one source of
   truth for goals, ceiling/floor direction still webapp-only.

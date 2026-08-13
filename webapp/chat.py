@@ -51,7 +51,7 @@ _JOURNAL_BLURB = (
     "journal page — the user is talking to you directly on their phone or laptop. "
     "Be concise and warm. After you capture something, say briefly what you "
     "recorded. Use the tools to both capture entries and answer recall questions "
-    "about people and past days. Food, alcohol and water are logged with log_intake, one "
+    "about people and past days. Food, alcohol and water are logged with intake_log, one "
     "call per item — this panel and the connector are the only ways in, so if the user "
     "mentions eating or drinking, log it."
 )
@@ -351,7 +351,10 @@ def _maybe_rollover(key: tuple) -> None:
 # label the tool chips the UI shows, never to gate execution.
 _WRITE_TOOLS = {
     "add_journal_entry", "update_entry", "save_person", "link_mentions",
-    "merge_people", "delete_record", "log_intake", "update_intake_item",
+    "merge_people", "delete_record", "journal_delete_entry",
+    "intake_log", "intake_update", "intake_delete", "intake_set_profile",
+    "notes_save", "notes_update", "notes_delete", "notes_file",
+    "collections_save", "collections_delete",
     "log_workout", "update_workout", "update_set", "save_exercise",
     "log_bodyweight", "update_profile",
     "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
@@ -469,8 +472,50 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     elif name == "merge_people":
         href = "/people"
         summary = "Merged two people"
-    elif name == "delete_record":
+    elif name == "delete_record":  # trainer server's kind-scoped delete
         summary = f"Deleted a {g('kind', 'record')}"
+    elif name == "journal_delete_entry":
+        href = "/journal"
+        summary = "Deleted an entry"
+    # Eating log.
+    elif name == "intake_log":
+        href = "/food"
+        it = g("item")
+        summary = f"Logged {it}" if it else "Logged intake"
+    elif name == "intake_update":
+        href = "/food"
+        summary = "Corrected a logged item"
+    elif name == "intake_delete":
+        href = "/food"
+        summary = "Deleted a logged item"
+    elif name == "intake_set_profile":
+        summary = "Updated the eating profile"
+    elif name == "intake_summary":
+        summary = "Loaded the eating log"
+    elif name == "intake_find_past":
+        summary = "Looked up a past meal"
+    # Notes & collections.
+    elif name == "notes_save":
+        href = "/collections"
+        t = g("title")
+        summary = f"Saved {t}" if t else "Saved a note"
+    elif name in ("notes_update", "notes_file"):
+        href = "/collections"
+        summary = "Updated a note" if name == "notes_update" else "Filed a note"
+    elif name == "notes_delete":
+        href = "/collections"
+        summary = "Deleted a note"
+    elif name in ("notes_get", "notes_list", "notes_search"):
+        summary = "Looked up notes"
+    elif name == "collections_save":
+        href = "/collections"
+        nm = g("name")
+        summary = f"Saved the {nm} collection" if nm else "Saved a collection"
+    elif name == "collections_delete":
+        href = "/collections"
+        summary = "Deleted a collection"
+    elif name in ("collections_list", "collections_list_icons"):
+        summary = "Looked up collections"
     elif name in ("search_entries", "get_entry"):
         summary = "Searched the journal"
     elif name in ("list_people", "get_person_history", "get_related_people"):

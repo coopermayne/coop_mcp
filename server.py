@@ -225,6 +225,7 @@ CONNECTOR_HIDDEN_TOOLS = frozenset({
     "list_pending_mentions", "list_people", "get_person_history",
     "search_entries", "get_entry", "update_entry", "reorder_entries",
     "merge_people", "get_related_people", "get_briefing",
+    "journal_delete_entry",
 })
 
 
@@ -237,8 +238,9 @@ class HiddenToolsMiddleware(Middleware):
     so hiding here shapes only what connectors see; the chat keeps the full tool
     set. on_list_tools drops the hidden names from discovery; on_call_tool
     rejects them too (a name a model happens to know must not work where it
-    isn't advertised) and closes the one indirect path, delete_record on a
-    journal entry.
+    isn't advertised). Deleting a journal entry needs no special case: it is its
+    own tool (journal_delete_entry) rather than a `kind` on a shared delete, so
+    hiding the name is the whole gate.
     """
 
     async def on_list_tools(self, context, call_next):
@@ -248,10 +250,6 @@ class HiddenToolsMiddleware(Middleware):
     async def on_call_tool(self, context, call_next):
         if context.message.name in CONNECTOR_HIDDEN_TOOLS:
             raise ToolError(f"Unknown tool: {context.message.name!r}")
-        if (context.message.name == "delete_record"
-                and (context.message.arguments or {}).get("kind") == "entry"):
-            raise ToolError("Journal entries are managed in the app's own chat, "
-                            "not on this connector.")
         return await call_next(context)
 
 
@@ -263,7 +261,7 @@ class HiddenToolsMiddleware(Middleware):
 # (webapp/chat.py). The shared blocks are written once and composed into both
 # texts so the surfaces can't drift; the Pacific block is parameterized on the
 # tool that carries `now`, because get_briefing is hidden from the connector —
-# there, get_intake is the clock.
+# there, intake_summary is the clock.
 # ---------------------------------------------------------------------------
 
 def _pacific_block(anchor_tool: str) -> str:
@@ -277,22 +275,22 @@ any bare day reference against them before defaulting or saving."""
 
 _INTAKE_BLOCK = """\
 Eating and drinking are logged as intake items: when the user mentions eating or
-drinking, call log_intake — ONCE PER ITEM ("a sandwich and a beer" is two calls).
-Corrections go through update_intake_item by id; day totals are summed from the
+drinking, call intake_log — ONCE PER ITEM ("a sandwich and a beer" is two calls).
+Corrections go through intake_update by id; day totals are summed from the
 items, so you never recompute a day yourself. Three rules keep the numbers
 trustworthy:
   - TOTALS COME FROM THE DB, not from a tally you keep in conversation. Other clients
     (the phone app, another chat) may write to the same day, so your context is not
-    the day. log_intake returns `day_totals` after every write; answer "how am I
-    doing" from those or a fresh get_intake.
+    the day. intake_log returns `day_totals` after every write; answer "how am I
+    doing" from those or a fresh intake_summary.
   - REPEAT FOODS get looked up, not re-estimated: the intake log is its own food
     database. When something sounds like a repeat — leftovers across several days, a
-    staple, "same as yesterday" — find_past_items(name) surfaces what it was logged
+    staple, "same as yesterday" — intake_find_past(name) surfaces what it was logged
     at before (fuzzy, so spelling doesn't matter); reuse those settled numbers when
     it's genuinely the same thing (your judgment), estimate fresh when it isn't.
     Novel and one-off dishes you estimate yourself, as always.
   - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut) live in
-    the eating profile — returned by get_intake, updated via update_eating_profile —
+    the eating profile — returned by intake_summary, updated via intake_set_profile —
     not in whatever a conversation happens to say. Read it before coaching; fold in
     durable changes as they come up, like a person's summary."""
 
@@ -302,12 +300,12 @@ Beyond the structured logs there is one FLEXIBLE layer — notes & collections �
 everything else the user wants kept (recipes, trip ideas, books, whatever comes up).
 Three rules govern it:
   - CAPTURE FIRST, FILE SECOND. "Save this" always succeeds: if it clearly fits an
-    existing collection (check list_collections — it's cheap), file it there; otherwise
-    save_item with no collection leaves it as an inbox note. Never block a save on
+    existing collection (check collections_list — it's cheap), file it there; otherwise
+    notes_save with no collection leaves it as an inbox note. Never block a save on
     deciding structure.
   - STRUCTURE IS PROPOSED, NEVER IMPOSED. When inbox notes cluster around one topic
     (a handful on the same theme), SUGGEST a collection and create it only on the
-    user's yes — then promote the notes with move_to_collection, extracting each
+    user's yes — then promote the notes with notes_file, extracting each
     note's fields from its own text. One stray idea never warrants a new collection.
   - FIELDS STAY FEW. A field earns its place by being worth scanning in a list
     (status, a date, a rating); everything else is prose in the item's body. Facts
@@ -351,7 +349,7 @@ tells them apart.
 
 {_pacific_block("get_briefing")}
 
-Intake is its own log, not a journal entry — log eating and drinking with log_intake
+Intake is its own log, not a journal entry — log eating and drinking with intake_log
 instead of, or as well as, writing an entry about it.
 {_INTAKE_BLOCK}
 
@@ -373,13 +371,19 @@ app's own chat and is not exposed here, so treat "log my lunch" or "save this
 idea" as the whole job. The server only stores and sums — turning "a chipotle
 bowl" into numbers is your judgment.
 
-{_pacific_block("get_intake")}
+Tool names carry their domain as a prefix: `intake_*` is the eating log,
+`notes_*` is a single note (filed or in the inbox), `collections_*` is the
+collection it's filed in. Note that a "note" and an "intake item" are different
+things — intake_find_past searches what you've EATEN, notes_search searches what
+you've SAVED.
+
+{_pacific_block("intake_summary")}
 
 {_INTAKE_BLOCK}
 
 {_COLLECTIONS_BLOCK}
 
-Start an eating session with get_intake: it returns `now`, the recent days with
+Start an eating session with intake_summary: it returns `now`, the recent days with
 their summed totals, and the stored eating profile (targets, goals, coaching
 context), so you coach in context rather than from a blank slate.
 {_TRAINER_NOTE}""")
@@ -2122,7 +2126,8 @@ def reorder_entries(entry_date: str, ordered_entry_ids: list[int]) -> dict:
 
 
 def _delete_record(kind: str, id: int) -> dict:
-    """Shared delete implementation behind both servers' delete_record tools. Maps
+    """Shared delete implementation behind every delete tool on both servers (the
+    journal's four narrow ones, the trainer's kind-scoped delete_record). Maps
     `kind` to its table, deletes the row, and (for sets) renumbers the remaining
     set_index so it stays contiguous."""
     tables = {"entry": "entries", "drink": "drinks", "intake_item": "intake_items",
@@ -2162,28 +2167,44 @@ def _delete_record(kind: str, id: int) -> dict:
     return out
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
-def delete_record(kind: str, id: int) -> dict:
-    """Permanently delete one journal-side record. Irreversible — confirm first.
+# Four narrow deletes rather than one kind-scoped delete_record. Each domain owns
+# its own destructive verb, so the model never picks a `kind` string (and never
+# picks the WRONG one), and the journal-only delete is gated by simply not being
+# advertised on the connector — see HiddenToolsMiddleware.
+@mcp.tool(name="journal_delete_entry", annotations=DESTRUCTIVE)
+def journal_delete_entry(entry_id: int) -> dict:
+    """Permanently delete one journal entry and its mentions (FTS stays in sync).
+    Irreversible — confirm first. Find the id with get_entry/search_entries.
 
-    `kind` selects what `id` refers to:
-      - "entry" — a journal entry (its mentions go too; FTS stays in sync). App
-        chat only — on the MCP connector this kind is rejected, like the rest of
-        the journal surface.
-      - "intake_item" — one logged thing (a meal, a beer, a glass of water). The
-        day's totals re-derive from what's left, so nothing else needs fixing.
-      - "item" — one note/collection item. Gone for good, unlike…
-      - "collection" — the collection SHELL only: its items survive, demoted to
-        inbox notes (returned as items_demoted_to_inbox). Un-files, never
-        destroys the notes.
-    Find ids with get_entry/search_entries, get_intake/log_intake for intake,
-    search_items/list_items for notes, list_collections for collections.
-    (Workouts and sets are deleted via the trainer server's own delete_record.)"""
-    if kind not in ("entry", "intake_item", "item", "collection"):
-        return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['entry', 'intake_item', 'item', 'collection'] "
-                         "(use the trainer server for workout/set)"}
-    return _delete_record(kind, id)
+    App chat only: this tool is not advertised on the MCP connector, where the
+    whole journal surface is hidden."""
+    return _delete_record("entry", entry_id)
+
+
+@mcp.tool(name="intake_delete", annotations=DESTRUCTIVE)
+def intake_delete(item_id: int) -> dict:
+    """Permanently delete one logged intake item — a meal, a beer, a glass of
+    water. Irreversible — confirm first. The day's totals re-derive from what's
+    left, so nothing else needs fixing. Find the id with intake_summary (or the
+    `item_id` intake_log returned)."""
+    return _delete_record("intake_item", item_id)
+
+
+@mcp.tool(name="notes_delete", annotations=DESTRUCTIVE)
+def notes_delete(item_id: int) -> dict:
+    """Permanently delete one note (inbox note or collection item). Gone for good,
+    unlike collections_delete, which spares its items. Irreversible — confirm
+    first. Find the id with notes_search/notes_list."""
+    return _delete_record("item", item_id)
+
+
+@mcp.tool(name="collections_delete", annotations=DESTRUCTIVE)
+def collections_delete(collection_id: int) -> dict:
+    """Delete a collection SHELL. Its items SURVIVE, demoted to inbox notes
+    (returned as items_demoted_to_inbox) — this un-files, it never destroys the
+    notes. Confirm first anyway: the collection's name, description, icon and
+    field definitions are gone. Find the id with collections_list."""
+    return _delete_record("collection", collection_id)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -2834,7 +2855,7 @@ def _day_totals(rows) -> dict:
     return totals
 
 
-@mcp.tool(annotations=WRITE)
+@mcp.tool(name="intake_log", annotations=WRITE)
 def log_intake(item: str = "", food_date: Optional[str] = None,
              calories: Optional[float] = None, protein_g: Optional[float] = None,
              carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
@@ -2849,10 +2870,10 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     every write instead of keeping your own running tally. Other clients (the phone
     app, another conversation) may be logging the same day, so your conversation
     memory is not the day; when asked how the day is going, answer from `day_totals`
-    or a fresh get_intake, never from arithmetic in your head.
+    or a fresh intake_summary, never from arithmetic in your head.
 
     REPEAT FOODS: before estimating something that sounds like a repeat — leftovers,
-    a staple, "same as yesterday" — check find_past_items and reuse the settled
+    a staple, "same as yesterday" — check intake_find_past and reuse the settled
     numbers (see its docstring for the judgment). Keep item TEXT consistent with the
     past log when it is the same thing, so the history stays searchable.
 
@@ -2875,8 +2896,8 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     says they didn't drink is `standard_drinks=0` with no other numbers — that's a
     record that the day was accounted for.
 
-    To fix a logged item use update_intake_item (by `item_id`, which this returns and
-    get_intake lists); to remove one, delete_record(kind="intake_item", id=...).
+    To fix a logged item use intake_update (by `item_id`, which this returns and
+    intake_summary lists); to remove one, intake_delete(item_id=...).
     Neither needs any arithmetic — the day's totals re-derive themselves.
 
     Args:
@@ -2925,20 +2946,20 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     return {**_item_row(row), "day_totals": _day_totals(rows)}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="intake_summary", annotations=READ_ONLY)
 def get_intake(days: int = 14, since: Optional[str] = None,
                   until: Optional[str] = None, include_items: bool = True) -> dict:
     """Read the intake log back: per day, its items (with ids) and summed totals.
 
     Use this before commenting on how someone's been eating, and to find the `item_id`
-    of the thing to correct — update_intake_item and delete_record both work by id, so
+    of the thing to correct — intake_update and intake_delete both work by id, so
     a fix never involves recomputing a day. Days with nothing logged are omitted; they
     are NOT zero-calorie days.
 
     This is also the eating session's anchor: it returns `now` (current Pacific
     date/time with `date`/`yesterday`/`tomorrow` precomputed — resolve bare day
     references against those exact strings) and the stored `profile` —
-    targets, goals, coaching context (see update_eating_profile) — so a fresh
+    targets, goals, coaching context (see intake_set_profile) — so a fresh
     conversation needs nothing pasted in. And it is the source of truth for where a
     day stands: other clients may have logged items your conversation never saw, so
     trust what comes back over any tally you've been keeping.
@@ -2996,7 +3017,7 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     return out
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(name="intake_update", annotations=WRITE_IDEMPOTENT)
 def update_intake_item(item_id: int, item: Optional[str] = None,
                        food_date: Optional[str] = None,
                        calories: Optional[float] = None, protein_g: Optional[float] = None,
@@ -3006,15 +3027,15 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
                        water_oz: Optional[float] = None,
                        note: Optional[str] = None) -> dict:
     """Correct ONE logged item. Only the args you pass are written, and they REPLACE
-    that item's values (log_intake adds a new item; this edits an existing one).
+    that item's values (intake_log adds a new item; this edits an existing one).
 
     This is the whole correction path: "that bowl was 600, not 1100" is one call with
     `calories=600` — you do NOT recompute the day, because the day's totals are summed
     from the items. `food_date` moves the item to another day. To remove it entirely,
-    delete_record(kind="intake_item", id=...). Find ids with get_intake.
+    intake_delete(item_id=...). Find ids with intake_summary.
 
     Args:
-        item_id: The item to correct (from get_intake or log_intake).
+        item_id: The item to correct (from intake_summary or intake_log).
         item: Replacement text for what it was.
         food_date: Move it to this day, YYYY-MM-DD (Pacific).
         calories: Replacement calories for this item.
@@ -3068,16 +3089,16 @@ def _get_eating_profile(conn: sqlite3.Connection) -> dict:
     return json.loads(row["value"]) if row else {}
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(name="intake_set_profile", annotations=WRITE_IDEMPOTENT)
 def update_eating_profile(profile: dict) -> dict:
     """Merge fields into the stored eating profile (JSON) — the trainer profile's
     twin. This is where targets and coaching context LIVE, so they survive across
-    conversations instead of being pasted into each one: get_intake returns the
+    conversations instead of being pasted into each one: intake_summary returns the
     profile, and a target changed here is changed everywhere at once (the webapp's
     rings read `targets` too).
 
     Pass only the keys you want to change; each top-level key you pass REPLACES that
-    key wholesale (read the current profile via get_intake first), a key set to null
+    key wholesale (read the current profile via intake_summary first), a key set to null
     is dropped, and unmentioned keys are preserved.
 
     One key is structured: `targets` is a flat {nutrient: number} dict on the intake
@@ -3142,7 +3163,7 @@ PAST_ITEM_FLOOR = 0.74  # forgiving on purpose: this returns CANDIDATES for you 
                         # costs a glance, a missed one costs a re-estimate.
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="intake_find_past", annotations=READ_ONLY)
 def find_past_items(query: str, limit: int = 8) -> dict:
     """Search everything the user has EVER logged eating, by name — fuzzily, so
     spelling, word order and partial names all land ("chobani yogrut", "yogurt
@@ -3241,8 +3262,8 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
         # collections that had one.
         if _IMAGE_FIELD.search(key) or _IMAGE_FIELD.search(f.get("label") or ""):
             return [], (f"don't declare an image field ({key!r}) — every item has a "
-                        "featured image already: pass featured_image_url= to save_item/"
-                        "update_item and the app renders the picture itself")
+                        "featured image already: pass featured_image_url= to notes_save/"
+                        "notes_update and the app renders the picture itself")
         ftype = (f.get("type") or "text").strip().lower()
         if ftype not in FIELD_TYPES:
             return [], f"bad type {ftype!r} for field {key!r}; use one of {list(FIELD_TYPES)}"
@@ -3264,7 +3285,7 @@ def _bad_data(data: dict, fields: list[dict], *, allow_null: bool = False) -> Op
         if not f:
             known = sorted(valid) or ["<none — the collection has no fields>"]
             return (f"unknown data key {k!r}; this collection's fields are {known}. "
-                    "Add the field first with save_collection, or put the fact in the body.")
+                    "Add the field first with collections_save, or put the fact in the body.")
         if v is None:
             if allow_null:
                 continue  # update-merge: null drops the key
@@ -3355,7 +3376,7 @@ def set_collection_display(name: str, view: Optional[str] = None,
     ('asc'|'desc'). Grouping and sorting apply to BOTH views; sorting runs
     within each group.
 
-    The collection's `icon` is NOT here: it's the model's (save_collection's
+    The collection's `icon` is NOT here: it's the model's (collections_save's
     `icon`), a property of the collection rather than a rendering preference,
     and the website doesn't write it at all.
 
@@ -3403,21 +3424,21 @@ def set_collection_display(name: str, view: Optional[str] = None,
 def _bad_icon(icon: str) -> Optional[dict]:
     """None if `icon` is in the vendored set (or "" — which clears it), else an
     error carrying the CLOSEST names: a rejected guess should land the model on
-    the right one in a single correction, not send it back to list_icons()."""
+    the right one in a single correction, not send it back to collections_list_icons()."""
     name = (icon or "").strip().lower()
     if not name or name in icon_set.ICON_PATHS:
         return None
     near = sorted(icon_set.ICON_NAMES,
                   key=lambda n: -jellyfish.jaro_winkler_similarity(name, n))[:5]
     return {"error": f"no icon {icon!r} in the app's icon set", "closest": near,
-            "note": "call list_icons() for the full set — it's a curated Lucide "
+            "note": "call collections_list_icons() for the full set — it's a curated Lucide "
                     "subset, not all of Lucide"}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="collections_list_icons", annotations=READ_ONLY)
 def list_icons() -> dict:
     """Every icon a collection can wear, grouped by theme — the picker for
-    save_collection's `icon`. The set is a CURATED subset of Lucide vendored
+    collections_save's `icon`. The set is a CURATED subset of Lucide vendored
     into the app, so a name you remember from Lucide may not be here; pick from
     what this returns. Names are stable; a collection with none draws a folder."""
     return {"icons": icon_set.ICON_GROUPS, "default": icon_set.DEFAULT_ICON}
@@ -3456,7 +3477,7 @@ def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
     return out
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="collections_list", annotations=READ_ONLY)
 def list_collections() -> dict:
     """The collections map: every collection (id, name, description, fields,
     icon, item count) plus the inbox note count and the most recent
@@ -3480,14 +3501,14 @@ def list_collections() -> dict:
             "recent_inbox_titles": [r["title"] for r in inbox]}
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(name="collections_save", annotations=WRITE_IDEMPOTENT)
 def save_collection(name: str, description: Optional[str] = None,
                     fields: Optional[list[CollectionField]] = None,
                     icon: Optional[str] = None,
                     force: bool = False) -> dict:
     """Create a collection, or evolve an existing one (matched by exact name,
     case-insensitive): only the arguments you pass change. `fields` REPLACES the
-    whole list — read the current one from list_collections first and send it
+    whole list — read the current one from collections_list first and send it
     back with your change, like a contact list.
 
     Creating is DELIBERATE: propose it and get the user's yes first — a stray
@@ -3497,15 +3518,19 @@ def save_collection(name: str, description: Optional[str] = None,
     distinct). Keep names short and plural ("recipes", "vacation spots"), keep
     fields FEW — a field earns its place by being worth scanning in a list.
     Never declare an image/photo field: every item already has a featured image
-    (save_item's `featured_image_url`), which the app renders as an actual picture.
+    (notes_save's `featured_image_url`), which the app renders as an actual picture.
     How the page LAYS THIS OUT (list vs table, grouping, sorting) isn't yours to
     set — that's the user's, through the website's Display popover.
 
     `icon` is the collection's glyph on the /collections grid. It must be a name
-    from the app's CURATED LUCIDE SET — call list_icons() to see them (they're
+    from the app's CURATED LUCIDE SET — call collections_list_icons() to see them (they're
     grouped by theme) rather than guessing a Lucide name from memory, since only
     a subset is vendored. A name that isn't in the set is rejected with the
-    closest ones, and a collection with no icon draws a plain folder."""
+    closest ones, and a collection with no icon draws a plain folder.
+
+    Deleting one is collections_delete — it removes the SHELL only (name,
+    description, icon, field definitions) and its items survive as inbox notes.
+    Deleting a note itself is notes_delete."""
     n = (name or "").strip().lower()
     if not n:
         return {"error": "name is required"}
@@ -3546,14 +3571,14 @@ def save_collection(name: str, description: Optional[str] = None,
             "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
 
 
-@mcp.tool(annotations=WRITE)
+@mcp.tool(name="notes_save", annotations=WRITE)
 def save_item(title: str, body: Optional[str] = None,
               collection: Optional[str] = None, data: Optional[dict] = None,
               featured_image_url: Optional[str] = None) -> dict:
     """Save one item. No `collection` = an INBOX NOTE — the right default for
     anything that doesn't obviously belong to an existing collection; capture
     never blocks on filing. With a `collection` (exact name from
-    list_collections), `data` carries the structured fields; put everything
+    collections_list), `data` carries the structured fields; put everything
     else in `body` (markdown prose, the user's words cleaned up — same habit
     as a journal entry). A near-miss collection name comes back as candidates
     rather than saving to the wrong place; an unknown data key comes back as an
@@ -3576,7 +3601,7 @@ def save_item(title: str, body: Optional[str] = None,
             row, cands = _resolve_collection(conn, collection)
             if row is None:
                 return {"error": f"no collection {collection!r}", "candidates": cands,
-                        "note": "use an exact name from list_collections, or save "
+                        "note": "use an exact name from collections_list, or save "
                                 "with no collection to leave it in the inbox"}
             coll_id, coll_name = row["id"], row["name"]
             err = _bad_data(data or {}, _coll_fields(row))
@@ -3596,15 +3621,16 @@ def save_item(title: str, body: Optional[str] = None,
     return {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(name="notes_update", annotations=WRITE_IDEMPOTENT)
 def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] = None,
                 data: Optional[dict] = None,
                 featured_image_url: Optional[str] = None) -> dict:
     """Edit one item: only the arguments you pass change. `body` replaces
-    wholesale (read first via get_item, send back the full new value);
+    wholesale (read first via notes_get, send back the full new value);
     `data` merges per key — send just the keys you're changing, null drops a
     key. `featured_image_url` replaces the featured image; pass "" to remove it.
-    Moving between collections is move_to_collection, not this."""
+    Moving between collections is notes_file, not this; deleting it outright is
+    notes_delete."""
     image, err = _clean_featured_image(featured_image_url)
     if err:
         return {"error": err}
@@ -3617,7 +3643,7 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
         merged = _item_data(r)
         if data is not None:
             if coll is None:
-                return {"error": "inbox notes carry no data — move_to_collection first"}
+                return {"error": "inbox notes carry no data — notes_file first"}
             err = _bad_data(data, _coll_fields(coll), allow_null=True)
             if err:
                 return {"error": err}
@@ -3640,7 +3666,7 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
             **({"data": merged} if data is not None else {})}
 
 
-@mcp.tool(annotations=WRITE_IDEMPOTENT)
+@mcp.tool(name="notes_file", annotations=WRITE_IDEMPOTENT)
 def move_to_collection(item_id: int, collection: str,
                        data: Optional[dict] = None) -> dict:
     """File an item into a collection (or back to "inbox") — THE promotion
@@ -3670,13 +3696,13 @@ def move_to_collection(item_id: int, collection: str,
             **({"data": merged} if merged else {})}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="notes_list", annotations=READ_ONLY)
 def list_items(collection: Optional[str] = None, limit: int = 50,
                offset: int = 0, max_chars: int = 200) -> dict:
     """Browse one collection (exact name), or the inbox when no collection is
-    given — newest-updated first, bodies truncated to max_chars (get_item for
+    given — newest-updated first, bodies truncated to max_chars (notes_get for
     the full text). This is the read for "show my recipes"; for finding
-    something by content, search_items."""
+    something by content, notes_search."""
     with db() as conn:
         if collection:
             row, cands = _resolve_collection(conn, collection)
@@ -3697,12 +3723,12 @@ def list_items(collection: Optional[str] = None, limit: int = 50,
             "count": len(rows)}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="notes_search", annotations=READ_ONLY)
 def search_items(query: str, collection: Optional[str] = None,
                  limit: int = 20, max_chars: int = 300) -> dict:
     """Full-text search across notes and collection items (title and body).
-    Plain words — tokenized and quoted like search_entries, so punctuation is
-    safe and every term must appear. Scope with `collection` (a name, or
+    Plain words — tokenized and quoted for you, so punctuation is safe
+    ("Tom's", "how was my week?") and every term must appear. Scope with `collection` (a name, or
     "inbox" for unfiled notes); default searches EVERYTHING, which is usually
     right — you don't always know where something was filed."""
     match = _fts_query(query)
@@ -3729,10 +3755,10 @@ def search_items(query: str, collection: Optional[str] = None,
             "count": len(rows)}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(name="notes_get", annotations=READ_ONLY)
 def get_item(item_id: int) -> dict:
     """Fetch one item in full — untruncated body, all data fields, dates.
-    Read-before-write: this is what you read before update_item rewrites the
+    Read-before-write: this is what you read before notes_update rewrites the
     body."""
     with db() as conn:
         r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
