@@ -105,11 +105,19 @@
       </tr>
     </thead>
     <tbody class="divide-y divide-gray-100">
+      {# A group heading has to read as a BREAK, not as another row: a gray fill
+         plus muted text (the first try) looked exactly like the column header
+         it sat under. So it's whitespace above, a black rule across, and the
+         label in black — the row's own weight does the separating. #}
       {% for g in c.groups %}
       {% if g.label %}
-      <tr class="bg-gray-50">
-        <td colspan="{{ c.fields | length + 1 }}" class="px-5 sm:px-6 py-2 text-[10px] uppercase tracking-widest text-gray-400">
-          {{ g.label }} <span class="tabular-nums">· {{ g.rows | length }}</span>
+      {# The rule lives on the CELL, not the row: tbody's `divide-y` styles
+         `tr + tr` borders and out-specifies a border class on the row itself. #}
+      <tr>
+        <td colspan="{{ c.fields | length + 1 }}"
+            class="px-5 sm:px-6 pb-2 {{ 'pt-3' if loop.first else 'pt-8 border-t-2 border-black' }}">
+          <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
+          <span class="ml-2 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
         </td>
       </tr>
       {% endif %}
@@ -135,9 +143,10 @@
    heading; ungrouped, there's exactly one bucket and it reads as before. #}
 {% for g in c.groups %}
 {% if g.label %}
-<p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2 {% if not loop.first %}mt-8{% endif %}">
-  {{ g.label }} <span class="tabular-nums text-gray-300">· {{ g.rows | length }}</span>
-</p>
+<div class="flex items-baseline justify-between mb-2 pb-1.5 border-b-2 border-black {% if not loop.first %}mt-10{% endif %}">
+  <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
+  <span class="text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
+</div>
 {% endif %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for it in g.rows %}
