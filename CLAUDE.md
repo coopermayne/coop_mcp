@@ -535,7 +535,11 @@ working.
   punctuation is safe. `update_item` merges `data` per key (null drops) but replaces
   the body wholesale (read-before-write via `get_item`). `delete_record` gained two
   kinds: `"item"` (gone for good) and `"collection"` (shell only — FK is ON DELETE
-  SET NULL, so its items demote to inbox notes). The webapp browses it at
+  SET NULL, so its items demote to inbox notes). Collections are addressed by NAME
+  everywhere else (`save_item`, `move_to_collection`), so `list_collections` and
+  `save_collection` both return the `id` that this one kind needs — without it a
+  collection was undeletable over MCP — reachable by name but not by handle.
+  The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
   collection's own fields + view prefs — no per-domain view code), OUTSIDE the
   journal lock like `/food`, strictly read-only for CONTENT like everything else.

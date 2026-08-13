@@ -2177,7 +2177,7 @@ def delete_record(kind: str, id: int) -> dict:
         inbox notes (returned as items_demoted_to_inbox). Un-files, never
         destroys the notes.
     Find ids with get_entry/search_entries, get_intake/log_intake for intake,
-    search_items/list_items for notes.
+    search_items/list_items for notes, list_collections for collections.
     (Workouts and sets are deleted via the trainer server's own delete_record.)"""
     if kind not in ("entry", "intake_item", "item", "collection"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
@@ -3463,8 +3463,8 @@ def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 def list_collections() -> dict:
-    """The collections map: every collection (name, description, fields, icon,
-    item count) plus the inbox note count and the most recent
+    """The collections map: every collection (id, name, description, fields,
+    icon, item count) plus the inbox note count and the most recent
     inbox titles. CHEAP — consult it before deciding where anything goes, and
     before proposing a new collection (the near-twin you'd create probably
     already exists). When several inbox notes cluster around one topic, that's
@@ -3473,7 +3473,7 @@ def list_collections() -> dict:
     with db() as conn:
         counts = {r["collection_id"]: r["n"] for r in conn.execute(
             "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
-        colls = [{"name": r["name"], "description": r["description"],
+        colls = [{"id": r["id"], "name": r["name"], "description": r["description"],
                   "fields": _coll_fields(r),
                   "icon": r["icon"] or icon_set.DEFAULT_ICON,
                   "items": counts.get(r["id"], 0)}
@@ -3546,7 +3546,7 @@ def save_collection(name: str, description: Optional[str] = None,
                 conn.execute(f"UPDATE collections SET {', '.join(sets)} WHERE id=?", vals)
             created = False
         out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
-    return {"name": out["name"], "description": out["description"],
+    return {"id": out["id"], "name": out["name"], "description": out["description"],
             "fields": _coll_fields(out),
             "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
 
