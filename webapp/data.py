@@ -773,9 +773,9 @@ def graph_data() -> dict:
 
     - weight: one point per weighed day (latest reading wins, matching
       bodyweight_on / server.log_bodyweight).
-    - drinks: days with an alcohol figure on the intake row (nutrition.standard_
-      drinks, including explicit 0s); the page gap-fills unlogged days to 0 so the
-      line is honest about the calendar.
+    - drinks: days with an alcohol figure on at least one intake item, summed
+      (`SUM(intake_items.standard_drinks)`, including explicit 0s); the page
+      gap-fills unlogged days to 0 so the line is honest about the calendar.
     - exercises: per strength exercise (has at least one done, weighted set on a
       done workout), one point per session date with the deterministic aggregates
       the page can plot: heaviest set (`top`), best Epley est. 1RM (`e1rm` =
@@ -804,12 +804,15 @@ def graph_data() -> dict:
                    ORDER BY weigh_date"""
             )
         ]
-        # Alcohol lives on the intake row now, not the legacy `drinks` table.
+        # Alcohol is a per-ITEM figure now (intake_items), so the day is a SUM —
+        # not a column read off the dormant day-level `nutrition` table, which
+        # stopped being written the moment intake became one row per drink.
         drinks = [
             {"date": r["food_date"], "total": r["standard_drinks"]}
             for r in conn.execute(
-                "SELECT food_date, ROUND(standard_drinks,2) AS standard_drinks "
-                "FROM nutrition WHERE standard_drinks IS NOT NULL ORDER BY food_date"
+                "SELECT food_date, ROUND(SUM(standard_drinks),2) AS standard_drinks "
+                "FROM intake_items WHERE standard_drinks IS NOT NULL "
+                "GROUP BY food_date ORDER BY food_date"
             )
         ]
         ex_rows = conn.execute(
