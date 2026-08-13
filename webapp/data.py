@@ -853,9 +853,13 @@ def graph_data() -> dict:
 
 def _item_view(r, fields: list[dict] | None = None) -> dict:
     """One item shaped for a template: parsed data (ordered by the collection's
-    field order when known), tags as a list, updated day for the byline."""
+    field order when known), tags as a list, updated day for the byline.
+
+    `fields=None` means no collection context (inbox notes) — show whatever the
+    blob carries; an EMPTY list is a real answer ("show no fields"), so it must
+    not fall back to showing everything."""
     data_blob = server._item_data(r)
-    if fields:
+    if fields is not None:
         ordered = [(f["key"], f["label"], data_blob.get(f["key"]))
                    for f in fields if f["key"] in data_blob]
     else:
@@ -864,6 +868,82 @@ def _item_view(r, fields: list[dict] | None = None) -> dict:
             "data": ordered, "data_map": data_blob,
             "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()],
             "updated": (r["updated_at"] or "")[:10]}
+
+
+def _field_value(it: dict, key: str):
+    """One item's value for a sort/group key — the two intrinsic columns
+    (title/updated) or a declared field out of the item's data blob."""
+    if key == "title":
+        return it["title"]
+    if key == "updated":
+        return it["updated"]
+    return it["data_map"].get(key)
+
+
+def _sorted_items(items: list[dict], key: str, desc: bool,
+                  ftypes: dict[str, str]) -> list[dict]:
+    """Items by one key. Numbers compare numerically, everything else as
+    case-folded text; items MISSING the value sort last in both directions
+    (a blank is 'unknown', not 'smallest')."""
+    if not key:
+        return items
+    numeric = ftypes.get(key) == "number"
+
+    def val(it):
+        v = _field_value(it, key)
+        if numeric:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+        return str(v).lower()
+
+    present = [i for i in items if _field_value(i, key) not in (None, "")]
+    absent = [i for i in items if _field_value(i, key) in (None, "")]
+    return sorted(present, key=val, reverse=desc) + absent
+
+
+def _grouped_items(items: list[dict], field: dict | None) -> list[dict]:
+    """Items bucketed into [{label, value, rows}] by one field's value. A select
+    field's own declared `options` order wins (so a status column reads in its
+    intended order); otherwise groups go alphabetically. Items missing the value
+    land in a trailing '—' bucket. No field = one unlabeled bucket, which is what
+    the templates iterate either way."""
+    if not field:
+        return [{"label": None, "value": None, "rows": items}]
+    key = field["key"]
+    buckets: dict[str, list[dict]] = {}
+    for it in items:
+        v = _field_value(it, key)
+        buckets.setdefault("" if v in (None, "") else str(v), []).append(it)
+    options = [str(o) for o in (field.get("options") or [])]
+    order = [o for o in options if o in buckets] + \
+            sorted((v for v in buckets if v and v not in options), key=str.lower)
+    return [{"label": v, "value": v, "rows": buckets[v]} for v in order] + \
+           ([{"label": "—", "value": "", "rows": buckets[""]}] if "" in buckets else [])
+
+
+def _like_escape(s: str) -> str:
+    """Escape LIKE wildcards so a typed % or _ searches for itself."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_item_titles(q: str, limit: int = 100) -> list[dict]:
+    """Items across EVERY collection (and the inbox) whose TITLE matches — the
+    /collections search bar. Deliberately title-only and a plain substring
+    match: this is "where did I put that recipe", a lookup, not the model's
+    `search_items` (which is FTS over title/body/tags and lives on the tool
+    side). Each hit carries its collection so the answer says where it lives."""
+    needle = (q or "").strip()
+    if not needle:
+        return []
+    with server.db() as conn:
+        rows = conn.execute(
+            "SELECT i.*, c.name AS coll FROM items i "
+            "LEFT JOIN collections c ON c.id = i.collection_id "
+            "WHERE i.title LIKE ? ESCAPE '\\' ORDER BY i.updated_at DESC LIMIT ?",
+            (f"%{_like_escape(needle)}%", limit)).fetchall()
+        return [{**_item_view(r), "collection": r["coll"]} for r in rows]
 
 
 def collections_overview() -> dict:
@@ -885,7 +965,11 @@ def collection_page(name: str) -> dict | None:
     `fields` is filtered to what the user chose to SHOW (the Display popover's
     prefs, `server._coll_display`) so the table columns and list badges honor
     it without template logic; `all_fields` keeps the full declared set for the
-    popover itself, and `display` carries the rest of the prefs."""
+    popover itself, and `display` carries the rest of the prefs.
+
+    Arrangement is resolved HERE, not in the template: `groups` is always a list
+    of buckets (one unlabeled bucket when the user isn't grouping), each already
+    sorted, so both views just loop. `rows` stays the flat list for counts."""
     with server.db() as conn:
         c = conn.execute("SELECT * FROM collections WHERE lower(name)=?",
                          ((name or "").strip().lower(),)).fetchone()
@@ -898,9 +982,19 @@ def collection_page(name: str) -> dict | None:
         items = [_item_view(r, visible) for r in conn.execute(
             "SELECT * FROM items WHERE collection_id=? ORDER BY updated_at DESC",
             (c["id"],))]
+    by_key = {f["key"]: f for f in fields}
+    ftypes = {k: f.get("type", "text") for k, f in by_key.items()}
+    groups = _grouped_items(items, by_key.get(display["group_by"]))
+    for g in groups:
+        g["rows"] = _sorted_items(g["rows"], display["sort_by"],
+                                  display["sort_dir"] == "desc", ftypes)
     return {"name": c["name"], "description": c["description"] or "",
             "display_hint": c["display_hint"], "fields": visible,
-            "all_fields": fields, "display": display, "rows": items}
+            "all_fields": fields, "display": display,
+            "groups": groups, "rows": items,
+            # Label for the popover's current sort, so the header can say it.
+            "sort_label": ({"title": "Title", "updated": "Updated"}.get(
+                display["sort_by"]) or by_key.get(display["sort_by"], {}).get("label", ""))}
 
 
 def item_page(item_id: int) -> dict | None:
@@ -911,7 +1005,9 @@ def item_page(item_id: int) -> dict | None:
             return None
         c = conn.execute("SELECT * FROM collections WHERE id=?",
                          (r["collection_id"],)).fetchone() if r["collection_id"] else None
-        view = _item_view(r, server._coll_fields(c) if c else None)
+        # The detail page shows every declared field (no Display filtering); an
+        # undeclared-fields collection falls back to the blob's own keys.
+        view = _item_view(r, (server._coll_fields(c) or None) if c else None)
     view["collection"] = c["name"] if c else None
     view["created"] = (r["created_at"] or "")[:10]
     return view
