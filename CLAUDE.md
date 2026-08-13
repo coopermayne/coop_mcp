@@ -544,13 +544,30 @@ working.
   item carries one whether or not it's filed and no collection has to declare
   an image field; http/https only, since the webapp drops it straight into an
   `<img src>`, and `""` clears it via `notes_update`. Rendered as a thumbnail on
-  every item row — collection page, inbox, search — and full-width on the item
-  page, each with `onerror="this.remove()"` so a dead URL leaves nothing rather
-  than a broken-image box. Collections predating the column DECLARED their own
+  every item row — collection page (at that collection's `image_size`, see the
+  popover below), inbox, search — each with `onerror="this.remove()"` so a dead
+  URL leaves nothing rather than a broken-image box. On the ITEM page it's a
+  tile too (`.item-hero`), not the full-width hero it started as: a recipe's
+  photos were pushing the method a screen down, so the page reads as prose with
+  pictures in it rather than an image with prose under it. Every prose image
+  (`.chat-md img`, so the journal feed and the chat transcript get it too) is
+  likewise a uniform tile — fixed box + `object-fit`, several per row like a
+  contact sheet whatever their native aspect — and the full picture is one
+  click away in the `#lightbox` overlay (base.html: ONE delegated listener in
+  the CAPTURE phase, so it also covers images `marked` renders after load, and
+  it stops the click as well as preventing it — an image can sit inside a link
+  (the person page's entry_card), and expanding one must not navigate). Collections predating the column DECLARED their own
   "featured image" field, so the URL rendered as a badge with the link spelled
   out — `_fold_image_fields` (runs every boot, idempotent) lifts those values
   onto the column, un-declares the field, and `_norm_fields` now REFUSES an
-  image-ish field so it can't come back), a `data` JSON blob validated
+  image-ish field so it can't come back. The fold sweeps image-ish keys found
+  in the BLOB, not just still-DECLARED ones, because the two come apart: drop
+  the declaration by hand and the values STRAND — invisible (the app renders
+  only declared fields) and poisonous (`notes_file` validates the whole merged
+  blob and rejects the unknown key), on exactly the collection a
+  declaration-keyed sweep would skip. `_bad_data` checks the null-drop BEFORE
+  the unknown-key check for the same reason: a null asks to REMOVE a key, which
+  is the one thing a stranded orphan needs), a `data` JSON blob validated
   against the collection's fields (unknown key / bad type / bad select value come back
   as actionable errors — facts with no field stay in the body). An item had `tags`
   too, and they're GONE: a third way to structure a thing, next to the collection
@@ -585,7 +602,13 @@ working.
   won. `init_db` folds the old column into the JSON once and it's dormant after,
   kept not dropped; which declared fields show as table
   columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
-  notes-preview/updated/featured-image) saved
+  notes-preview, updated, and `image_size` (`off|small|medium|large`, the
+  featured image's thumbnail edge, a step smaller in the denser table view;
+  it replaced a `show_image` BOOLEAN, folded in by `init_db`, because a size
+  and a visibility flag ask the same question twice and can disagree — "off"
+  is just the small end. The px values live in `collection.html` as an inline
+  style, not Tailwind size classes: the size is stored DATA, and a class per
+  option would make the compiled stylesheet carry every one)) saved
   to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
   `server.set_collection_display` — a NON-tool, website-only path like
   `set_archived`, invisible to the model and to tool returns. Those prefs are

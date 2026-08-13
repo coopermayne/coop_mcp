@@ -77,17 +77,32 @@
           <input id="disp-updated" type="checkbox" class="accent-black" {% if c.display.show_updated %}checked{% endif %}>
           <span>Updated date</span>
         </label>
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input id="disp-image" type="checkbox" class="accent-black" {% if c.display.show_image %}checked{% endif %}>
-          <span>Featured image</span>
-        </label>
       </div>
+      {# Featured image is a SIZE, not a checkbox: "off" is just its small end,
+         so one control answers the whole question and the two can't disagree. #}
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Featured image</p>
+      <select id="disp-image" class="w-full border border-gray-200 px-2 py-1.5 text-sm bg-white mb-4">
+        {% for v, lbl in [('off', 'Off'), ('small', 'Small'), ('medium', 'Medium'), ('large', 'Large')] %}
+        <option value="{{ v }}" {% if c.display.image_size == v %}selected{% endif %}>{{ lbl }}</option>
+        {% endfor %}
+      </select>
       <button id="disp-apply" type="button"
               class="w-full px-3 py-2 border border-gray-200 text-gray-500 text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors">Apply</button>
     </div>
   </div>
 </div>
 {% if c.description %}<p class="text-sm text-gray-500 mb-6">{{ c.description }}</p>{% else %}<div class="mb-6"></div>{% endif %}
+
+{# Thumbnail edge in px, per the Display popover's image_size. Inline style
+   rather than Tailwind width/height classes: the size is DATA (a stored pref),
+   and a class per size would mean the compiled stylesheet has to carry every
+   option whether or not any collection picked it. The table view runs a step
+   smaller than the list — its rows are denser, and a tile that fits a 3-line
+   list row swallows a table row. #}
+{% set IMG_PX = {'small': 40, 'medium': 64, 'large': 96} %}
+{% set IMG_PX_TABLE = {'small': 28, 'medium': 40, 'large': 60} %}
+{% set img_px = IMG_PX.get(c.display.image_size) %}
+{% set img_px_table = IMG_PX_TABLE.get(c.display.image_size) %}
 
 {% if not c.rows %}
 <p class="text-sm text-gray-400">Nothing here yet.</p>
@@ -128,9 +143,10 @@
       <tr class="hover:bg-gray-50 transition-colors">
         <td class="px-5 sm:px-6 py-3">
           <a href="{{ base }}/item/{{ it.item_id }}" class="flex items-center gap-3 font-medium group">
-            {% if c.display.show_image and it.featured_image_url %}
+            {% if img_px_table and it.featured_image_url %}
             <img src="{{ it.featured_image_url }}" alt="" loading="lazy" onerror="this.remove()"
-                 class="shrink-0 w-8 h-8 object-cover rounded-[3px] border border-gray-200">
+                 style="width:{{ img_px_table }}px;height:{{ img_px_table }}px"
+                 class="shrink-0 object-cover rounded-[3px] border border-gray-200">
             {% endif %}
             <span class="group-hover:underline underline-offset-2">{{ it.title }}</span>
           </a>
@@ -162,9 +178,10 @@
   <div class="divide-y divide-gray-100">
   {% for it in g.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}" class="flex gap-4 px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
-    {% if c.display.show_image and it.featured_image_url %}
+    {% if img_px and it.featured_image_url %}
     <img src="{{ it.featured_image_url }}" alt="" loading="lazy" onerror="this.remove()"
-         class="shrink-0 w-12 h-12 object-cover rounded-[3px] border border-gray-200">
+         style="width:{{ img_px }}px;height:{{ img_px }}px"
+         class="shrink-0 object-cover rounded-[3px] border border-gray-200">
     {% endif %}
     <div class="min-w-0 flex-1">
     <div class="flex items-baseline justify-between gap-3">
@@ -209,7 +226,7 @@
         sort_dir: pop.querySelector('input[name="disp-dir"]:checked').value,
         show_body: document.getElementById('disp-body').checked,
         show_updated: document.getElementById('disp-updated').checked,
-        show_image: document.getElementById('disp-image').checked
+        image_size: document.getElementById('disp-image').value
       })
     }).then(function (r) { if (r.ok) location.reload(); });
   });
