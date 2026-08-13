@@ -221,6 +221,13 @@ for _name, _fn in [
 # eating profile, so they're read fresh per render (the macro calls it once per block).
 templates.env.globals["nutrient_targets"] = data.nutrient_targets
 
+# Collection icons: the vendored Lucide subset (icons.py, generated). A global
+# so any template can draw one by name — the shapes only, since each site picks
+# its own size/stroke, exactly like the hand-written nav icons.
+templates.env.globals["icon_paths"] = server.icon_set.ICON_PATHS
+templates.env.globals["icon_groups"] = server.icon_set.ICON_GROUPS
+templates.env.globals["default_icon"] = server.icon_set.DEFAULT_ICON
+
 
 def link_people_md(body: str, people: list[dict], base: str) -> str:
     """Return the entry body as Markdown with each resolved person's name turned into
@@ -1425,7 +1432,8 @@ async def collection_display(request: Request, name: str):
         group_by=body.get("group_by"), sort_by=body.get("sort_by"),
         sort_dir=body.get("sort_dir"),
         show_body=body.get("show_body"), show_tags=body.get("show_tags"),
-        show_updated=body.get("show_updated"), show_image=body.get("show_image"))
+        show_updated=body.get("show_updated"), show_image=body.get("show_image"),
+        icon=body.get("icon"))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 

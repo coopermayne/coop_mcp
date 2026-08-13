@@ -233,10 +233,10 @@
 <body class="min-h-screen bg-white text-black">
   {% if active %}
   <header class="border-b border-gray-100 sticky top-0 bg-white/90 backdrop-blur z-10">
-    {# Icon-only nav: the primary sections (journal · food · training) sit on
-       the strip — the trainer has no strip icon of its own, it's reached from
-       the Training page header (and the "5" shortcut), and People from the
-       Journal page header; everything secondary (graphs, theme toggle,
+    {# Icon-only nav: the primary sections (journal · food · training ·
+       collections) sit on the strip — the trainer has no strip icon of its own,
+       it's reached from the Training page header (and the "6" shortcut), and
+       People from the Journal page header; everything secondary (graphs, theme toggle,
        logout) collapses behind a hamburger that opens a dropdown. Icons are inline
        Lucide-style strokes inheriting currentColor; active page firms to black
        (white in dark). aria-label/title carry the names for a11y + tooltips. #}
@@ -250,20 +250,19 @@
       <a href="{{ base }}/workouts" aria-label="Training" title="Training" class="hover:text-black transition-colors {% if active in ('workouts', 'trainer') %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="9" x2="3.5" y2="15"/><line x1="6.5" y1="6.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="20.5" y1="9" x2="20.5" y2="15"/><line x1="6.5" y1="12" x2="17.5" y2="12"/></svg>
       </a>
+      <a href="{{ base }}/collections" aria-label="Collections" title="Collections" class="hover:text-black transition-colors {% if active == 'collections' %}text-black{% endif %}">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+      </a>
       {# Hamburger → dropdown of secondary actions. Firms to black when the
          current page (graphs) lives inside the menu. The dropdown is a quiet
          popover anchored to the right under the button; the script below toggles
          [hidden] and closes it on outside-click / Escape. #}
       <div class="relative">
         <button type="button" data-menu-toggle aria-label="Menu" aria-haspopup="true" aria-expanded="false" title="Menu"
-                class="flex hover:text-black transition-colors {% if active in ('graphs', 'collections') %}text-black{% endif %}">
+                class="flex hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div data-menu hidden class="absolute right-0 top-full mt-2 w-44 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-20">
-          <a href="{{ base }}/collections" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'collections' %}text-black{% else %}text-gray-500{% endif %}">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
-            <span>Collections</span>
-          </a>
           <a href="{{ base }}/graphs" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'graphs' %}text-black{% else %}text-gray-500{% endif %}">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
             <span>Graphs</span>
@@ -432,9 +431,9 @@
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
     })();
   </script>
-  {# Global keyboard shortcuts: 1-3 follow the nav bar left-to-right (journal ·
-     food · training), then 4/5 pick up the two sections that aren't on it
-     (graphs, the active trainer card); "/" focuses the page's search box if it
+  {# Global keyboard shortcuts: 1-4 follow the nav bar left-to-right (journal ·
+     food · training · collections), then 5/6 pick up the two sections that
+     aren't on it (graphs, the active trainer card); "/" focuses the page's search box if it
      has one. Bare keys only — we bail when a modifier is held or when focus is
      in a text field (input/textarea/select/contenteditable) so the keys still
      reach search, the chat composer, and any other input. #}
@@ -444,8 +443,9 @@
         '1': '{{ base }}/journal',
         '2': '{{ base }}/food',
         '3': '{{ base }}/workouts',
-        '4': '{{ base }}/graphs',
-        '5': '{{ base }}/trainer',
+        '4': '{{ base }}/collections',
+        '5': '{{ base }}/graphs',
+        '6': '{{ base }}/trainer',
       };
       document.addEventListener('keydown', function (e) {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
