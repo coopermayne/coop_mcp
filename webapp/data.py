@@ -933,7 +933,7 @@ def search_item_titles(q: str, limit: int = 100) -> list[dict]:
     """Items across EVERY collection (and the inbox) whose TITLE matches — the
     /collections search bar. Deliberately title-only and a plain substring
     match: this is "where did I put that recipe", a lookup, not the model's
-    `search_items` (which is FTS over title and body, and lives on the tool
+    `notes_search` (which is FTS over title and body, and lives on the tool
     side). Each hit carries its collection so the answer says where it lives."""
     needle = (q or "").strip()
     if not needle:

@@ -2,7 +2,7 @@
 scripts/build_icon_set.py; edit CURATED there, not this file.
 
 server.py validates against ICON_NAMES and ships them to the model in
-save_collection's docstring; the webapp renders ICON_PATHS[name] inside
+collections_save's docstring; the webapp renders ICON_PATHS[name] inside
 its own <svg> wrapper."""
 
 DEFAULT_ICON = 'folder'

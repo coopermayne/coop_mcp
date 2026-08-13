@@ -4,7 +4,7 @@
 The pack is Lucide, the same 24x24 stroke style the nav bar already draws by
 hand, so a collection's icon sits next to them without looking imported. Only a
 CURATED subset is vendored: the model has to pick a name that exists, so the
-valid names travel over MCP (save_collection's docstring lists them) and a list
+valid names travel over MCP (collections_save's docstring lists them) and a list
 of 2,000 wouldn't fit. Everything here is a topic a collection plausibly is.
 
     npm pack lucide-static && tar xzf lucide-static-*.tgz
@@ -74,7 +74,7 @@ def main(src: str) -> int:
            'scripts/build_icon_set.py; edit CURATED there, not this file.',
            "",
            "server.py validates against ICON_NAMES and ships them to the model in",
-           "save_collection's docstring; the webapp renders ICON_PATHS[name] inside",
+           "collections_save's docstring; the webapp renders ICON_PATHS[name] inside",
            'its own <svg> wrapper."""',
            "",
            f"DEFAULT_ICON = {DEFAULT!r}",
