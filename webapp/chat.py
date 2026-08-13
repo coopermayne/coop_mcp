@@ -21,6 +21,11 @@ The system prompt and tool definitions are not hand-written: they're lifted
 straight from the live server — each instance's `instructions` is the system
 prompt, and each tool's docstring + signature become the Anthropic tool schema via
 `list_tools()`. Change a docstring in `server.py` and the chat updates with it.
+The one exception is the journal surface's system prompt: the `mcp` instance's
+own `instructions` are the CONNECTOR-facing subset (its people/entry tools are
+hidden from MCP clients by HiddenToolsMiddleware), so this chat — which drives
+the full tool set in-process, bypassing that middleware — takes
+`server.JOURNAL_CHAT_INSTRUCTIONS`, the full contract, instead.
 
 Disabled unless ANTHROPIC_API_KEY is set; model defaults to Sonnet 4.6
 (CHAT_MODEL overrides). Conversations live in memory, keyed by (agent, session) —
@@ -246,11 +251,13 @@ def _exercise_tools():
 
 
 # The agent registry. A server-bound entry binds a chat surface to one FastMCP instance
-# and an optional set of tool names to exclude. A webapp-defined entry instead carries
-# its own `instructions` + a `tools` builder (see the exercise-add agent above). Extend,
-# don't special-case.
+# and an optional set of tool names to exclude; an `instructions` key overrides the
+# instance's own (the journal instance's are connector-facing — see the module
+# docstring). A webapp-defined entry instead carries its own `instructions` + a `tools`
+# builder (see the exercise-add agent above). Extend, don't special-case.
 _AGENTS = {
-    "journal":  {"server": server.mcp,         "exclude": set(), "blurb": _JOURNAL_BLURB},
+    "journal":  {"server": server.mcp, "instructions": server.JOURNAL_CHAT_INSTRUCTIONS,
+                 "exclude": set(), "blurb": _JOURNAL_BLURB},
     "trainer":  {"server": server.trainer_mcp, "exclude": set(), "blurb": _TRAINER_BLURB},
     "exercise": {"instructions": _EXERCISE_INSTRUCTIONS, "tools": _exercise_tools, "blurb": ""},
 }

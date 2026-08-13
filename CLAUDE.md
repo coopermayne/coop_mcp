@@ -20,6 +20,19 @@ reason for the split). It's purely an MCP-layer division: the webapp still impor
 module's functions unchanged. `webapp/combined.py` composes both endpoints onto one
 origin.
 
+**The journal connector is intake + collections only.** The user does all journal
+capture through the app's own chat, so the journal server's people/entry tools
+(`add_journal_entry` … `get_briefing`; the `CONNECTOR_HIDDEN_TOOLS` set) are hidden
+from MCP clients by `HiddenToolsMiddleware` — dropped from `tools/list`, rejected on
+`tools/call`, plus a gate on `delete_record(kind="entry")`. The app chat is untouched
+because it bypasses middleware (`list_tools(run_middleware=False)` + direct function
+calls). Same split for the model-facing prose: the `mcp` instance's `instructions`
+are the CONNECTOR text (intake + collections; `get_intake` carries `now` since
+`get_briefing` is hidden there), while the chat's journal agent takes
+`JOURNAL_CHAT_INSTRUCTIONS`, the full contract — shared blocks are composed into
+both strings so the surfaces can't drift. Adding a journal tool = adding its name to
+`CONNECTOR_HIDDEN_TOOLS` too.
+
 ## The one architectural rule
 
 **There is no LLM inside the server, and there must never be one.** The server is a
@@ -31,7 +44,8 @@ the model decides. Don't add model calls, embeddings services, or NER inside the
 The rule is about `server.py`, not the whole repo. The **webapp does contain an LLM** —
 `webapp/chat.py` is the web app acting as an *MCP client*, driving the same
 `@mcp.tool()` functions over the Anthropic API (in-process, no transport) so the
-phone/browser gets the same conversational capture Claude Desktop does. That preserves
+phone/browser gets the full conversational capture — including the journal tools the
+MCP connector hides (see `HiddenToolsMiddleware` above). That preserves
 the split rather than breaking it: the model still does the judgment, `server.py` stays
 the deterministic data layer with no LLM inside it. So `anthropic` in
 `webapp/requirements.txt` is expected — it lives on the client side of the line.
@@ -146,7 +160,9 @@ There is no exercise-selection or progression logic in the server either.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
   architectural-rule note). Server-bound agents (`journal`, `trainer`) lift their system
   prompt + tool schemas live from a FastMCP instance's `instructions` + tool docstrings,
-  so changing a docstring updates the chat. The `exercise` agent is different: it's a
+  so changing a docstring updates the chat. (Exception: the journal agent's system
+  prompt is `server.JOURNAL_CHAT_INSTRUCTIONS`, not the instance's `instructions` —
+  those are the connector-facing subset; see the hidden-tools note above.) The `exercise` agent is different: it's a
   WEBAPP-DEFINED agent (its `instructions` and its two tools — `check_library`,
   `create_exercise` — are hand-written here, NOT lifted from a server) so the
   exercise-creation path stays OFF the MCP tool surface. It backs the library page's
@@ -495,7 +511,14 @@ working.
   SET NULL, so its items demote to inbox notes). The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
   collection's own fields/display_hint — no per-domain view code), OUTSIDE the
-  journal lock like `/food`, strictly read-only like everything else. The three
+  journal lock like `/food`, strictly read-only for CONTENT like everything else.
+  The one thing the browser writes is PRESENTATION: each collection page has a
+  **Display** popover (view = the same `display_hint` column the model proposes at
+  creation, so the user's pick simply wins; which declared fields show as table
+  columns / list badges; and the list view's notes-preview/tags/updated extras) saved
+  to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
+  `server.set_collection_display` — a NON-tool, website-only path like
+  `set_archived`, invisible to the model and to tool returns. The three
   judgment rules (capture first/file second; structure proposed, never imposed;
   fields stay few) live in the journal server `instructions`.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
