@@ -146,8 +146,8 @@
       <tr class="hover:bg-gray-50 transition-colors">
         <td class="px-5 sm:px-6 py-3">
           <a href="{{ base }}/item/{{ it.item_id }}" class="flex items-center gap-3 font-medium group">
-            {% if c.display.show_image and it.image_url %}
-            <img src="{{ it.image_url }}" alt="" loading="lazy" onerror="this.remove()"
+            {% if c.display.show_image and it.featured_image_url %}
+            <img src="{{ it.featured_image_url }}" alt="" loading="lazy" onerror="this.remove()"
                  class="shrink-0 w-8 h-8 object-cover rounded-[3px] border border-gray-200">
             {% endif %}
             <span class="group-hover:underline underline-offset-2">{{ it.title }}</span>
@@ -180,8 +180,8 @@
   <div class="divide-y divide-gray-100">
   {% for it in g.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}" class="flex gap-4 px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
-    {% if c.display.show_image and it.image_url %}
-    <img src="{{ it.image_url }}" alt="" loading="lazy" onerror="this.remove()"
+    {% if c.display.show_image and it.featured_image_url %}
+    <img src="{{ it.featured_image_url }}" alt="" loading="lazy" onerror="this.remove()"
          class="shrink-0 w-12 h-12 object-cover rounded-[3px] border border-gray-200">
     {% endif %}
     <div class="min-w-0 flex-1">

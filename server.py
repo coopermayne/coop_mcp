@@ -814,8 +814,8 @@ CREATE TABLE IF NOT EXISTS items (
     title         TEXT NOT NULL,
     body          TEXT,                   -- markdown prose (the note itself / the item's writeup)
     data          TEXT,                   -- JSON keyed by the collection's field keys
-    image_url     TEXT,                   -- featured image (http/https URL) — a column, not a
-                                          -- declared field: EVERY item can have one
+    featured_image_url TEXT,              -- http/https URL, a COLUMN not a declared
+                                          -- field: EVERY item can have one
     tags          TEXT,                   -- comma-separated lowercase labels; searchable via FTS
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
@@ -899,22 +899,22 @@ def _merge_notes(*notes: Optional[str]) -> Optional[str]:
 
 
 # A declared field whose name says "picture": what a collection used to need
-# before items had an image_url column of their own.
+# before items had an featured_image_url column of their own.
 _IMAGE_FIELD = re.compile(r"image|photo|picture|thumbnail|cover", re.I)
 
 
 def _fold_image_fields(conn: sqlite3.Connection) -> None:
-    """Move image URLs out of declared FIELDS and into items.image_url.
+    """Move image URLs out of declared FIELDS and into items.featured_image_url.
 
     A collection made before the column existed declared its own "featured
     image" text field, so the URLs sat in the `data` blob and rendered as a
     badge with the URL spelled out — a picture listed instead of shown. This
     lifts every http(s) value under an image-ish key onto the column, drops the
     key from the blob, and un-declares the field once no item still holds a
-    non-URL value for it (so the model stops refilling it and uses image_url).
+    non-URL value for it (so the model stops refilling it and uses featured_image_url).
 
     Idempotent: it only ever reads keys that still exist, and only fills an
-    image_url that is still NULL."""
+    featured_image_url that is still NULL."""
     for coll in conn.execute("SELECT * FROM collections").fetchall():
         keys = [f["key"] for f in _coll_fields(coll)
                 if _IMAGE_FIELD.search(f["key"]) or _IMAGE_FIELD.search(f.get("label") or "")]
@@ -934,8 +934,8 @@ def _fold_image_fields(conn: sqlite3.Connection) -> None:
                     blob.pop(k, None)
                 else:
                     leftover.add(k)          # not a URL — leave it alone
-            if url and not r["image_url"]:
-                conn.execute("UPDATE items SET image_url=?, data=? WHERE id=?",
+            if url and not r["featured_image_url"]:
+                conn.execute("UPDATE items SET featured_image_url=?, data=? WHERE id=?",
                              (url, json.dumps(blob) if blob else None, r["id"]))
             elif blob != _item_data(r):
                 conn.execute("UPDATE items SET data=? WHERE id=?",
@@ -983,9 +983,15 @@ def init_db() -> None:
             # every existing row — they draw the default folder until named.
             conn.execute("ALTER TABLE collections ADD COLUMN icon TEXT")
         icols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
-        if "image_url" not in icols:
-            # Featured image, available to EVERY item (see the items table).
-            conn.execute("ALTER TABLE items ADD COLUMN image_url TEXT")
+        if "featured_image_url" not in icols:
+            # Featured image, available to EVERY item (see the items table). It
+            # shipped once as the vaguer `image_url`; rename in place rather than
+            # adding a second column, so any URL already stored survives.
+            if "image_url" in icols:
+                conn.execute("ALTER TABLE items RENAME COLUMN image_url "
+                             "TO featured_image_url")
+            else:
+                conn.execute("ALTER TABLE items ADD COLUMN featured_image_url TEXT")
         # Runs every boot, not just on the ALTER: a collection created BEFORE the
         # column existed declared its own "featured image" text field, and the
         # model kept filling it after. Idempotent — see the helper.
@@ -3186,13 +3192,13 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
         if key in seen:
             return [], f"duplicate field key {key!r}"
         seen.add(key)
-        # Every item already HAS a picture slot (items.image_url), which the app
+        # Every item already HAS a picture slot (items.featured_image_url), which the app
         # renders as an actual image. A declared one only ever produced a badge
         # with the URL spelled out — see _fold_image_fields, which cleaned up the
         # collections that had one.
         if _IMAGE_FIELD.search(key) or _IMAGE_FIELD.search(f.get("label") or ""):
             return [], (f"don't declare an image field ({key!r}) — every item has a "
-                        "featured image already: pass image_url= to save_item/"
+                        "featured image already: pass featured_image_url= to save_item/"
                         "update_item and the app renders the picture itself")
         ftype = (f.get("type") or "text").strip().lower()
         if ftype not in FIELD_TYPES:
@@ -3388,7 +3394,7 @@ def _tags_text(tags: Optional[list[str]]) -> Optional[str]:
     return ", ".join(cleaned) if cleaned else ""
 
 
-def _clean_image_url(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+def _clean_featured_image(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """(value, error) for a featured image URL. Http(s) only — the webapp drops
     it straight into an <img src>, so a javascript:/data: URL has no business
     here; "" clears it."""
@@ -3396,7 +3402,7 @@ def _clean_image_url(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     if not u:
         return None, None
     if not u.lower().startswith(("http://", "https://")):
-        return None, (f"image_url must be an http(s) URL, got {u[:40]!r}")
+        return None, (f"featured_image_url must be an http(s) URL, got {u[:40]!r}")
     return u, None
 
 
@@ -3418,8 +3424,8 @@ def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
         out["data"] = data
     if r["tags"]:
         out["tags"] = r["tags"]
-    if r["image_url"]:
-        out["image_url"] = r["image_url"]
+    if r["featured_image_url"]:
+        out["featured_image_url"] = r["featured_image_url"]
     return out
 
 
@@ -3465,7 +3471,7 @@ def save_collection(name: str, description: Optional[str] = None,
     distinct). Keep names short and plural ("recipes", "vacation spots"), keep
     fields FEW — a field earns its place by being worth scanning in a list.
     Never declare an image/photo field: every item already has a featured image
-    (save_item's `image_url`), which the app renders as an actual picture.
+    (save_item's `featured_image_url`), which the app renders as an actual picture.
     display_hint tells the webapp how to render: 'list' | 'table'.
 
     `icon` is the collection's glyph on the /collections grid. It must be a name
@@ -3522,7 +3528,7 @@ def save_collection(name: str, description: Optional[str] = None,
 def save_item(title: str, body: Optional[str] = None,
               collection: Optional[str] = None, data: Optional[dict] = None,
               tags: Optional[list[str]] = None,
-              image_url: Optional[str] = None) -> dict:
+              featured_image_url: Optional[str] = None) -> dict:
     """Save one item. No `collection` = an INBOX NOTE — the right default for
     anything that doesn't obviously belong to an existing collection; capture
     never blocks on filing. With a `collection` (exact name from
@@ -3533,14 +3539,14 @@ def save_item(title: str, body: Optional[str] = None,
     error naming the valid ones. Facts with no matching field stay in the body —
     don't invent keys.
 
-    `image_url` is the item's FEATURED IMAGE (an http/https URL) — a built-in
+    `featured_image_url` is the item's FEATURED IMAGE (an http/https URL) — a built-in
     every item has, in or out of a collection, so a collection never needs to
     declare an image field. Set it when the user gives you a picture's URL or
     the source page has an obvious one; leave it alone otherwise."""
     title = (title or "").strip()
     if not title:
         return {"error": "title is required"}
-    image, err = _clean_image_url(image_url)
+    image, err = _clean_featured_image(featured_image_url)
     if err:
         return {"error": err}
     with db() as conn:
@@ -3561,7 +3567,7 @@ def save_item(title: str, body: Optional[str] = None,
         data_clean = {k: v for k, v in (data or {}).items() if v is not None}
         ts = now()
         cur = conn.execute(
-            "INSERT INTO items(collection_id, title, body, data, image_url, tags, "
+            "INSERT INTO items(collection_id, title, body, data, featured_image_url, tags, "
             "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
             (coll_id, title, body, json.dumps(data_clean) if data_clean else None,
              image, _tags_text(tags), ts, ts))
@@ -3572,13 +3578,13 @@ def save_item(title: str, body: Optional[str] = None,
 @mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] = None,
                 data: Optional[dict] = None, tags: Optional[list[str]] = None,
-                image_url: Optional[str] = None) -> dict:
+                featured_image_url: Optional[str] = None) -> dict:
     """Edit one item: only the arguments you pass change. `body` and `tags`
     replace wholesale (read first via get_item, send back the full new value);
     `data` merges per key — send just the keys you're changing, null drops a
-    key. `image_url` replaces the featured image; pass "" to remove it.
+    key. `featured_image_url` replaces the featured image; pass "" to remove it.
     Moving between collections is move_to_collection, not this."""
-    image, err = _clean_image_url(image_url)
+    image, err = _clean_featured_image(featured_image_url)
     if err:
         return {"error": err}
     with db() as conn:
@@ -3600,14 +3606,14 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
                 else:
                     merged[k] = v
         conn.execute(
-            "UPDATE items SET title=?, body=?, data=?, image_url=?, tags=?, "
+            "UPDATE items SET title=?, body=?, data=?, featured_image_url=?, tags=?, "
             "updated_at=? WHERE id=?",
             (title if title is not None else r["title"],
              body if body is not None else r["body"],
              json.dumps(merged) if merged else None,
-             # None means "unchanged"; "" cleared it, which _clean_image_url
+             # None means "unchanged"; "" cleared it, which _clean_featured_image
              # also returns as None — so the empty string is the tell.
-             image if image_url is not None else r["image_url"],
+             image if featured_image_url is not None else r["featured_image_url"],
              _tags_text(tags) if tags is not None else r["tags"],
              now(), item_id))
     return {"item_id": item_id, "updated": True,
@@ -3717,7 +3723,7 @@ def get_item(item_id: int) -> dict:
     return {"item_id": r["id"], "title": r["title"], "body": r["body"],
             "collection": coll["name"] if coll else "inbox",
             "data": _item_data(r), "tags": r["tags"],
-            **({"image_url": r["image_url"]} if r["image_url"] else {}),
+            **({"featured_image_url": r["featured_image_url"]} if r["featured_image_url"] else {}),
             "created_at": r["created_at"], "updated_at": r["updated_at"]}
 
 

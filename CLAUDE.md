@@ -507,7 +507,7 @@ working.
   folder), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
   text|number|date|select) and a `display_hint` (list|table) the webapp
-  renders from. Items hold markdown `body` (the prose), an `image_url` (the
+  renders from. Items hold markdown `body` (the prose), an `featured_image_url` (the
   FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
   item carries one whether or not it's filed and no collection has to declare
   an image field; http/https only, since the webapp drops it straight into an

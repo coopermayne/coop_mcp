@@ -6,7 +6,7 @@
 {# One thumbnail rule for every item row here: the featured image is an items
    COLUMN, so a note in the inbox can carry one just like a filed item. Absent
    or dead URL → nothing renders, no broken-image box. #}
-{% macro thumb(it) %}{% if it.image_url %}<img src="{{ it.image_url }}" alt="" loading="lazy" onerror="this.remove()" class="shrink-0 w-12 h-12 object-cover rounded-[3px] border border-gray-200">{% endif %}{% endmacro %}
+{% macro thumb(it) %}{% if it.featured_image_url %}<img src="{{ it.featured_image_url }}" alt="" loading="lazy" onerror="this.remove()" class="shrink-0 w-12 h-12 object-cover rounded-[3px] border border-gray-200">{% endif %}{% endmacro %}
 
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Collections</h1>

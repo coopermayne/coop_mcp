@@ -865,7 +865,7 @@ def _item_view(r, fields: list[dict] | None = None) -> dict:
     else:
         ordered = [(k, k.replace("_", " "), v) for k, v in data_blob.items()]
     return {"item_id": r["id"], "title": r["title"], "body": r["body"] or "",
-            "image_url": r["image_url"] or "",
+            "featured_image_url": r["featured_image_url"] or "",
             "data": ordered, "data_map": data_blob,
             "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()],
             "updated": (r["updated_at"] or "")[:10]}
