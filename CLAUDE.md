@@ -497,7 +497,7 @@ working.
   default; a collection is model-proposed, user-approved (`save_collection` blocks
   near-duplicate names with "did you mean?" candidates unless `force=True`), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
-  text|number|date|select) and a `display_hint` (list|table|checklist) the webapp
+  text|number|date|select) and a `display_hint` (list|table) the webapp
   renders from. Items hold markdown `body` (the prose), a `data` JSON blob validated
   against the collection's fields (unknown key / bad type / bad select value come back
   as actionable errors — facts with no field stay in the body), and `tags`. Promotion
@@ -515,10 +515,22 @@ working.
   The one thing the browser writes is PRESENTATION: each collection page has a
   **Display** popover (view = the same `display_hint` column the model proposes at
   creation, so the user's pick simply wins; which declared fields show as table
-  columns / list badges; and the list view's notes-preview/tags/updated extras) saved
+  columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the list view's
+  notes-preview/tags/updated extras) saved
   to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
   `server.set_collection_display` — a NON-tool, website-only path like
-  `set_archived`, invisible to the model and to tool returns. The three
+  `set_archived`, invisible to the model and to tool returns. Those prefs are
+  PER-COLLECTION and persist in the DB, so a collection stays arranged the way the
+  user left it, on every device — nothing lives in the browser. Arrangement is
+  resolved in `data.collection_page`, which always hands the template `groups`
+  (one unlabeled bucket when ungrouped), each bucket pre-sorted, so both views
+  just loop; a bucket for items MISSING the grouped value sorts last, and a
+  `select` field groups in its own declared `options` order. The views are two,
+  not three: a `checklist` hint was dropped (it rendered exactly like `list`, and
+  an item has no done-state to check), migrated to `list` in `init_db`.
+  `/collections` also carries a title-only search across every collection AND the
+  inbox (`data.search_item_titles`, plain LIKE) — a "where did I file that"
+  lookup, deliberately not the model's FTS `search_items`. The three
   judgment rules (capture first/file second; structure proposed, never imposed;
   fields stay few) live in the journal server `instructions`.
 - `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via

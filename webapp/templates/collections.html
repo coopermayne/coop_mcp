@@ -7,6 +7,39 @@
   <span class="text-xs uppercase tracking-widest text-gray-400">{{ collections | length }}</span>
 </div>
 
+{# One bar for the whole flexible layer: titles across every collection AND the
+   inbox, since "which collection did that go in" is the question being asked.
+   With a query the browse lists step aside for the results. #}
+<form method="get" action="{{ base }}/collections" class="mb-8 flex gap-2">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search item titles…"
+         class="flex-1 px-3 py-2 border border-gray-200 text-sm focus:outline-none focus:border-black" />
+  <button type="submit" class="px-4 py-2 bg-black text-white text-xs font-medium hover:bg-gray-800 transition-colors">Search</button>
+  {% if q %}<a href="{{ base }}/collections" class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors flex items-center">Clear</a>{% endif %}
+</form>
+
+{% if hits is not none %}
+<div class="flex items-baseline justify-between mb-4">
+  <h2 class="text-xs uppercase tracking-widest text-gray-400">Results for “{{ q }}”</h2>
+  <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ hits | length }}</span>
+</div>
+{% if hits %}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for h in hits %}
+  <a href="{{ base }}/item/{{ h.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    <div class="flex items-baseline justify-between gap-3">
+      <span class="text-sm font-medium">{{ h.title }}</span>
+      <span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400">{{ h.collection or 'inbox' }}</span>
+    </div>
+    {% if h.body %}<p class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ h.body | truncate(160) }}</p>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400">No item titles match that.</p>
+{% endif %}
+
+{% else %}
+
 {% if collections %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for c in collections %}
@@ -42,6 +75,7 @@
 </div>
 {% else %}
 <p class="text-sm text-gray-400">No unfiled notes.</p>
+{% endif %}
 {% endif %}
 
 {% endblock %}

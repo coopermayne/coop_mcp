@@ -1389,7 +1389,13 @@ def _chat_context(body: dict):
 # the Display popover below, the library-★/♥ pattern applied to rendering.
 @app.get("/collections")
 async def collections(request: Request):
-    return page(request, "collections.html", active="collections",
+    """The collections index — or, with ?q=, a title search across every
+    collection AND the inbox (one bar for the whole flexible layer, since
+    "which collection is that in" is the question you're asking when you
+    can't find something)."""
+    q = (request.query_params.get("q") or "").strip()
+    return page(request, "collections.html", active="collections", q=q,
+                hits=data.search_item_titles(q) if q else None,
                 **data.collections_overview())
 
 
@@ -1405,16 +1411,19 @@ async def collection(request: Request, name: str):
 @app.post("/collections/{name}/display")
 async def collection_display(request: Request, name: str):
     """Save the collection page's Display popover: view (display_hint), which
-    declared fields show, and the list view's extras. A website-only write path
-    through server.set_collection_display (never a FastMCP tool — the model
-    proposes a collection's shape at creation; what renders is the user's call).
-    Body: {display_hint?, hidden_fields?, show_body?, show_tags?, show_updated?}."""
+    declared fields show, how the items are grouped/sorted, and the list view's
+    extras. A website-only write path through server.set_collection_display
+    (never a FastMCP tool — the model proposes a collection's shape at creation;
+    what renders is the user's call). Body: {display_hint?, hidden_fields?,
+    group_by?, sort_by?, sort_dir?, show_body?, show_tags?, show_updated?}."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     res = server.set_collection_display(
         name,
         display_hint=body.get("display_hint"),
         hidden_fields=body.get("hidden_fields"),
+        group_by=body.get("group_by"), sort_by=body.get("sort_by"),
+        sort_dir=body.get("sort_dir"),
         show_body=body.get("show_body"), show_tags=body.get("show_tags"),
         show_updated=body.get("show_updated"))
     code = 400 if isinstance(res, dict) and res.get("error") else 200

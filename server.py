@@ -800,7 +800,7 @@ CREATE TABLE IF NOT EXISTS collections (
     name         TEXT NOT NULL UNIQUE,     -- lowercased slug-ish ("recipes", "vacation spots")
     description  TEXT,                     -- one line: what belongs here (the model reads this)
     fields       TEXT NOT NULL DEFAULT '[]',  -- JSON [{key,label,type,options?}] — types: text|number|date|select
-    display_hint TEXT NOT NULL DEFAULT 'list',-- webapp rendering: 'list' | 'table' | 'checklist'
+    display_hint TEXT NOT NULL DEFAULT 'list',-- webapp rendering: 'list' | 'table'
     created_at   TEXT NOT NULL
 );
 
@@ -919,6 +919,11 @@ def init_db() -> None:
             # set_collection_display (a non-tool path); the model never reads or
             # writes it.
             conn.execute("ALTER TABLE collections ADD COLUMN display TEXT")
+        # 'checklist' was a third display_hint that rendered exactly like 'list'
+        # (there is no done-state on an item to check off), so it was dropped.
+        # Any row still carrying it becomes what it already looked like.
+        conn.execute("UPDATE collections SET display_hint='list' "
+                     "WHERE display_hint='checklist'")
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
         for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
@@ -3098,7 +3103,7 @@ def find_past_items(query: str, limit: int = 8) -> dict:
 # --------------------------------------------------------------------------- #
 
 FIELD_TYPES = ("text", "number", "date", "select")
-DISPLAY_HINTS = ("list", "table", "checklist")
+DISPLAY_HINTS = ("list", "table")
 # Below-exact-but-close on a collection name: block creation and surface the
 # near-match instead (the create_collection "did you mean?" — same idea as
 # EX_CONFIDENT: a wrong-but-confident auto-create is worse than one question).
@@ -3180,7 +3185,13 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
 
 
 COLLECTION_DISPLAY_DEFAULTS = {"hidden_fields": [], "show_body": True,
-                               "show_tags": True, "show_updated": True}
+                               "show_tags": True, "show_updated": True,
+                               # "" = don't group / the default sort. group_by
+                               # and sort_by are a declared field key; sort_by
+                               # also takes the two intrinsic columns below.
+                               "group_by": "", "sort_by": "", "sort_dir": "desc"}
+# Sort keys that aren't declared fields: every item has these.
+SORT_INTRINSICS = ("updated", "title")
 
 
 def _coll_display(row) -> dict:
@@ -3198,19 +3209,29 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
                            hidden_fields: Optional[list[str]] = None,
                            show_body: Optional[bool] = None,
                            show_tags: Optional[bool] = None,
-                           show_updated: Optional[bool] = None) -> dict:
+                           show_updated: Optional[bool] = None,
+                           group_by: Optional[str] = None,
+                           sort_by: Optional[str] = None,
+                           sort_dir: Optional[str] = None) -> dict:
     """Set how the webapp renders one collection — the collection page's Display
     popover. A NON-tool, website-only path (like set_archived/create_exercise):
     the model proposes fields and a display_hint when a collection is created,
     but what actually shows on the page is the USER's call, so these preferences
     are written only from the UI and never surface in tool returns.
 
-    display_hint switches the view (list|table|checklist — the same column the
+    display_hint switches the view (list|table — the same column the
     model sets at creation, so the user's pick simply wins until the model
     writes it again); everything else lives in the webapp-only `display` JSON:
     hidden_fields (declared field keys to leave off the table columns / list
-    badges) and show_body/show_tags/show_updated (the list view's extras).
-    Args left None are unchanged; pass hidden_fields=[] to unhide everything.
+    badges), show_body/show_tags/show_updated (the list view's extras), and
+    how the items are arranged: group_by (a declared field key — items are
+    bucketed under one heading per distinct value, ones missing it last) plus
+    sort_by ('updated', 'title', or a declared field key) and sort_dir
+    ('asc'|'desc'). Grouping and sorting apply to BOTH views; sorting runs
+    within each group.
+
+    Args left None are unchanged; pass hidden_fields=[] to unhide everything,
+    and group_by='' / sort_by='' to go back to ungrouped / newest-updated.
     Unknown field keys error rather than silently sticking."""
     if display_hint is not None and display_hint not in DISPLAY_HINTS:
         return {"error": f"bad display_hint {display_hint!r}; "
@@ -3220,12 +3241,26 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
         if not row:
             return {"error": f"no collection named {name!r}", "candidates": cands}
         disp = _coll_display(row)
+        keys = {f["key"] for f in _coll_fields(row)}
         if hidden_fields is not None:
-            keys = {f["key"] for f in _coll_fields(row)}
             if bad := [k for k in hidden_fields if k not in keys]:
                 return {"error": f"unknown field keys {bad}; "
                                  f"declared: {sorted(keys)}"}
             disp["hidden_fields"] = list(dict.fromkeys(hidden_fields))
+        if group_by is not None:
+            if group_by and group_by not in keys:
+                return {"error": f"unknown field key {group_by!r} for group_by; "
+                                 f"declared: {sorted(keys)}"}
+            disp["group_by"] = group_by
+        if sort_by is not None:
+            if sort_by and sort_by not in keys and sort_by not in SORT_INTRINSICS:
+                return {"error": f"unknown sort_by {sort_by!r}; use one of "
+                                 f"{list(SORT_INTRINSICS)} or {sorted(keys)}"}
+            disp["sort_by"] = sort_by
+        if sort_dir is not None:
+            if sort_dir not in ("asc", "desc"):
+                return {"error": f"bad sort_dir {sort_dir!r}; use 'asc' or 'desc'"}
+            disp["sort_dir"] = sort_dir
         for k, v in (("show_body", show_body), ("show_tags", show_tags),
                      ("show_updated", show_updated)):
             if v is not None:
@@ -3305,7 +3340,7 @@ def save_collection(name: str, description: Optional[str] = None,
     creating (pass force=True only after the user confirms it's genuinely
     distinct). Keep names short and plural ("recipes", "vacation spots"), keep
     fields FEW — a field earns its place by being worth scanning in a list.
-    display_hint tells the webapp how to render: 'list' | 'table' | 'checklist'."""
+    display_hint tells the webapp how to render: 'list' | 'table'."""
     n = (name or "").strip().lower()
     if not n:
         return {"error": "name is required"}

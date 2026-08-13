@@ -17,7 +17,7 @@
          class="absolute right-0 top-7 z-20 w-60 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">View</p>
       <div class="space-y-1.5 mb-4">
-        {% for h in ['list', 'table', 'checklist'] %}
+        {% for h in ['list', 'table'] %}
         <label class="flex items-center gap-2 cursor-pointer capitalize">
           <input type="radio" name="disp-view" value="{{ h }}" class="accent-black"
                  {% if c.display_hint == h %}checked{% endif %}>
@@ -36,7 +36,32 @@
         </label>
         {% endfor %}
       </div>
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Group by</p>
+      <select id="disp-group" class="w-full mb-4 border border-gray-200 rounded-[4px] px-2 py-1.5 text-sm">
+        <option value="" {% if not c.display.group_by %}selected{% endif %}>Nothing</option>
+        {% for f in c.all_fields %}
+        <option value="{{ f.key }}" {% if c.display.group_by == f.key %}selected{% endif %}>{{ f.label }}</option>
+        {% endfor %}
+      </select>
       {% endif %}
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Sort by</p>
+      <select id="disp-sort" class="w-full mb-2 border border-gray-200 rounded-[4px] px-2 py-1.5 text-sm">
+        <option value="" {% if not c.display.sort_by %}selected{% endif %}>Recently updated</option>
+        <option value="title" {% if c.display.sort_by == 'title' %}selected{% endif %}>Title</option>
+        <option value="updated" {% if c.display.sort_by == 'updated' %}selected{% endif %}>Updated date</option>
+        {% for f in c.all_fields %}
+        <option value="{{ f.key }}" {% if c.display.sort_by == f.key %}selected{% endif %}>{{ f.label }}</option>
+        {% endfor %}
+      </select>
+      <div class="flex gap-4 mb-4">
+        {% for d, lbl in [('asc', 'Ascending'), ('desc', 'Descending')] %}
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="radio" name="disp-dir" value="{{ d }}" class="accent-black"
+                 {% if c.display.sort_dir == d %}checked{% endif %}>
+          <span>{{ lbl }}</span>
+        </label>
+        {% endfor %}
+      </div>
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Show</p>
       <div class="space-y-1.5 mb-4">
         <label class="flex items-center gap-2 cursor-pointer">
@@ -62,10 +87,15 @@
 {% if not c.rows %}
 <p class="text-sm text-gray-400">Nothing here yet.</p>
 
-{% elif c.display_hint == 'table' and c.fields %}
+{% elif c.display_hint == 'table' %}
 {# Table hint: one row per item, one column per VISIBLE field (c.fields is
-   already filtered by the Display prefs). Wide tables scroll inside their own
-   container so the page never scrolls sideways. #}
+   already filtered by the Display prefs). With every field hidden it's a
+   one-column table of titles — still recognizably the table view, which is
+   what the user picked; falling back to the list stack here made the two
+   views indistinguishable. Wide tables scroll inside their own container so
+   the page never scrolls sideways. Grouping (data.collection_page resolved it
+   into buckets) is a spanning heading row, so one table keeps its columns
+   aligned across every group. #}
 <div class="border border-gray-200 rounded-[4px] overflow-x-auto">
   <table class="w-full text-sm">
     <thead>
@@ -75,7 +105,15 @@
       </tr>
     </thead>
     <tbody class="divide-y divide-gray-100">
-      {% for it in c.rows %}
+      {% for g in c.groups %}
+      {% if g.label %}
+      <tr class="bg-gray-50">
+        <td colspan="{{ c.fields | length + 1 }}" class="px-5 sm:px-6 py-2 text-[10px] uppercase tracking-widest text-gray-400">
+          {{ g.label }} <span class="tabular-nums">· {{ g.rows | length }}</span>
+        </td>
+      </tr>
+      {% endif %}
+      {% for it in g.rows %}
       <tr class="hover:bg-gray-50 transition-colors">
         <td class="px-5 sm:px-6 py-3">
           <a href="{{ base }}/item/{{ it.item_id }}" class="font-medium hover:underline underline-offset-2">{{ it.title }}</a>
@@ -85,16 +123,24 @@
         {% endfor %}
       </tr>
       {% endfor %}
+      {% endfor %}
     </tbody>
   </table>
 </div>
 
 {% else %}
-{# 'list' and 'checklist' render the same quiet stack; a checklist's status-ish
-   select field already reads as the leading badge. Badges show only VISIBLE
-   fields (it.data is built from them); the extras honor the Display prefs. #}
+{# 'list' — the quiet stack, and the fallback for any unrecognized hint. Badges
+   show only VISIBLE fields (it.data is built from them); the extras honor the
+   Display prefs. Grouped, each bucket is its own bordered stack under a quiet
+   heading; ungrouped, there's exactly one bucket and it reads as before. #}
+{% for g in c.groups %}
+{% if g.label %}
+<p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2 {% if not loop.first %}mt-8{% endif %}">
+  {{ g.label }} <span class="tabular-nums text-gray-300">· {{ g.rows | length }}</span>
+</p>
+{% endif %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
-  {% for it in c.rows %}
+  {% for it in g.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
     <div class="flex items-baseline justify-between gap-3">
       <span class="text-sm font-medium">{{ it.title }}</span>
@@ -110,6 +156,7 @@
   </a>
   {% endfor %}
 </div>
+{% endfor %}
 {% endif %}
 
 <script>
@@ -131,6 +178,9 @@
       body: JSON.stringify({
         display_hint: pop.querySelector('input[name="disp-view"]:checked').value,
         hidden_fields: hidden,
+        group_by: (document.getElementById('disp-group') || {}).value || '',
+        sort_by: document.getElementById('disp-sort').value,
+        sort_dir: pop.querySelector('input[name="disp-dir"]:checked').value,
         show_body: document.getElementById('disp-body').checked,
         show_tags: document.getElementById('disp-tags').checked,
         show_updated: document.getElementById('disp-updated').checked
