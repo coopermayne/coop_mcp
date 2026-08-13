@@ -847,8 +847,9 @@ def graph_data() -> dict:
 
 # --------------------------------------------------------------------------- #
 # Notes & collections — the flexible layer's browse reads. Rendering is driven
-# by each collection's own metadata (fields + display_hint), so a new collection
-# gets a page without any code here changing. Writes stay on the MCP tools.
+# by each collection's own metadata (its fields + the webapp's view prefs), so a
+# new collection gets a page without any code here changing. Writes stay on the
+# MCP tools — except the prefs themselves, which the Display popover owns.
 # --------------------------------------------------------------------------- #
 
 def _item_view(r, fields: list[dict] | None = None) -> dict:
@@ -953,7 +954,7 @@ def collections_overview() -> dict:
         counts = {r["collection_id"]: r["n"] for r in conn.execute(
             "SELECT collection_id, COUNT(*) AS n FROM items GROUP BY collection_id")}
         colls = [{"name": r["name"], "description": r["description"] or "",
-                  "display_hint": r["display_hint"], "count": counts.get(r["id"], 0),
+                  "count": counts.get(r["id"], 0),
                   "icon": r["icon"] or server.icon_set.DEFAULT_ICON}
                  for r in conn.execute("SELECT * FROM collections ORDER BY name")]
         notes = [_item_view(r) for r in conn.execute(
@@ -991,7 +992,7 @@ def collection_page(name: str) -> dict | None:
         g["rows"] = _sorted_items(g["rows"], display["sort_by"],
                                   display["sort_dir"] == "desc", ftypes)
     return {"name": c["name"], "description": c["description"] or "",
-            "display_hint": c["display_hint"], "fields": visible,
+            "fields": visible,
             "icon": c["icon"] or server.icon_set.DEFAULT_ICON,
             "all_fields": fields, "display": display,
             "groups": groups, "rows": items,
