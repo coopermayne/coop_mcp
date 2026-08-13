@@ -17,6 +17,15 @@
 </div>
 {% endif %}
 
+{% if it.image_url %}
+{# Featured image — an items COLUMN, so any item can carry one without its
+   collection declaring a field. Lazy, and it simply disappears if the remote
+   URL dies (onerror), rather than leaving a broken-image box on the page. #}
+<img src="{{ it.image_url }}" alt="" loading="lazy"
+     class="mt-6 w-full max-h-96 object-cover rounded-[4px] border border-gray-200"
+     onerror="this.remove()">
+{% endif %}
+
 {% if it.body %}
 {# Body is markdown, rendered through the same [data-md] → chat-md pipeline the
    journal feed uses, so notes read identically everywhere. #}

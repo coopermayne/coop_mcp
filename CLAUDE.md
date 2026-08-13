@@ -498,7 +498,14 @@ working.
   near-duplicate names with "did you mean?" candidates unless `force=True`), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
   text|number|date|select) and a `display_hint` (list|table) the webapp
-  renders from. Items hold markdown `body` (the prose), a `data` JSON blob validated
+  renders from. Items hold markdown `body` (the prose), an `image_url` (the
+  FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
+  item carries one whether or not it's filed and no collection has to declare
+  an image field; http/https only, since the webapp drops it straight into an
+  `<img src>`, and `""` clears it via `update_item`. Rendered as a thumbnail on
+  every item row — collection page, inbox, search — and full-width on the item
+  page, each with `onerror="this.remove()"` so a dead URL leaves nothing rather
+  than a broken-image box), a `data` JSON blob validated
   against the collection's fields (unknown key / bad type / bad select value come back
   as actionable errors — facts with no field stay in the body), and `tags`. Promotion
   (note → collection item) is `move_to_collection`: pure data movement, reversible,
@@ -515,8 +522,8 @@ working.
   The one thing the browser writes is PRESENTATION: each collection page has a
   **Display** popover (view = the same `display_hint` column the model proposes at
   creation, so the user's pick simply wins; which declared fields show as table
-  columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the list view's
-  notes-preview/tags/updated extras) saved
+  columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
+  notes-preview/tags/updated/featured-image) saved
   to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
   `server.set_collection_display` — a NON-tool, website-only path like
   `set_archived`, invisible to the model and to tool returns. Those prefs are

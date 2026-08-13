@@ -811,6 +811,8 @@ CREATE TABLE IF NOT EXISTS items (
     title         TEXT NOT NULL,
     body          TEXT,                   -- markdown prose (the note itself / the item's writeup)
     data          TEXT,                   -- JSON keyed by the collection's field keys
+    image_url     TEXT,                   -- featured image (http/https URL) — a column, not a
+                                          -- declared field: EVERY item can have one
     tags          TEXT,                   -- comma-separated lowercase labels; searchable via FTS
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
@@ -924,6 +926,10 @@ def init_db() -> None:
         # Any row still carrying it becomes what it already looked like.
         conn.execute("UPDATE collections SET display_hint='list' "
                      "WHERE display_hint='checklist'")
+        icols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
+        if "image_url" not in icols:
+            # Featured image, available to EVERY item (see the items table).
+            conn.execute("ALTER TABLE items ADD COLUMN image_url TEXT")
         pcols = [r["name"] for r in conn.execute("PRAGMA table_info(people)")]
         for col in ("summary", "contact", "email", "phone", "address"):
             if col not in pcols:
@@ -3186,6 +3192,7 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
 
 COLLECTION_DISPLAY_DEFAULTS = {"hidden_fields": [], "show_body": True,
                                "show_tags": True, "show_updated": True,
+                               "show_image": True,
                                # "" = don't group / the default sort. group_by
                                # and sort_by are a declared field key; sort_by
                                # also takes the two intrinsic columns below.
@@ -3210,6 +3217,7 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
                            show_body: Optional[bool] = None,
                            show_tags: Optional[bool] = None,
                            show_updated: Optional[bool] = None,
+                           show_image: Optional[bool] = None,
                            group_by: Optional[str] = None,
                            sort_by: Optional[str] = None,
                            sort_dir: Optional[str] = None) -> dict:
@@ -3223,7 +3231,7 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
     model sets at creation, so the user's pick simply wins until the model
     writes it again); everything else lives in the webapp-only `display` JSON:
     hidden_fields (declared field keys to leave off the table columns / list
-    badges), show_body/show_tags/show_updated (the list view's extras), and
+    badges), show_body/show_tags/show_updated/show_image (the row extras), and
     how the items are arranged: group_by (a declared field key — items are
     bucketed under one heading per distinct value, ones missing it last) plus
     sort_by ('updated', 'title', or a declared field key) and sort_dir
@@ -3262,7 +3270,7 @@ def set_collection_display(name: str, display_hint: Optional[str] = None,
                 return {"error": f"bad sort_dir {sort_dir!r}; use 'asc' or 'desc'"}
             disp["sort_dir"] = sort_dir
         for k, v in (("show_body", show_body), ("show_tags", show_tags),
-                     ("show_updated", show_updated)):
+                     ("show_updated", show_updated), ("show_image", show_image)):
             if v is not None:
                 disp[k] = bool(v)
         conn.execute(
@@ -3278,6 +3286,18 @@ def _tags_text(tags: Optional[list[str]]) -> Optional[str]:
         return None
     cleaned = sorted({t.strip().lower() for t in tags if t and t.strip()})
     return ", ".join(cleaned) if cleaned else ""
+
+
+def _clean_image_url(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """(value, error) for a featured image URL. Http(s) only — the webapp drops
+    it straight into an <img src>, so a javascript:/data: URL has no business
+    here; "" clears it."""
+    u = (url or "").strip()
+    if not u:
+        return None, None
+    if not u.lower().startswith(("http://", "https://")):
+        return None, (f"image_url must be an http(s) URL, got {u[:40]!r}")
+    return u, None
 
 
 def _item_data(r) -> dict:
@@ -3298,6 +3318,8 @@ def _item_brief(r, coll_name: Optional[str], max_chars: int = 200) -> dict:
         out["data"] = data
     if r["tags"]:
         out["tags"] = r["tags"]
+    if r["image_url"]:
+        out["image_url"] = r["image_url"]
     return out
 
 
@@ -3385,7 +3407,8 @@ def save_collection(name: str, description: Optional[str] = None,
 @mcp.tool(annotations=WRITE)
 def save_item(title: str, body: Optional[str] = None,
               collection: Optional[str] = None, data: Optional[dict] = None,
-              tags: Optional[list[str]] = None) -> dict:
+              tags: Optional[list[str]] = None,
+              image_url: Optional[str] = None) -> dict:
     """Save one item. No `collection` = an INBOX NOTE — the right default for
     anything that doesn't obviously belong to an existing collection; capture
     never blocks on filing. With a `collection` (exact name from
@@ -3394,10 +3417,18 @@ def save_item(title: str, body: Optional[str] = None,
     as a journal entry). A near-miss collection name comes back as candidates
     rather than saving to the wrong place; an unknown data key comes back as an
     error naming the valid ones. Facts with no matching field stay in the body —
-    don't invent keys."""
+    don't invent keys.
+
+    `image_url` is the item's FEATURED IMAGE (an http/https URL) — a built-in
+    every item has, in or out of a collection, so a collection never needs to
+    declare an image field. Set it when the user gives you a picture's URL or
+    the source page has an obvious one; leave it alone otherwise."""
     title = (title or "").strip()
     if not title:
         return {"error": "title is required"}
+    image, err = _clean_image_url(image_url)
+    if err:
+        return {"error": err}
     with db() as conn:
         coll_id, coll_name = None, None
         if collection:
@@ -3416,21 +3447,26 @@ def save_item(title: str, body: Optional[str] = None,
         data_clean = {k: v for k, v in (data or {}).items() if v is not None}
         ts = now()
         cur = conn.execute(
-            "INSERT INTO items(collection_id, title, body, data, tags, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO items(collection_id, title, body, data, image_url, tags, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
             (coll_id, title, body, json.dumps(data_clean) if data_clean else None,
-             _tags_text(tags), ts, ts))
+             image, _tags_text(tags), ts, ts))
         item_id = cur.lastrowid
     return {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
 
 
 @mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] = None,
-                data: Optional[dict] = None, tags: Optional[list[str]] = None) -> dict:
+                data: Optional[dict] = None, tags: Optional[list[str]] = None,
+                image_url: Optional[str] = None) -> dict:
     """Edit one item: only the arguments you pass change. `body` and `tags`
     replace wholesale (read first via get_item, send back the full new value);
     `data` merges per key — send just the keys you're changing, null drops a
-    key. Moving between collections is move_to_collection, not this."""
+    key. `image_url` replaces the featured image; pass "" to remove it.
+    Moving between collections is move_to_collection, not this."""
+    image, err = _clean_image_url(image_url)
+    if err:
+        return {"error": err}
     with db() as conn:
         r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
         if not r:
@@ -3450,10 +3486,14 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
                 else:
                     merged[k] = v
         conn.execute(
-            "UPDATE items SET title=?, body=?, data=?, tags=?, updated_at=? WHERE id=?",
+            "UPDATE items SET title=?, body=?, data=?, image_url=?, tags=?, "
+            "updated_at=? WHERE id=?",
             (title if title is not None else r["title"],
              body if body is not None else r["body"],
              json.dumps(merged) if merged else None,
+             # None means "unchanged"; "" cleared it, which _clean_image_url
+             # also returns as None — so the empty string is the tell.
+             image if image_url is not None else r["image_url"],
              _tags_text(tags) if tags is not None else r["tags"],
              now(), item_id))
     return {"item_id": item_id, "updated": True,
@@ -3563,6 +3603,7 @@ def get_item(item_id: int) -> dict:
     return {"item_id": r["id"], "title": r["title"], "body": r["body"],
             "collection": coll["name"] if coll else "inbox",
             "data": _item_data(r), "tags": r["tags"],
+            **({"image_url": r["image_url"]} if r["image_url"] else {}),
             "created_at": r["created_at"], "updated_at": r["updated_at"]}
 
 

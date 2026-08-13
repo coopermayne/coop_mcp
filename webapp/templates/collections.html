@@ -2,6 +2,11 @@
 {% block title %}Collections · Journal{% endblock %}
 {% block content %}
 
+{# One thumbnail rule for every item row here: the featured image is an items
+   COLUMN, so a note in the inbox can carry one just like a filed item. Absent
+   or dead URL → nothing renders, no broken-image box. #}
+{% macro thumb(it) %}{% if it.image_url %}<img src="{{ it.image_url }}" alt="" loading="lazy" onerror="this.remove()" class="shrink-0 w-12 h-12 object-cover rounded-[3px] border border-gray-200">{% endif %}{% endmacro %}
+
 <div class="flex items-baseline justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Collections</h1>
   <span class="text-xs uppercase tracking-widest text-gray-400">{{ collections | length }}</span>
@@ -25,12 +30,15 @@
 {% if hits %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for h in hits %}
-  <a href="{{ base }}/item/{{ h.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
-    <div class="flex items-baseline justify-between gap-3">
-      <span class="text-sm font-medium">{{ h.title }}</span>
-      <span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400">{{ h.collection or 'inbox' }}</span>
+  <a href="{{ base }}/item/{{ h.item_id }}" class="flex gap-4 px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    {{ thumb(h) }}
+    <div class="min-w-0 flex-1">
+      <div class="flex items-baseline justify-between gap-3">
+        <span class="text-sm font-medium">{{ h.title }}</span>
+        <span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400">{{ h.collection or 'inbox' }}</span>
+      </div>
+      {% if h.body %}<p class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ h.body | truncate(160) }}</p>{% endif %}
     </div>
-    {% if h.body %}<p class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ h.body | truncate(160) }}</p>{% endif %}
   </a>
   {% endfor %}
 </div>
@@ -64,12 +72,15 @@
 {% if notes %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
   {% for n in notes %}
-  <a href="{{ base }}/item/{{ n.item_id }}" class="block px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
-    <div class="flex items-baseline justify-between gap-3">
-      <span class="text-sm font-medium">{{ n.title }}</span>
-      {% if n.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ n.updated | short_date }}</span>{% endif %}
+  <a href="{{ base }}/item/{{ n.item_id }}" class="flex gap-4 px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
+    {{ thumb(n) }}
+    <div class="min-w-0 flex-1">
+      <div class="flex items-baseline justify-between gap-3">
+        <span class="text-sm font-medium">{{ n.title }}</span>
+        {% if n.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ n.updated | short_date }}</span>{% endif %}
+      </div>
+      {% if n.body %}<p class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ n.body | truncate(160) }}</p>{% endif %}
     </div>
-    {% if n.body %}<p class="text-xs text-gray-500 mt-0.5 line-clamp-2">{{ n.body | truncate(160) }}</p>{% endif %}
   </a>
   {% endfor %}
 </div>

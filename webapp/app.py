@@ -1425,7 +1425,7 @@ async def collection_display(request: Request, name: str):
         group_by=body.get("group_by"), sort_by=body.get("sort_by"),
         sort_dir=body.get("sort_dir"),
         show_body=body.get("show_body"), show_tags=body.get("show_tags"),
-        show_updated=body.get("show_updated"))
+        show_updated=body.get("show_updated"), show_image=body.get("show_image"))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 
