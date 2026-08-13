@@ -88,10 +88,6 @@
           <span>Notes preview</span>
         </label>
         <label class="flex items-center gap-2 cursor-pointer">
-          <input id="disp-tags" type="checkbox" class="accent-black" {% if c.display.show_tags %}checked{% endif %}>
-          <span>Tags</span>
-        </label>
-        <label class="flex items-center gap-2 cursor-pointer">
           <input id="disp-updated" type="checkbox" class="accent-black" {% if c.display.show_updated %}checked{% endif %}>
           <span>Updated date</span>
         </label>
@@ -189,10 +185,9 @@
       <span class="text-sm font-medium">{{ it.title }}</span>
       {% if c.display.show_updated and it.updated %}<span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ it.updated | short_date }}</span>{% endif %}
     </div>
-    {% if it.data or (c.display.show_tags and it.tags) %}
+    {% if it.data %}
     <div class="flex flex-wrap items-center gap-2 mt-1.5">
       {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
-      {% if c.display.show_tags %}{% for t in it.tags %}<span class="badge">{{ t }}</span>{% endfor %}{% endif %}
     </div>
     {% endif %}
     {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}
@@ -239,7 +234,6 @@
         sort_by: document.getElementById('disp-sort').value,
         sort_dir: pop.querySelector('input[name="disp-dir"]:checked').value,
         show_body: document.getElementById('disp-body').checked,
-        show_tags: document.getElementById('disp-tags').checked,
         show_updated: document.getElementById('disp-updated').checked,
         show_image: document.getElementById('disp-image').checked,
         icon: icon
