@@ -342,10 +342,13 @@ working.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
-- `drinks` — LEGACY, dormant. Alcohol is an intake item now (see `intake_items`);
-  this table and `server.log_drinks`/`get_drink_summary`/`update_drink` are kept only
-  as the fold-in migration's source and the one copy of the per-day `kind`
-  ("beer, wine"), which the item rows have no column for. Nothing reads it.
+- `drinks` — LEGACY, dormant. Alcohol is an intake item now (see `intake_items`).
+  The TABLE is kept as the fold-in migration's source and the one copy of the
+  per-day `kind` ("beer, wine"), which the item rows have no column for; the
+  CODE that read and wrote it (`log_drinks`/`get_drink_summary`/`update_drink`,
+  and `_delete_record`'s `"drink"` kind) is DELETED. Dormant data costs nothing;
+  dormant code is a trap — a live-looking reader of this table is what left the
+  /graphs drinks series empty for months after the fold. Nothing reads it.
 - `intake_items` — the INTAKE log: **one row per thing consumed**. A sandwich is a
   row, a beer is a row, a 12oz glass of water is a row — food, alcohol and water are
   the same kind of fact, so they share one table, one tool path, and one set of
