@@ -674,14 +674,17 @@ working.
   GRID of icon cards rather than a list — the icon is what you aim at, and a stack of
   near-identical text rows made every collection look alike.
   The one thing the browser writes is PRESENTATION: each collection page has a
-  **Display** popover (`view` = list|table, webapp-only: it was a model-written
+  **Display** popover (`view` = list|table|cards, webapp-only: it was a model-written
   `display_hint` column until that guess proved worthless — the first popover
   visit overwrote it, so one concern had two homes and only the browser's ever
   won. `init_db` folds the old column into the JSON once and it's dormant after,
   kept not dropped; which declared fields show as table
   columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
   notes-preview, updated, and `image_size` (`off|small|medium|large`, the
-  featured image's thumbnail edge, a step smaller in the denser table view;
+  featured image's thumbnail edge, a step smaller in the denser table view —
+  and in `cards`, where the picture is the card's whole top edge rather than a
+  tile beside the text, the same pref sizes the CARD (the grid's minimum column)
+  instead;
   it replaced a `show_image` BOOLEAN, folded in by `init_db`, because a size
   and a visibility flag ask the same question twice and can disagree — "off"
   is just the small end. The px values live in `collection.html` as an inline
@@ -693,11 +696,16 @@ working.
   PER-COLLECTION and persist in the DB, so a collection stays arranged the way the
   user left it, on every device — nothing lives in the browser. Arrangement is
   resolved in `data.collection_page`, which always hands the template `groups`
-  (one unlabeled bucket when ungrouped), each bucket pre-sorted, so both views
-  just loop; a bucket for items MISSING the grouped value sorts last, and a
-  `select` field groups in its own declared `options` order. The views are two,
-  not three: a `checklist` hint was dropped (it rendered exactly like `list`, and
-  an item has no done-state to check), migrated to `list` in `init_db`.
+  (one unlabeled bucket when ungrouped), each bucket pre-sorted, so every view
+  just loops; a bucket for items MISSING the grouped value sorts last, and a
+  `select` field groups in its own declared `options` order. A `checklist` hint
+  was dropped (it rendered exactly like `list`, and an item has no done-state to
+  check), migrated to `list` in `init_db`; `cards` earns its place the way that
+  one didn't — it's the one view where the IMAGE leads instead of accompanying
+  (a grid of picture-on-top cards, auto-fill columns), so a collection that gets
+  LOOKED at rather than read reads as a contact sheet. An item with no featured
+  image still draws a placeholder tile wearing the collection's icon: skipping
+  the box would sit that card short and ragged its row.
   `/collections` also carries a title-only search across every collection AND the
   inbox (`data.search_item_titles`, plain LIKE) — a "where did I file that"
   lookup, deliberately not the model's FTS `notes_search`. The three

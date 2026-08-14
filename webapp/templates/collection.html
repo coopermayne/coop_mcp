@@ -22,7 +22,7 @@
          not a display pref — this popover is layout only. #}
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">View</p>
       <div class="space-y-1.5 mb-4">
-        {% for h in ['list', 'table'] %}
+        {% for h in ['list', 'table', 'cards'] %}
         <label class="flex items-center gap-2 cursor-pointer capitalize">
           <input type="radio" name="disp-view" value="{{ h }}" class="accent-black"
                  {% if c.display.view == h %}checked{% endif %}>
@@ -103,6 +103,12 @@
 {% set IMG_PX_TABLE = {'small': 28, 'medium': 40, 'large': 60} %}
 {% set img_px = IMG_PX.get(c.display.image_size) %}
 {% set img_px_table = IMG_PX_TABLE.get(c.display.image_size) %}
+{# In the CARDS view the picture isn't a thumbnail beside the text — it's the
+   card's whole top edge — so image_size sizes the CARD (the grid's minimum
+   column) instead of an inline tile. 'off' still means no picture, and the
+   cards just get the medium width, since a text-only card still needs a width. #}
+{% set CARD_PX = {'off': 190, 'small': 150, 'medium': 190, 'large': 260} %}
+{% set card_px = CARD_PX.get(c.display.image_size, 190) %}
 
 {% if not c.rows %}
 <p class="text-sm text-gray-400">Nothing here yet.</p>
@@ -160,6 +166,53 @@
     </tbody>
   </table>
 </div>
+
+{% elif c.display.view == 'cards' %}
+{# 'cards' — the classic grid: picture on top, text under it. The one view where
+   the IMAGE leads rather than accompanies, so a collection that's mostly looked
+   at (recipes, places) reads as a contact sheet instead of a stack of titles.
+   The grid is auto-fill/minmax so the column count follows the viewport, and the
+   minimum comes from image_size (see CARD_PX) — data, hence an inline style.
+   An item with no picture keeps a placeholder tile wearing the collection's own
+   icon: a card that skipped the image would sit shorter than its neighbors and
+   ragged the row. Grouping is the same gray-100 band the other two views use,
+   above each grid rather than inside it. #}
+{% for g in c.groups %}
+{% if g.label %}
+<div class="flex items-baseline justify-between bg-gray-100 border border-gray-200 rounded-[4px] px-4 py-2.5 {% if loop.first %}mb-4{% else %}mt-8 mb-4{% endif %}">
+  <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
+  <span class="text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
+</div>
+{% endif %}
+<div class="grid gap-4 {% if not (g.label or loop.first) %}mt-8{% endif %}"
+     style="grid-template-columns:repeat(auto-fill,minmax({{ card_px }}px,1fr))">
+  {% for it in g.rows %}
+  <a href="{{ base }}/item/{{ it.item_id }}"
+     class="group flex flex-col border border-gray-200 rounded-[4px] overflow-hidden hover:border-black transition-colors">
+    {% if c.display.image_size != 'off' %}
+    <div class="aspect-[4/3] bg-gray-50 border-b border-gray-200 overflow-hidden flex items-center justify-center text-gray-300">
+      {% if it.featured_image_url %}
+      <img src="{{ it.featured_image_url }}" alt="" loading="lazy" onerror="this.remove()"
+           class="w-full h-full object-cover">
+      {% else %}
+      {{ m.icon(c.icon, "w-7 h-7") }}
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="flex-1 px-3.5 py-3">
+      <div class="text-sm font-medium group-hover:underline underline-offset-2">{{ it.title }}</div>
+      {% if it.data %}
+      <div class="flex flex-wrap items-center gap-2 mt-2">
+        {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-2 line-clamp-3">{{ it.body | truncate(200) }}</p>{% endif %}
+      {% if c.display.show_updated and it.updated %}<div class="mt-2 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ it.updated | short_date }}</div>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endfor %}
 
 {% else %}
 {# 'list' — the quiet stack, and the fallback for any unrecognized hint. Badges
