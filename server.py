@@ -3292,7 +3292,7 @@ def find_past_items(query: str, limit: int = 8) -> dict:
 FIELD_TYPES = ("text", "number", "date", "select")
 # How the webapp lays a collection out. Webapp-only: it lives in the `display`
 # JSON and the model never sets it (see set_collection_display).
-COLLECTION_VIEWS = ("list", "table")
+COLLECTION_VIEWS = ("list", "table", "cards")
 # Below-exact-but-close on a collection name: block creation and surface the
 # near-match instead (the create_collection "did you mean?" — same idea as
 # EX_CONFIDENT: a wrong-but-confident auto-create is worse than one question).
@@ -3438,14 +3438,15 @@ def set_collection_display(name: str, view: Optional[str] = None,
     is the USER's call, so every preference here is written only from the UI and
     never surfaces in tool returns.
 
-    All of it lives in the webapp-only `display` JSON: `view` (list|table — this
-    used to be a model-written `display_hint` column, but its guess was
+    All of it lives in the webapp-only `display` JSON: `view` (list|table|cards
+    — this used to be a model-written `display_hint` column, but its guess was
     overwritten the first time the popover was opened, so presentation is now
     the browser's alone), hidden_fields (declared field keys to leave off the
-    table columns / list badges),
+    table columns / list badges / card text),
     show_body/show_updated (the row extras) plus image_size
     ('off'|'small'|'medium'|'large' — how big the featured image renders in a
-    row, 'off' being not at all), and
+    row, 'off' being not at all; in the cards view it sizes the CARD, since the
+    picture is the card's whole top edge), and
     how the items are arranged: group_by (a declared field key — items are
     bucketed under one heading per distinct value, ones missing it last) plus
     sort_by ('updated', 'title', or a declared field key) and sort_dir
