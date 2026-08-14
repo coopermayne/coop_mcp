@@ -25,6 +25,7 @@ import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import icons as icon_set   # generated Lucide subset; see scripts/build_icon_set.py
@@ -295,6 +296,18 @@ trustworthy:
     durable changes as they come up, like a person's summary."""
 
 
+# Connector-ONLY (not in JOURNAL_CHAT_INSTRUCTIONS): a Claude conversation writes
+# here while the user reads the data in the web app, so a write that names where the
+# thing now lives saves a context switch. The in-app chat gets the same `url` back but
+# must not use it — it already renders its own local chip, and pointing the user at the
+# page they are standing on is noise.
+_APP_LINK_BLOCK = """\
+You are writing to a log the user READS IN THE APP, on another screen. Write tools
+return a `url` for what they just wrote — offer it when the user would rather look
+than be told (a day's rings, a saved recipe, a collection you just built), and skip
+it when they simply wanted the thing captured. Don't paste one after every call."""
+
+
 _COLLECTIONS_BLOCK = """\
 Beyond the structured logs there is one FLEXIBLE layer — notes & collections — for
 everything else the user wants kept (recipes, trip ideas, books, whatever comes up).
@@ -382,6 +395,8 @@ you've SAVED.
 {_INTAKE_BLOCK}
 
 {_COLLECTIONS_BLOCK}
+
+{_APP_LINK_BLOCK}
 
 Start an eating session with intake_summary: it returns `now`, the recent days with
 their summed totals, and the stored eating profile (targets, goals, coaching
@@ -1253,6 +1268,18 @@ def today() -> str:
     """Current calendar date (YYYY-MM-DD) in Pacific time — the canonical
     'today' for every date field in this log."""
     return datetime.now(PACIFIC).strftime("%Y-%m-%d")
+
+
+def _app_url(path: str) -> Optional[str]:
+    """Absolute URL of a browser page, for handing back on a WRITE — the capture
+    surface (a Claude conversation) and the viewing surface (the web app) are
+    different places, so a write that names where the thing now lives closes that
+    loop in one tap instead of a context switch. The UI is mounted at /app (see
+    webapp/combined.py); PUBLIC_URL is the bare origin. Returns None when
+    PUBLIC_URL is unset (stdio/dev) — callers OMIT the key rather than emitting a
+    dead one."""
+    base = (os.environ.get("PUBLIC_URL") or "").rstrip("/")
+    return f"{base}/app{path}" if base else None
 
 
 def current_clock() -> dict:
@@ -2750,7 +2777,12 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
     every write instead of keeping your own running tally. Other clients (the phone
     app, another conversation) may be logging the same day, so your conversation
     memory is not the day; when asked how the day is going, answer from `day_totals`
-    or a fresh intake_summary, never from arithmetic in your head.
+    or a fresh intake_summary, never from arithmetic in your head. Alongside them,
+    `targets` is the user's stored daily goal per nutrient (absent for nutrients
+    with no goal set), so read a total AGAINST its target rather than reporting a
+    bare number — whether being over one is good or bad is your judgment, not the
+    server's. `url` is where the day is rendered, worth offering when the user
+    would rather look than be told.
 
     REPEAT FOODS: before estimating something that sounds like a repeat — leftovers,
     a staple, "same as yesterday" — check intake_find_past and reuse the settled
@@ -2822,7 +2854,13 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
             "SELECT * FROM intake_items WHERE food_date=? ORDER BY position, id", (d,)
         ).fetchall()
         row = next(r for r in rows if r["id"] == rid)
-    return {**_item_row(row), "day_totals": _day_totals(rows)}
+        targets = _day_targets(conn)
+    out = {**_item_row(row), "day_totals": _day_totals(rows)}
+    if targets:
+        out["targets"] = targets
+    if url := _app_url("/food"):
+        out["url"] = url
+    return out
 
 
 @mcp.tool(name="intake_summary", annotations=READ_ONLY)
@@ -2920,6 +2958,9 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
     from the items. `food_date` moves the item to another day. To remove it entirely,
     intake_delete(item_id=...). Find ids with intake_summary.
 
+    Returns the re-derived `day_totals` with the stored `targets` to read them
+    against, same as intake_log.
+
     Args:
         item_id: The item to correct (from intake_summary or intake_log).
         item: Replacement text for what it was.
@@ -2965,13 +3006,36 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
             "SELECT * FROM intake_items WHERE food_date=? ORDER BY position, id",
             (cur["food_date"],),
         ).fetchall()
-    return {**_item_row(cur), "updated": [k for k in sets if k != "position"],
-            "day_totals": _day_totals(rows)}
+        targets = _day_targets(conn)
+    out = {**_item_row(cur), "updated": [k for k in sets if k != "position"],
+           "day_totals": _day_totals(rows)}
+    if targets:
+        out["targets"] = targets
+    return out
 
 
 def _get_eating_profile(conn: sqlite3.Connection) -> dict:
     row = conn.execute("SELECT value FROM settings WHERE key='eating_profile'").fetchone()
     return json.loads(row["value"]) if row else {}
+
+
+def _day_targets(conn: sqlite3.Connection) -> dict:
+    """The stored daily targets, to pair with a day's totals on a WRITE. A sum with
+    nothing to read it against ("sodium 2100") is a number the model can report but
+    not judge, so it either says nothing useful or spends a second intake_summary
+    call to find the goal it already had in the DB. intake_summary surfaces these
+    inside `profile`; this is the same numbers, hoisted for the write path.
+
+    Malformed entries are SKIPPED, exactly as the webapp's nutrient_targets() skips
+    them — _bad_targets guards the write, but a hand-edited blob shouldn't make a
+    log call fail. Direction (which of these is a ceiling and which a floor) stays
+    a webapp reading and is deliberately NOT stored or returned."""
+    t = _get_eating_profile(conn).get("targets")
+    if not isinstance(t, dict):
+        return {}
+    return {k: v for k, v in t.items()
+            if k in NUTRIENTS and not isinstance(v, bool)
+            and isinstance(v, (int, float)) and v > 0}
 
 
 def _bad_targets(targets) -> Optional[str]:
@@ -3410,6 +3474,27 @@ def _stranded_keys(conn: sqlite3.Connection, collection_id: int,
     return dict(sorted(out.items()))
 
 
+def _unfilled_fields(fields: list[dict], data: dict) -> list[str]:
+    """Declared field keys this item carries no value for. `_stranded_keys`'
+    mirror image — that one names values with no field, this one fields with no
+    value — and reported for the same reason: the write return said only where the
+    item landed, so nothing ever mentioned that a collection wanted a cook time
+    and the item hasn't got one. Naming them lets the model ask in the same turn,
+    while the user still remembers. Advisory, never an error — fields are
+    optional, and capture must not block on filling them."""
+    return [f["key"] for f in fields if data.get(f["key"]) in (None, "")]
+
+
+def _inbox_count(conn: sqlite3.Connection) -> int:
+    """How many unfiled notes exist. Capture-first-file-second makes the inbox the
+    DEFAULT, which means it grows invisibly: every note lands there and nothing in
+    the conversation ever says how deep the pile has got, so filing only happens if
+    the user thinks to go and look. This is the inbox's `day_totals` — the state of
+    the pile you just added to."""
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM items WHERE collection_id IS NULL").fetchone()["n"]
+
+
 def _bad_icon(icon: str) -> Optional[dict]:
     """None if `icon` is in the vendored set (or "" — which clears it), else an
     error carrying the CLOSEST names: a rejected guess should land the model on
@@ -3524,7 +3609,8 @@ def save_collection(name: str, description: Optional[str] = None,
 
     Deleting one is collections_delete — it removes the SHELL only (name,
     description, icon, field definitions) and its items survive as inbox notes.
-    Deleting a note itself is notes_delete."""
+    Deleting a note itself is notes_delete. The return's `url` is the
+    collection's page in the app, worth offering once you've just built one."""
     n = (name or "").strip().lower()
     if not n:
         return {"error": "name is required"}
@@ -3573,6 +3659,8 @@ def save_collection(name: str, description: Optional[str] = None,
     res = {"id": out["id"], "name": out["name"], "description": out["description"],
            "fields": _coll_fields(out),
            "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
+    if url := _app_url(f"/collections/{quote(out['name'])}"):
+        res["url"] = url
     if stranded:
         res["stranded"] = stranded
         res["note"] = ("these keys are still on items but no longer declared, so they "
@@ -3598,7 +3686,15 @@ def save_item(title: str, body: Optional[str] = None,
     `featured_image_url` is the item's FEATURED IMAGE (an http/https URL) — a built-in
     every item has, in or out of a collection, so a collection never needs to
     declare an image field. Set it when the user gives you a picture's URL or
-    the source page has an obvious one; leave it alone otherwise."""
+    the source page has an obvious one; leave it alone otherwise.
+
+    The return says where it landed: `url` is the item's page in the app, and an
+    inbox save carries `inbox_count` — how many notes are now unfiled. Filing is
+    the user's call, but a pile that's grown large is worth mentioning, since
+    nothing else in a conversation ever surfaces it. A save INTO a collection
+    instead carries `unfilled_fields` when the collection declares fields this
+    item has no value for — ask about them in the same turn if the user is likely
+    to know them now; they're optional, so never withhold the save over one."""
     title = (title or "").strip()
     if not title:
         return {"error": "title is required"}
@@ -3628,7 +3724,16 @@ def save_item(title: str, body: Optional[str] = None,
             (coll_id, title, body, json.dumps(data_clean) if data_clean else None,
              image, ts, ts))
         item_id = cur.lastrowid
-    return {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
+        unfilled = _unfilled_fields(_coll_fields(row), data_clean) if coll_id else []
+        inbox = _inbox_count(conn) if coll_id is None else None
+    out = {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
+    if unfilled:
+        out["unfilled_fields"] = unfilled
+    if inbox is not None:
+        out["inbox_count"] = inbox
+    if url := _app_url(f"/item/{item_id}"):
+        out["url"] = url
+    return out
 
 
 @mcp.tool(name="notes_update", annotations=WRITE_IDEMPOTENT)
@@ -3683,7 +3788,11 @@ def move_to_collection(item_id: int, collection: str,
     primitive. Promoting a clustered topic is one call per note: read the note,
     extract its `data` fields from the text, move it; the prose stays as the
     item's body, so nothing is lost and the move is reversible. Only promote
-    into a collection the user has agreed to create."""
+    into a collection the user has agreed to create.
+
+    Returns `unfilled_fields` (declared fields the item still has no value for —
+    the moment to ask, since you have just read the note) and `url`, the item's
+    page in the app. Filing back to "inbox" returns `inbox_count` instead."""
     with db() as conn:
         r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
         if not r:
@@ -3691,7 +3800,11 @@ def move_to_collection(item_id: int, collection: str,
         if (collection or "").strip().lower() == "inbox":
             conn.execute("UPDATE items SET collection_id=NULL, updated_at=? WHERE id=?",
                          (now(), item_id))
-            return {"item_id": item_id, "collection": "inbox"}
+            out = {"item_id": item_id, "collection": "inbox",
+                   "inbox_count": _inbox_count(conn)}
+            if url := _app_url(f"/item/{item_id}"):
+                out["url"] = url
+            return out
         row, cands = _resolve_collection(conn, collection)
         if row is None:
             return {"error": f"no collection {collection!r}", "candidates": cands}
@@ -3702,8 +3815,14 @@ def move_to_collection(item_id: int, collection: str,
             return {"error": err}
         conn.execute("UPDATE items SET collection_id=?, data=?, updated_at=? WHERE id=?",
                      (row["id"], json.dumps(merged) if merged else None, now(), item_id))
-    return {"item_id": item_id, "collection": row["name"],
-            **({"data": merged} if merged else {})}
+        unfilled = _unfilled_fields(_coll_fields(row), merged)
+    out = {"item_id": item_id, "collection": row["name"],
+           **({"data": merged} if merged else {})}
+    if unfilled:
+        out["unfilled_fields"] = unfilled
+    if url := _app_url(f"/item/{item_id}"):
+        out["url"] = url
+    return out
 
 
 @mcp.tool(name="notes_list", annotations=READ_ONLY)

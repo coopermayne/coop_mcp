@@ -170,6 +170,19 @@ There is no exercise-selection or progression logic in the server either.
   shared `_delete_record` helper, so the table mapping and the set-renumbering live in
   one place. The TRAINER keeps its kind-scoped `delete_record` (`workout`/`set`/
   `weight`): one domain, one connector, nothing to disambiguate.
+- **A write says where the thing now lives.** Capture happens in a Claude conversation;
+  the data is READ in the web app — two different screens, which is the standing
+  awkwardness of the whole setup. So the connector's write tools return a `url`
+  (`_app_url`: `PUBLIC_URL` + the `/app` mount, per `webapp/combined.py`) — `intake_log`
+  → `/food`, `notes_save`/`notes_file` → `/item/{id}`, `collections_save` → the
+  collection page — and one tap replaces a context switch. `PUBLIC_URL` unset (stdio,
+  dev) OMITS the key rather than emitting a dead link. Two deliberate limits: the
+  policy line lives in `_APP_LINK_BLOCK`, composed into the CONNECTOR `instructions`
+  ONLY — the in-app chat gets the same `url` back but already renders its own local
+  chip, and pointing the user at the page they're standing on is noise — and the links
+  sit on capture paths, not corrections (`intake_update` returns totals, no url), since
+  the returns are tuned token-compact and a link per call is exactly the bloat that
+  warning is about.
 
 ## Files
 
@@ -399,6 +412,15 @@ working.
   running tally (`intake_log` returns `day_totals` on every write; other clients —
   the phone app, another conversation — may be writing the same day); both
   contracts live in the server `instructions` + the intake docstrings.
+  Both write tools pair those totals with `targets` (`_day_targets`) — the stored
+  `eating_profile.targets`, hoisted out of the profile that only `intake_summary`
+  returned. The reason is that the CAPTURE surface and the VIEWING surface are
+  different screens: a sum with nothing to read it against ("sodium 2100") is a
+  number the model can report but not judge, so it either says nothing useful or
+  spends a second `intake_summary` call on a goal already in the DB. Malformed
+  entries are skipped exactly as `data.nutrient_targets()` skips them (`_bad_targets`
+  guards the write; a hand-edited blob must not fail a log call), and ceiling-vs-floor
+  DIRECTION is still a webapp reading — deliberately neither stored nor returned.
   The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
   `macros.eating_block`) — one line per item: the item (led by its circled index) and
   its calories + protein. Those two figures are on the line because they're what the
@@ -616,6 +638,15 @@ working.
   everywhere else (`notes_save`, `notes_file`), so `collections_list` and
   `collections_save` both return the `id` that this one kind needs — without it a
   collection was undeletable over MCP — reachable by name but not by handle.
+  The write returns carry two FRAMES, for the same capture-here/read-there split
+  the intake `targets` answer. `notes_save`/`notes_file` report `unfilled_fields`
+  (`_unfilled_fields`) — declared fields the item has no value for, the exact mirror
+  of `stranded` (values with no field) and reported for the same reason: the return
+  said only where the item landed, so nothing ever mentioned that a collection wanted
+  a cook time. Advisory, NEVER an error — fields are optional and capture must not
+  block on them. And a save that lands in the INBOX reports `inbox_count`: capture-
+  first-file-second makes the inbox the default, so it grows invisibly and filing
+  happens only if the user thinks to look. It is the inbox's `day_totals`.
   The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
   collection's own fields + view prefs — no per-domain view code), OUTSIDE the
