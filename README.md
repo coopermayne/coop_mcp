@@ -150,9 +150,11 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   always as current as the last meal.
 
   In the web app, each nutrient is a ring on the day's block showing the summed total
-  against its target (the stored profile's `targets` over the built-in defaults) —
-  **read-only**. Logging intake has exactly one path: the MCP
-  tools (or the in-app chat panel, which calls the same ones). Alcohol and water have
+  against its target (the stored profile's `targets` over the built-in defaults),
+  editable from the page's **Targets** popover — it writes the same profile the AI
+  coaches from, so both sides read one set of goals; a blank box hands that goal back
+  to its default. The intake itself is **read-only** here: logging has exactly one
+  path, the MCP tools (or the in-app chat panel, which calls the same ones). Alcohol and water have
   no tools of their own; they're nutrients on an item. (The old `drinks` and day-level
   `nutrition` tables are dormant: their rows fold into the intake log once,
   automatically, on first start.)

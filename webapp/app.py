@@ -933,7 +933,28 @@ async def food(request: Request, since: str = ""):
     res = data.food_days(since=(since or "").strip() or None)
     return page(request, "food.html", active="food",
                 days=res["days"], count=res["total"],
-                has_more=res["has_more"], next_since=res["next_since"])
+                has_more=res["has_more"], next_since=res["next_since"],
+                # The Targets popover wants the two apart: what's actually SET
+                # goes in the inputs, the defaults are only placeholders.
+                defaults=data.NUTRIENT_TARGETS, ceilings=data.NUTRIENT_CEILINGS,
+                stored=data.stored_targets())
+
+
+@app.post("/food/targets")
+async def food_targets(request: Request):
+    """Save the /food page's Targets popover — the daily nutrient goals the rings
+    are read against. A website-only write path through server.set_nutrient_targets
+    (never a FastMCP tool), and the ONLY thing this page writes: intake CONTENT
+    still enters through the MCP tools alone. Targets aren't content — they're the
+    same kind of fact as a collection's Display prefs, except they live where the
+    model can read them too, since it coaches against the same numbers.
+    Body: {targets: {nutrient: number|null}} — null hands a goal back to its
+    default. Outside the journal lock, like the page itself."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    res = server.set_nutrient_targets(body.get("targets"))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
 
 
 @app.get("/pending")

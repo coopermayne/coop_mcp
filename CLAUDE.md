@@ -434,23 +434,41 @@ working.
   itself is one shared partial (`templates/_detail_modal.html`, included by both
   pages) with a single delegated handler, so a page adds a target just by rendering
   `data-detail` on an element. `/food` is deliberately OUTSIDE the journal lock
-  (glancing at macros shouldn't need the knock) and has no chat panel. STRICTLY
-  READ-ONLY: intake has exactly ONE write path, the MCP tools (the in-app chat panel
-  counts — it calls the same functions). There is no form, no tappable ring, no
-  /intake write route; the browser only renders. Water and alcohol rings still always
+  (glancing at macros shouldn't need the knock) and has no chat panel. Its CONTENT is
+  STRICTLY READ-ONLY: intake has exactly ONE write path, the MCP tools (the in-app
+  chat panel counts — it calls the same functions). There is no form, no tappable
+  ring, no /intake write route; the browser only renders what was logged. The one
+  thing it writes is the TARGETS popover (below) — goals, not intake, the same
+  carve-out a collection page's Display popover makes. Water and alcohol rings still
+  always
   render, dashed when unlogged, because "no water yet" is worth seeing on a day you
   mean to hit a gallon. Each nutrient renders as a ring with BOTH
   its summed figure (unit included: "1400mg") and a short label ("sod") inside it
   (`macros.nutrient_ring`), read against `data.nutrient_targets()` — the stored
   eating profile's `targets` numbers merged over the `data.NUTRIENT_TARGETS`
-  defaults, resolved per render. The NUMBERS live in the DB now (settings
-  `eating_profile`, written by `intake_set_profile`) so the rings and the model
-  coach against the same goals; what stays display-only is DIRECTION — which
+  defaults, resolved per render. The NUMBERS live in the DB (settings
+  `eating_profile`) so the rings and the model coach against the same goals, and
+  they have TWO DOORS onto that one row: `intake_set_profile` (the model, in chat)
+  and `server.set_nutrient_targets` (the user, via `POST /food/targets` ← the page's
+  **Targets** popover). Two doors, one copy — the second exists because the screen
+  where you NOTICE a target is wrong is the one drawing the rings, and the only fix
+  used to be opening a chat to say it in a sentence. The website door differs in two
+  ways, both because it edits numbers rather than prose: it merges per NUTRIENT
+  (`intake_set_profile` replaces each top-level key wholesale, which for a form would
+  mean every unfilled box quietly clearing a goal), and `None` DROPS an override back
+  to the default — so a blank input hands a goal back instead of zeroing it, and the
+  popover shows a set number in the input with the default only as a placeholder.
+  What stays display-only is DIRECTION — which
   nutrient is a ceiling vs a floor is a webapp reading, never stored. A `ceiling`
-  target (sodium, calories, alcohol)
+  target (calories, sodium, alcohol, and fat)
   turns the ring clay once passed; a floor one (protein, carbs, fiber, water)
-  doesn't, and an untargeted nutrient (fat) draws a DASHED track with no arc — an
-  empty solid ring would read as "0% of goal" rather than "no goal set". A tapped
+  doesn't, and an untargeted nutrient (fat, until you give it one) draws a DASHED
+  track with no arc — an
+  empty solid ring would read as "0% of goal" rather than "no goal set". Direction is
+  DECLARED for every nutrient (`data.NUTRIENT_CEILINGS`, checked against `NUTRIENTS`
+  at import), not derived from which ones carry a default: fat has no default, so
+  when it was derived a fat target set in the profile fell through to "floor" and the
+  ring never turned clay on the one nutrient you'd most likely be capping. A tapped
   top-up has no text, so it's named from what it carries ("16oz water"). Four
   things a rendered day can't say for itself — an
   item's OWN nutrients (the rings show the day summed), a ring's TARGET (an arc can
@@ -692,8 +710,15 @@ working.
   goals) merged via `intake_set_profile` and surfaced by `intake_summary`, so a new
   conversation needs no pasted preamble. The webapp's rings read `targets` too
   (`data.nutrient_targets()` merges it over the display defaults) — one source of
-  truth for goals, ceiling/floor direction still webapp-only. The rest of the blob
-  is free-form, but `targets` is VALIDATED (`_bad_targets`: a real nutrient key,
+  truth for goals, ceiling/floor direction still webapp-only. That's also why
+  `targets` alone has a SECOND writer, `server.set_nutrient_targets` (a NON-tool,
+  website-only path behind `/food`'s Targets popover — see `intake_items` above):
+  the goals are the one part of the profile the user reads on a screen and wants to
+  change there, and it writes this same key rather than keeping a display copy.
+  It merges per nutrient (null drops back to the default) instead of replacing the
+  key wholesale, since a form submits every box at once. The rest of the blob
+  is free-form, but `targets` is VALIDATED (`_bad_targets`, shared by both writers:
+  a real nutrient key,
   a positive number, closest-name suggestion on a typo) precisely BECAUSE the
   rings read it: `nutrient_targets()` skips any override that isn't well-formed,
   so an unvalidated write reported success while the ring you were aiming at
