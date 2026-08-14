@@ -264,9 +264,10 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
 
 
 # DEFAULT daily targets the intake block's rings read against — the fallback when the
-# stored eating profile doesn't name a number. The NUMBERS can come from the DB now
-# (settings key 'eating_profile', its `targets` dict, written by the journal server's
-# update_eating_profile) so the rings and the model coach against the SAME goals; what
+# stored eating profile doesn't name a number. The NUMBERS come from the DB (settings
+# key 'eating_profile', its `targets` dict, written from either door — the model's
+# server.update_eating_profile or the /food popover's server.set_nutrient_targets) so
+# the rings and the model coach against the SAME goals; what
 # stays display-only is the DIRECTION: `ceiling` marks a number you're trying to stay
 # UNDER (sodium, calories, alcohol) rather than reach — it only changes the ring's
 # color once it's past the target, and it's a reading of the nutrient, not stored data.
@@ -278,7 +279,8 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
 # is also why carbs is NOT a ceiling. It's the flex macro, and calories already has
 # a ceiling ring to catch a genuine overshoot; a second warning color the moment
 # carbs pass 200 would be noise. Fat has no default target, so it renders a dashed
-# ring until the profile gives it one.
+# ring until the profile gives it one — and when it does, that number reads as a CAP
+# (NUTRIENT_CEILINGS below), which is the only thing you'd be setting one for.
 NUTRIENT_TARGETS = {
     "calories":  {"target": 2000, "ceiling": True},
     "protein_g": {"target": 130,  "ceiling": False},
@@ -289,24 +291,53 @@ NUTRIENT_TARGETS = {
     "standard_drinks": {"target": 2, "ceiling": True},
 }
 
-# Ceiling-ness per nutrient, for overrides on a nutrient the defaults don't target
-# (fat): anything unlisted reads as a floor — a ring never turns clay for passing it.
-_CEILINGS = {k: v["ceiling"] for k, v in NUTRIENT_TARGETS.items()}
+# Ceiling-vs-floor for EVERY nutrient, declared rather than derived from the
+# defaults above. Direction is a reading of the nutrient, not stored data — but a
+# reading that only covers the nutrients which happen to carry a DEFAULT is a guess
+# about the rest. Fat is the case that proved it: no default target, so a fat number
+# set in the profile fell through to "floor" and the ring never turned clay on the
+# one nutrient you'd most likely be capping. Keyed off the full NUTRIENTS tuple and
+# checked at import, so adding a nutrient means STATING its direction instead of
+# silently inheriting one.
+NUTRIENT_CEILINGS = {
+    "calories":  True,
+    "protein_g": False,
+    "carbs_g":   False,   # the flex macro — see the note above
+    "fat_g":     True,    # no default, but a fat number you set is a cap
+    "sodium_mg": True,
+    "fiber_g":   False,
+    "standard_drinks": True,
+    "water_oz":  False,
+}
+_undeclared = [n for n in server.NUTRIENTS if n not in NUTRIENT_CEILINGS]
+if _undeclared:
+    raise RuntimeError(
+        f"no ceiling/floor direction declared for {_undeclared} — every nutrient "
+        f"needs one in data.NUTRIENT_CEILINGS, or its ring can't judge the day")
 
 
 def nutrient_targets() -> dict:
     """The live targets: NUTRIENT_TARGETS defaults, overridden per nutrient by any
-    number in the stored eating profile's `targets` (see update_eating_profile in
-    server.py). Read per-request — a target changed in chat shows on the next page
-    load. Only well-formed overrides count: a real nutrient key carrying a number;
-    anything else in the blob is the model's business, not the rings'."""
+    number in the stored eating profile's `targets` — written from either door,
+    server.update_eating_profile (the model, in chat) or server.set_nutrient_targets
+    (the user, from /food's Targets popover). Read per-request, so a target changed
+    either way shows on the next page load. Only well-formed overrides count: a real
+    nutrient key carrying a positive number; anything else in the blob is the
+    model's business, not the rings'."""
     out = {k: dict(v) for k, v in NUTRIENT_TARGETS.items()}
-    with server.db() as conn:
-        stored = server._get_eating_profile(conn).get("targets") or {}
-    for k, v in stored.items():
-        if k in server.NUTRIENTS and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
-            out[k] = {"target": v, "ceiling": _CEILINGS.get(k, False)}
+    for k, v in stored_targets().items():
+        out[k] = {"target": v, "ceiling": NUTRIENT_CEILINGS[k]}
     return out
+
+
+def stored_targets() -> dict:
+    """Only the targets actually SET in the eating profile, without the defaults
+    merged in (server._day_targets does the same filtering for the write path's
+    returns). The /food popover needs the two apart: a number you chose belongs in
+    the input, an inherited default is only a placeholder — otherwise every ring
+    looks equally deliberate and there's no way to hand one back."""
+    with server.db() as conn:
+        return server._day_targets(conn)
 
 
 def _day_nutrition(items: list) -> dict:

@@ -3102,6 +3102,55 @@ def update_eating_profile(profile: dict) -> dict:
     return {"profile": current}
 
 
+def set_nutrient_targets(targets: dict) -> dict:
+    """Set the daily nutrient targets from the WEBSITE — the /food page's Targets
+    popover. A NON-tool, website-only path like set_collection_display and
+    set_archived: never a FastMCP tool, so no connector can reach it.
+
+    It writes the SAME place update_eating_profile does (settings →
+    `eating_profile` → `targets`), because one set of goals feeding both the rings
+    and the model's coaching is the whole point of storing them. This is a second
+    DOOR onto those numbers, not a second copy — and it earns its keep because the
+    screen where you NOTICE a target is wrong is the one showing the rings, and
+    reaching the other door meant opening a chat to say it in a sentence.
+
+    Two differences from the model's door, both because this one edits numbers
+    rather than prose. It merges per NUTRIENT (update_eating_profile replaces each
+    top-level key wholesale, which for a form would mean every unfilled box quietly
+    clearing a goal), and a key set to None DROPS that override, falling back to
+    the webapp's default — so a target can be handed back, not just changed. Only
+    the numbers being SET are validated; an unknown key paired with None is left to
+    pop harmlessly, since removing junk from the blob is the one thing it can do.
+    Everything else in the profile — goals, stats, coaching context — is untouched.
+
+    Direction (ceiling vs floor) is deliberately NOT here: it's a reading of the
+    nutrient rather than a number about the user, and it stays in the webapp
+    (data.NUTRIENT_CEILINGS)."""
+    if not isinstance(targets, dict):
+        return {"error": f"targets must be a {{nutrient: number}} dict, got {targets!r}"}
+    if (err := _bad_targets({k: v for k, v in targets.items() if v is not None})):
+        return {"error": err}
+    with db() as conn:
+        profile = _get_eating_profile(conn)
+        cur = profile.get("targets")
+        cur = dict(cur) if isinstance(cur, dict) else {}
+        for k, v in targets.items():
+            if v is None:
+                cur.pop(k, None)
+            else:
+                cur[k] = v
+        if cur:
+            profile["targets"] = cur
+        else:
+            profile.pop("targets", None)
+        conn.execute(
+            """INSERT INTO settings(key, value) VALUES ('eating_profile', ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (json.dumps(profile),),
+        )
+    return {"targets": cur}
+
+
 # --------------------------------------------------------------------------- #
 # Past-item lookup — the intake log IS the food database
 # --------------------------------------------------------------------------- #

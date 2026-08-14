@@ -9,7 +9,50 @@
    journal chat), this page only reads. #}
 <div class="flex items-center justify-between mb-6">
   <h1 class="text-2xl font-bold tracking-tight">Food</h1>
-  <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} day{{ '' if count == 1 else 's' }} logged</span>
+  <div class="relative flex items-baseline gap-4">
+    <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} day{{ '' if count == 1 else 's' }} logged</span>
+    {# The Targets popover — the one thing this page writes, and the only write on
+       /food at all: intake CONTENT still enters through the MCP tools alone. It
+       saves via POST /food/targets (server.set_nutrient_targets, a website-only
+       path) into the same eating_profile the model reads, so a goal changed here
+       is the goal it coaches against. It's here because this is the screen where
+       you NOTICE a target is wrong — the alternative was opening a chat to say it
+       in a sentence while looking at the ring. #}
+    <button id="tgt-btn" type="button"
+            class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Targets</button>
+    <div id="tgt-pop" hidden
+         class="absolute right-0 top-7 z-20 w-72 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-3">Daily targets</p>
+      <div class="space-y-2">
+        {# One row per nutrient, in the ring order — the unit table is macros.html's
+           NUTRIENT_UNITS, the same one the rings render from, so the popover can't
+           name a nutrient the page doesn't draw. An input carries only what's
+           actually SET; the default sits behind it as a placeholder, so a number
+           you chose reads differently from one you inherited — and clearing the box
+           hands the goal back rather than zeroing it. #}
+        {% for key, u in m.NUTRIENT_UNITS.items() %}
+        <label class="flex items-center gap-2">
+          <span class="flex-1 text-[13px] text-gray-600">{{ u.label }}</span>
+          <input type="number" step="any" min="0" data-nutrient="{{ key }}"
+                 value="{{ stored[key] | num if key in stored else '' }}"
+                 placeholder="{{ defaults[key].target | num if key in defaults else 'none' }}"
+                 class="w-20 border border-gray-200 rounded-[4px] px-2 py-1 text-sm text-right tabular-nums">
+          <span class="w-6 text-[11px] text-gray-400">{{ u.suffix }}</span>
+          {# Direction is a webapp reading (data.NUTRIENT_CEILINGS), never stored —
+             but it decides whether a ring turns clay, so the popover says which
+             kind of number you're typing. #}
+          <span class="w-7 text-[10px] uppercase tracking-widest text-gray-400">{{ 'cap' if ceilings[key] else 'goal' }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <p class="text-[11px] text-gray-400 mt-3 mb-3 leading-snug">
+        Blank falls back to the default. A <span class="uppercase tracking-widest">cap</span> turns its ring clay once the day is past it.
+      </p>
+      <p id="tgt-err" hidden class="text-[11px] text-red-600 mb-3 leading-snug"></p>
+      <button id="tgt-apply" type="button"
+              class="w-full px-3 py-2 border border-gray-200 text-gray-500 text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors">Save</button>
+    </div>
+  </div>
 </div>
 
 {% if days %}
@@ -30,5 +73,49 @@
 {% endif %}
 
 {% include "_detail_modal.html" %}
+
+<script>
+// Targets popover — open/close and save. Same shape as the collection page's
+// Display popover (click outside / Escape to dismiss, Apply then reload); the one
+// addition is an error line, because these values are validated server-side
+// (server._bad_targets) and a silently-ignored goal is the exact failure this
+// popover exists to stop.
+(function () {
+  var btn = document.getElementById('tgt-btn'), pop = document.getElementById('tgt-pop');
+  if (!btn) return;
+  var err = document.getElementById('tgt-err');
+  btn.addEventListener('click', function () { pop.hidden = !pop.hidden; });
+  document.addEventListener('click', function (e) {
+    if (!pop.hidden && !pop.contains(e.target) && !btn.contains(e.target)) pop.hidden = true;
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.hidden = true; });
+  document.getElementById('tgt-apply').addEventListener('click', function () {
+    var targets = {}, bad = null;
+    Array.prototype.forEach.call(pop.querySelectorAll('input[data-nutrient]'), function (i) {
+      var raw = i.value.trim();
+      // Blank means "no number of my own" — send null so the stored override is
+      // DROPPED and the ring goes back to the default, rather than omitting the
+      // key (which would leave the old number in place).
+      if (!raw) { targets[i.dataset.nutrient] = null; return; }
+      var n = Number(raw);
+      if (!isFinite(n) || n <= 0) bad = bad || raw;
+      else targets[i.dataset.nutrient] = n;
+    });
+    if (bad) { err.textContent = 'A target has to be a positive number — got "' + bad + '".'; err.hidden = false; return; }
+    err.hidden = true;
+    fetch("{{ base }}/food/targets", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targets: targets })
+    }).then(function (r) {
+      if (r.ok) { location.reload(); return; }
+      return r.json().then(function (j) {
+        err.textContent = (j && j.error) || 'Could not save those targets.';
+        err.hidden = false;
+      });
+    });
+  });
+})();
+</script>
 
 {% endblock %}

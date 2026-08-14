@@ -102,6 +102,24 @@
 {% endmacro %}
 
 
+{# Per nutrient: the unit that rides with the FIGURE inside a ring, the short label
+   under it, the spoken name for the ring's aria-label, and the Title Case name the
+   detail modal and the Targets popover use. At FILE scope rather than inside
+   eating_block because two surfaces read it — the rings and food.html's Targets
+   popover, which has to name the same eight nutrients in the same order — and a
+   second hand-kept copy of this table is exactly how the two would come apart.
+   Order is the render order everywhere. #}
+{% set NUTRIENT_UNITS = {
+    'calories':  {'suffix': '',   'short': 'cal',    'name': 'calories',  'label': 'Calories'},
+    'protein_g': {'suffix': 'g',  'short': 'prot',   'name': 'g protein', 'label': 'Protein'},
+    'carbs_g':   {'suffix': 'g',  'short': 'carbs',  'name': 'g carbs',   'label': 'Carbs'},
+    'fat_g':     {'suffix': 'g',  'short': 'fat',    'name': 'g fat',     'label': 'Fat'},
+    'sodium_mg': {'suffix': 'mg', 'short': 'sod',    'name': 'mg sodium', 'label': 'Sodium'},
+    'fiber_g':   {'suffix': 'g',  'short': 'fib',    'name': 'g fiber',   'label': 'Fiber'},
+    'water_oz':  {'suffix': 'oz', 'short': 'water',  'name': 'oz water',  'label': 'Water'},
+    'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks', 'label': 'Alcohol'},
+} %}
+
 {% macro eating_block(n) %}
 {# One day of the /food log — every item logged that day (server.intake_items),
    food, alcohol and water alike, since a beer and a sandwich are the same kind of
@@ -124,20 +142,9 @@
        drops NULLs), so presence is a plain key test — and n.calories on a missing
        key would be Undefined, which sails past `is not none` into the num filter.
 
-       Per nutrient: the unit that rides with the FIGURE inside the ring, the short
-       label under it, the spoken name for the ring's aria-label, and the Title Case
-       name the detail modal uses. Declared before the item list because both halves
-       read it. #}
-    {% set units = {
-        'calories':  {'suffix': '',   'short': 'cal',    'name': 'calories',  'label': 'Calories'},
-        'protein_g': {'suffix': 'g',  'short': 'prot',   'name': 'g protein', 'label': 'Protein'},
-        'carbs_g':   {'suffix': 'g',  'short': 'carbs',  'name': 'g carbs',   'label': 'Carbs'},
-        'fat_g':     {'suffix': 'g',  'short': 'fat',    'name': 'g fat',     'label': 'Fat'},
-        'sodium_mg': {'suffix': 'mg', 'short': 'sod',    'name': 'mg sodium', 'label': 'Sodium'},
-        'fiber_g':   {'suffix': 'g',  'short': 'fib',    'name': 'g fiber',   'label': 'Fiber'},
-        'water_oz':  {'suffix': 'oz', 'short': 'water',  'name': 'oz water',  'label': 'Water'},
-        'standard_drinks': {'suffix': '', 'short': 'drinks', 'name': 'standard drinks', 'label': 'Alcohol'},
-    } %}
+       The unit/label table is shared at file scope (NUTRIENT_UNITS), bound to a
+       local name here since both halves of the block read it. #}
+    {% set units = NUTRIENT_UNITS %}
     {% set NUTRIENT_TARGETS = nutrient_targets() %}
     {% if n['items'] %}
     <div class="space-y-1.5">
