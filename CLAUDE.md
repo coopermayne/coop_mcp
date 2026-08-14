@@ -694,11 +694,23 @@ working.
   `server.set_collection_display` — a NON-tool, website-only path like
   `set_archived`, invisible to the model and to tool returns. Those prefs are
   PER-COLLECTION and persist in the DB, so a collection stays arranged the way the
-  user left it, on every device — nothing lives in the browser. Arrangement is
+  user left it, on every device — no ARRANGEMENT lives in the browser (folding,
+  below, is the one thing that does, and deliberately). Arrangement is
   resolved in `data.collection_page`, which always hands the template `groups`
   (one unlabeled bucket when ungrouped), each bucket pre-sorted, so every view
   just loops; a bucket for items MISSING the grouped value sorts last, and a
-  `select` field groups in its own declared `options` order. A `checklist` hint
+  `select` field groups in its own declared `options` order. A labelled group's
+  band is a TOGGLE — the stack folds away — in all three views, since the point
+  of naming buckets is being able to put the ones you're not reading away.
+  Which labels are folded is the ONE piece of collection view state kept in
+  `localStorage` rather than the `display` JSON, and the split is by tempo, not
+  by accident: the stored prefs say how the collection is ARRANGED (worth
+  syncing to every device), while a fold is where you are in a scan right now,
+  flipped several times a minute — a POST per chevron is the wrong tempo. Keyed
+  by label, so a fold survives a re-sort. The table view pays for it in markup:
+  collapsing means hiding a run of `<tr>`s, so each group there is its own pair
+  of `<tbody>`s (band, then rows) — valid HTML, columns still aligned.
+  A `checklist` hint
   was dropped (it rendered exactly like `list`, and an item has no done-state to
   check), migrated to `list` in `init_db`; `cards` earns its place the way that
   one didn't — it's the one view where the IMAGE leads instead of accompanying
