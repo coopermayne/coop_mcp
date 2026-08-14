@@ -1,6 +1,30 @@
 {% extends "base.html" %}
 {% import "macros.html" as m with context %}
 {% block title %}{{ c.name }} · Journal{% endblock %}
+
+{# A group band is a TOGGLE. Grouping turns a long collection into a few named
+   stacks, and the point of naming them is being able to put the ones you're not
+   looking at away — a 40-recipe collection grouped by cuisine still scrolls like
+   40 recipes until Sichuan can fold. Identical markup in all three views (the
+   band already was), so one script drives them: the button carries
+   `data-group-toggle="<label>"`, the stack it caps carries the matching
+   `data-group-body`. Collapsed labels live in localStorage, NOT in the `display`
+   JSON — the stored prefs are how the collection is ARRANGED (they survive on
+   every device on purpose), while a fold is where you are in a scan right now,
+   flipped several times a minute. A POST per chevron would be the wrong tempo. #}
+{% macro group_head(label, count) %}
+<button type="button" data-group-toggle="{{ label }}" aria-expanded="true"
+        class="w-full flex items-center justify-between gap-3 text-left">
+  <span class="flex items-center gap-2 min-w-0">
+    <svg data-chev viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+         stroke-linecap="round" stroke-linejoin="round"
+         class="w-3 h-3 shrink-0 text-gray-400 transition-transform"><path d="m6 9 6 6 6-6"/></svg>
+    <span class="truncate text-xs font-semibold uppercase tracking-widest text-black">{{ label }}</span>
+  </span>
+  <span class="shrink-0 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ count }}</span>
+</button>
+{% endmacro %}
+
 {% block content %}
 
 <a href="{{ base }}/collections" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Collections</a>
@@ -130,21 +154,25 @@
         {% for f in c.fields %}<th class="px-4 py-2.5 font-medium whitespace-nowrap">{{ f.label }}</th>{% endfor %}
       </tr>
     </thead>
-    <tbody class="divide-y divide-gray-100">
-      {# A group heading is a FILLED BAND — gray-100, a step darker than the
-         gray-50 row hover so it never reads as a row, with the label in black.
-         (Rules and whitespace were tried and read as page furniture; the fill
-         is what actually says "these belong together".) #}
-      {% for g in c.groups %}
-      {% if g.label %}
-      <tr class="bg-gray-100">
+    {# A group heading is a FILLED BAND — gray-100, a step darker than the
+       gray-50 row hover so it never reads as a row, with the label in black.
+       (Rules and whitespace were tried and read as page furniture; the fill
+       is what actually says "these belong together".) Each group is its own
+       pair of tbodys — band, then rows — because collapsing means hiding a
+       run of <tr>s, and a tbody is the only thing in a table that can wrap
+       them. Multiple tbodys are valid HTML and the columns stay aligned. #}
+    {% for g in c.groups %}
+    {% if g.label %}
+    <tbody>
+      <tr class="bg-gray-100 hover:bg-gray-200/70 transition-colors">
         <td colspan="{{ c.fields | length + 1 }}"
-            class="px-5 sm:px-6 py-2.5 bg-gray-100 border-gray-200 {{ '' if loop.first else 'border-t' }}">
-          <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
-          <span class="ml-2 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
+            class="px-5 sm:px-6 py-2.5 border-gray-200 {{ '' if loop.first else 'border-t' }}">
+          {{ group_head(g.label, g.rows | length) }}
         </td>
       </tr>
-      {% endif %}
+    </tbody>
+    {% endif %}
+    <tbody class="divide-y divide-gray-100" {% if g.label %}data-group-body="{{ g.label }}"{% endif %}>
       {% for it in g.rows %}
       <tr class="hover:bg-gray-50 transition-colors">
         <td class="px-5 sm:px-6 py-3">
@@ -162,8 +190,8 @@
         {% endfor %}
       </tr>
       {% endfor %}
-      {% endfor %}
     </tbody>
+    {% endfor %}
   </table>
 </div>
 
@@ -179,12 +207,12 @@
    above each grid rather than inside it. #}
 {% for g in c.groups %}
 {% if g.label %}
-<div class="flex items-baseline justify-between bg-gray-100 border border-gray-200 rounded-[4px] px-4 py-2.5 {% if loop.first %}mb-4{% else %}mt-8 mb-4{% endif %}">
-  <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
-  <span class="text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
+<div class="bg-gray-100 hover:bg-gray-200/70 transition-colors border border-gray-200 rounded-[4px] px-4 py-2.5 {% if loop.first %}mb-4{% else %}mt-8 mb-4{% endif %}">
+  {{ group_head(g.label, g.rows | length) }}
 </div>
 {% endif %}
 <div class="grid gap-4 {% if not (g.label or loop.first) %}mt-8{% endif %}"
+     {% if g.label %}data-group-body="{{ g.label }}"{% endif %}
      style="grid-template-columns:repeat(auto-fill,minmax({{ card_px }}px,1fr))">
   {% for it in g.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}"
@@ -223,12 +251,12 @@
 {% for g in c.groups %}
 <div class="border border-gray-200 rounded-[4px] overflow-hidden {% if not loop.first %}mt-6{% endif %}">
   {% if g.label %}
-  <div class="flex items-baseline justify-between bg-gray-100 border-b border-gray-200 px-5 sm:px-6 py-2.5">
-    <span class="text-xs font-semibold uppercase tracking-widest text-black">{{ g.label }}</span>
-    <span class="text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ g.rows | length }}</span>
+  <div class="bg-gray-100 hover:bg-gray-200/70 transition-colors border-b border-gray-200 px-5 sm:px-6 py-2.5"
+       data-group-band="{{ g.label }}">
+    {{ group_head(g.label, g.rows | length) }}
   </div>
   {% endif %}
-  <div class="divide-y divide-gray-100">
+  <div class="divide-y divide-gray-100" {% if g.label %}data-group-body="{{ g.label }}"{% endif %}>
   {% for it in g.rows %}
   <a href="{{ base }}/item/{{ it.item_id }}" class="flex gap-4 px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors">
     {% if img_px and it.featured_image_url %}
@@ -256,6 +284,40 @@
 {% endif %}
 
 <script>
+{# Group folding. Keyed by LABEL rather than index so a fold survives a re-sort
+   or a new item landing in another bucket; scoped per collection. #}
+(function () {
+  var KEY = 'collections.collapsed.{{ c.name | urlencode }}', collapsed = {};
+  try { (JSON.parse(localStorage.getItem(KEY)) || []).forEach(function (k) { collapsed[k] = 1; }); } catch (e) {}
+
+  function pick(attr, key) {
+    return Array.prototype.filter.call(document.querySelectorAll('[' + attr + ']'), function (el) {
+      return el.getAttribute(attr) === key;
+    });
+  }
+  function paint(key) {
+    var off = !!collapsed[key];
+    pick('data-group-body', key).forEach(function (el) { el.classList.toggle('hidden', off); });
+    {# The list view's band draws the rule between itself and its stack; with the
+       stack folded away that rule would double the wrapper's own bottom border. #}
+    pick('data-group-band', key).forEach(function (el) { el.classList.toggle('border-b', !off); });
+    pick('data-group-toggle', key).forEach(function (el) {
+      el.setAttribute('aria-expanded', off ? 'false' : 'true');
+      var ch = el.querySelector('[data-chev]');
+      if (ch) ch.classList.toggle('-rotate-90', off);
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-group-toggle]'), function (btn) {
+    var key = btn.getAttribute('data-group-toggle');
+    paint(key);
+    btn.addEventListener('click', function () {
+      if (collapsed[key]) delete collapsed[key]; else collapsed[key] = 1;
+      paint(key);
+      try { localStorage.setItem(KEY, JSON.stringify(Object.keys(collapsed))); } catch (e) {}
+    });
+  });
+})();
+
 (function () {
   var btn = document.getElementById('disp-btn'), pop = document.getElementById('disp-pop');
   if (!btn) return;
