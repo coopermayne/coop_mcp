@@ -290,10 +290,13 @@ trustworthy:
     at before (fuzzy, so spelling doesn't matter); reuse those settled numbers when
     it's genuinely the same thing (your judgment), estimate fresh when it isn't.
     Novel and one-off dishes you estimate yourself, as always.
-  - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut) live in
-    the eating profile — returned by intake_summary, updated via intake_set_profile —
-    not in whatever a conversation happens to say. Read it before coaching; fold in
-    durable changes as they come up, like a person's summary."""
+  - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut, and how
+    the user wants to be coached) live in the eating profile — returned by
+    intake_summary, updated via intake_set_profile — not in whatever a conversation
+    happens to say. Load it BEFORE THE FIRST LOG of a conversation, not just before
+    answering a question: a session opens with "log a beer" far more often than with
+    "how am I doing", and logging without it is how the coaching goes quietly missing
+    for a whole day. Fold in durable changes as they come up, like a person's summary."""
 
 
 # Connector-ONLY (not in JOURNAL_CHAT_INSTRUCTIONS): a Claude conversation writes
