@@ -196,7 +196,10 @@
         </td>
         {% for f in c.fields %}
         <td class="px-4 py-3 text-gray-600 whitespace-nowrap tabular-nums">
-          {%- if it.cells.get(f.key) %}{{ m.field_text(it.cells[f.key]) }}{% endif -%}
+          {#- with_label=False: a table column is already HEADED with the field's
+              label, so the one type that renders as its own name (bool) would
+              otherwise repeat the header in every cell. -#}
+          {%- if it.cells.get(f.key) %}{{ m.field_text(it.cells[f.key], with_label=False) }}{% endif -%}
         </td>
         {% endfor %}
       </tr>

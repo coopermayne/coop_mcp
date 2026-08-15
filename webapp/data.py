@@ -970,6 +970,31 @@ def _grouped_items(items: list[dict], field: dict | None) -> list[dict]:
            ([{"label": "—", "value": "", "rows": buckets[""]}] if "" in buckets else [])
 
 
+def _without_group_value(it: dict, key: str, label: str) -> dict:
+    """One item as it should read UNDER a multiselect band: a copy with the
+    band's own value taken out of `key`. See collection_page for why — an item
+    sits in one band per value it carries, so dropping the whole field (what a
+    single-valued grouping does) would take its OTHER values off the row too.
+    A COPY because the same item dict is in several bands at once and each one
+    trims something different; the entry goes away entirely when nothing is
+    left, so a single-valued item reads like the single-valued case. `data_map`
+    is deliberately untouched — it's the raw stored value, and sorting reads
+    it."""
+    cell = it["cells"].get(key)
+    if not cell or not isinstance(cell.get("value"), list):
+        return it
+    rest = [v for v in cell["value"] if str(v) != label]
+    out = dict(it)
+    if rest:
+        trimmed = {**cell, "value": rest}
+        out["data"] = [trimmed if e["key"] == key else e for e in it["data"]]
+        out["cells"] = {**it["cells"], key: trimmed}
+    else:
+        out["data"] = [e for e in it["data"] if e["key"] != key]
+        out["cells"] = {k: v for k, v in it["cells"].items() if k != key}
+    return out
+
+
 def _like_escape(s: str) -> str:
     """Escape LIKE wildcards so a typed % or _ searches for itself."""
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -1028,7 +1053,15 @@ def collection_page(name: str) -> dict | None:
     "California", so a `REGION: CALIFORNIA` badge on the only row under it, or a
     Status column repeating the heading down the whole table, is the same word
     twice. The two rules are joined on purpose — the field is only dropped when a
-    band is actually there to carry it, so the value never just disappears."""
+    band is actually there to carry it, so the value never just disappears.
+
+    A MULTISELECT is the exception to the second rule, because it breaks the
+    assumption underneath it: a band names ONE value and the item carries
+    several, so dropping the field took the item's other tags off the row with
+    it — under "cheap", an item tagged cheap+date showed no tags at all, and
+    "date" appeared nowhere on the page. It keeps the field and drops just the
+    band's own value per row instead (_without_group_value), which is the same
+    intent — don't say twice what the band already says — applied per value."""
     with server.db() as conn:
         c = conn.execute("SELECT * FROM collections WHERE lower(name)=?",
                          ((name or "").strip().lower(),)).fetchone()
@@ -1049,6 +1082,9 @@ def collection_page(name: str) -> dict | None:
         len(groups) > 1 and all(len(g["rows"]) == 1 for g in groups))
     if not grouped:
         groups = _grouped_items(items, None)
+    elif ftypes.get(gkey) == "multiselect":
+        for g in groups:
+            g["rows"] = [_without_group_value(it, gkey, g["label"]) for it in g["rows"]]
     else:
         visible = [f for f in visible if f["key"] != gkey]
         for it in items:

@@ -227,6 +227,11 @@ templates.env.globals["nutrient_targets"] = data.nutrient_targets
 templates.env.globals["icon_paths"] = server.icon_set.ICON_PATHS
 templates.env.globals["default_icon"] = server.icon_set.DEFAULT_ICON
 
+# How many stars macros.stars draws. A global off the server's own constant
+# because the cap is the VALIDATOR's (_bad_data rejects a rating above it) — a
+# literal 5 in the macro would be a second copy of that number, free to drift.
+templates.env.globals["rating_max"] = server.RATING_MAX
+
 
 def link_people_md(body: str, people: list[dict], base: str) -> str:
     """Return the entry body as Markdown with each resolved person's name turned into

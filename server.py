@@ -3429,8 +3429,14 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
 def _is_http_url(v) -> bool:
     """Is this an http(s) URL? The one check, shared by the featured image and
     `url` fields — both end up in an href/`<img src>`, so a javascript:/data:
-    value has no business in either, and two copies of the rule drift."""
-    return isinstance(v, str) and v.strip().lower().startswith(("http://", "https://"))
+    value has no business in either, and two copies of the rule drift.
+
+    It does NOT strip: the check has to be true of the string as STORED, and a
+    `url` field's value is stored exactly as sent. Stripping here only meant
+    " https://x" validated and then went into the href with its space still on.
+    Callers that clean the value first (_clean_featured_image) strip before
+    asking."""
+    return isinstance(v, str) and v.lower().startswith(("http://", "https://"))
 
 
 def _bad_location(k: str, v) -> Optional[str]:
@@ -3703,7 +3709,11 @@ def _mistyped_keys(conn: sqlite3.Connection, collection_id: int,
     """{data key: how many items hold a value the field's type now rejects}.
     `_stranded_keys` for RETYPES: changing text→rating doesn't touch the stored
     values, so every "4 out of 5" quietly stops validating and nothing says so
-    until the next write of that item fails, on a page that renders it fine.
+    until a notes_file MOVES that item, on a page that renders it fine. Only
+    notes_file, note — it re-validates the whole merged blob, while notes_update
+    checks just the keys it's given, so editing a sibling field still succeeds
+    and the stale value keeps sitting there unmentioned. That's the reason to
+    report it here rather than trusting the next write to surface it.
     One key at a time (rather than the whole blob) because _bad_data stops at
     the first error and the point here is which fields to go fix. Counts only —
     advisory, never blocking, like `unfilled_fields`."""
@@ -3715,6 +3725,37 @@ def _mistyped_keys(conn: sqlite3.Connection, collection_id: int,
             if k in declared and _bad_data({k: v}, fields):
                 out[k] = out.get(k, 0) + 1
     return dict(sorted(out.items()))
+
+
+def _prune_display(conn: sqlite3.Connection, row, fields: list[dict]) -> list[str]:
+    """Clear the display prefs a field change has just made illegal, returning
+    the pref names cleared. `stranded`/`mistyped` for the ARRANGEMENT.
+
+    set_collection_display checks group_by/sort_by against the type the field
+    had WHEN IT WAS SET, and it's the only other place that checks — so
+    retyping text→url (or dropping the field) leaves the page still grouped by
+    a key that can no longer be grouped by. The webapp can't recover on its
+    own: the popover offers only legal fields, so the stale pref renders as
+    "Nothing" — the page and the control disagreeing about how it's arranged —
+    and the next Apply silently writes that lie back. Resetting to the default
+    is the honest outcome, and saying so is the point (silence is what let the
+    featured_image orphans run to 16 items)."""
+    disp, keys = _coll_display(row), {f["key"] for f in fields}
+    ftypes = {f["key"]: f.get("type", "text") for f in fields}
+    cleared = []
+    for pref, legal in (("group_by", GROUPABLE_TYPES), ("sort_by", SORTABLE_TYPES)):
+        v = disp.get(pref)
+        # "" is "don't group"/"default sort", and sort_by also takes the
+        # intrinsic columns — neither is a declared field, so neither can go stale.
+        if not v or (pref == "sort_by" and v in SORT_INTRINSICS):
+            continue
+        if v not in keys or ftypes[v] not in legal:
+            disp[pref] = ""
+            cleared.append(pref)
+    if cleared:
+        conn.execute("UPDATE collections SET display=? WHERE id=?",
+                     (json.dumps(disp), row["id"]))
+    return cleared
 
 
 def _unfilled_fields(fields: list[dict], data: dict) -> list[str]:
@@ -3832,9 +3873,14 @@ def save_collection(name: str, description: Optional[str] = None,
     items} so you can re-declare the field or clear each with
     notes_update(item_id, data={key: None}). Keeping a field but CHANGING its
     type leaves the old values behind the same way — they stop validating where
-    they sit — so those come back as `mistyped` {key: how many items}; fix each
-    with notes_update or put the type back. Both are advisory: the save happens
-    either way.
+    they sit, and a later notes_file on that item is refused — so those come
+    back as `mistyped` {key: how many items}; fix each with notes_update or put
+    the type back. Both are advisory: the save happens either way.
+
+    Dropping or retyping the field the collection page is currently GROUPED or
+    SORTED by resets that preference (it can't survive a field it no longer
+    fits), reported as `display_reset`; the user re-picks in the page's Display
+    popover.
 
     A `select` field needs a non-empty
     `options` list — without one it constrains nothing, so use 'text' instead;
@@ -3892,7 +3938,7 @@ def save_collection(name: str, description: Optional[str] = None,
         return {"error": "name is required"}
     if icon is not None and (err := _bad_icon(icon)):
         return err
-    norm_fields, stranded, mistyped = None, None, None
+    norm_fields, stranded, mistyped, display_reset = None, None, None, None
     if fields is not None:
         norm_fields, err = _norm_fields(fields)
         if err:
@@ -3938,6 +3984,13 @@ def save_collection(name: str, description: Optional[str] = None,
                 # leaves values that no longer validate. Reported for the same
                 # reason silence is what let the image orphans run to 16 items.
                 mistyped = _mistyped_keys(conn, row["id"], norm_fields)
+                # And once more for the webapp's ARRANGEMENT, which is keyed by
+                # field AND by type: dropping or retyping the grouped/sorted
+                # field leaves the page arranged by something that no longer
+                # arranges. That one can't be left for the user to fix later —
+                # a stale pref renders as "Nothing" in the popover while the
+                # page still obeys it — so it's reset here rather than reported.
+                display_reset = _prune_display(conn, row, norm_fields)
         out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
     res = {"id": out["id"], "name": out["name"], "description": out["description"],
            "fields": _coll_fields(out),
@@ -3955,6 +4008,11 @@ def save_collection(name: str, description: Optional[str] = None,
         notes.append("`mistyped`: these items' existing values don't fit the field's "
                      "type any more — rewrite each with notes_update, or put the type "
                      "back")
+    if display_reset:
+        res["display_reset"] = display_reset
+        notes.append("`display_reset`: the field these arranged the collection page by "
+                     "can't be arranged by any more, so they're back to the default — "
+                     "the user can re-pick in the page's Display popover")
     if notes:
         res["note"] = " · ".join(notes)
     return res

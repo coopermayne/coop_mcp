@@ -445,19 +445,26 @@
 
 {# A URL's HOST, which is what a link should say: the badge reading
    "HTTPS://WWW.NYTIMES.COM/2024/…/RECIPE" spelled out a path nobody reads and
-   wrapped the row to do it. Defensive on purpose — see field_text. #}
+   wrapped the row to do it. Defensive on purpose — see field_text.
+
+   The split is CAPPED AT ONE: a path may carry its own "//" (a doubled slash
+   survives most URL builders), and splitting on every one of them then taking
+   the LAST piece returned the tail of the path — ".../menu//lunch" rendered as
+   "lunch". Only the first "//" is the scheme's. #}
 {% macro url_host(v) %}
-{%- set h = (v | string).split('//')[-1].split('/')[0] -%}
+{%- set h = (v | string).split('//', 1)[-1].split('/')[0] -%}
 {{- h[4:] if h.startswith('www.') else h -}}
 {% endmacro %}
 
-{# 0-5 in halves as stars. A half is its own glyph rather than a half-filled
-   star: the badge is 10px, and at that size a partial fill is just a smudge. #}
+{# 0-RATING_MAX in halves as stars. A half is its own glyph rather than a
+   half-filled star: the badge is 10px, and at that size a partial fill is just
+   a smudge. `rating_max` is a Jinja global off server.RATING_MAX (app.py) —
+   the cap is the validator's, and a literal here would be a second copy of it. #}
 {% macro stars(v) %}
 {%- set n = (v | float(0)) -%}
 {%- set full = n | int -%}
 {%- set half = 1 if (n - full) >= 0.5 else 0 -%}
-{{- '★' * full }}{{ '½' if half }}{{ '☆' * (5 - full - half) -}}
+{{- '★' * full }}{{ '½' if half }}{{ '☆' * (rating_max - full - half) -}}
 {% endmacro %}
 
 {# ONE declared field's value, rendered per its declaration (data._item_view
@@ -468,16 +475,31 @@
    spelled two ways), a url shows its host, a rating draws stars, a location
    wears a pin. A number wears its unit.
 
-   Every branch falls back to PRINTING THE RAW VALUE rather than raising:
-   retyping a field leaves the old values sitting in the items (that's what
-   collections_save reports as `mistyped`), so this macro meets values its type
-   says are impossible as a matter of course, and a page that 500s is a worse
-   answer than one that shows what's actually stored. #}
-{% macro field_text(f) %}
+   Every branch falls back to PRINTING THE RAW VALUE rather than raising OR
+   coercing: retyping a field leaves the old values sitting in the items (that's
+   what collections_save reports as `mistyped`), so this macro meets values its
+   type says are impossible as a matter of course. A page that 500s is a worse
+   answer than one showing what's actually stored — and so is a page that
+   answers CONFIDENTLY IN THE WRONG TYPE, which is what the numeric coercion
+   used to do: text→rating turned a stored "very good" into `float(0)`, drawing
+   five empty stars that read as a real zero-star rating rather than as a value
+   needing fixing. The typed branches now guard on the value, not just the
+   declaration.
+
+   `with_label` is for the TABLE, whose columns are already headed with the
+   label — see the bool branch. #}
+{% macro field_text(f, with_label=True) %}
 {%- if f.type == 'date' %}{{ f.value | short_date }}
 {%- elif f.type == 'url' %}{{ url_host(f.value) }}
-{%- elif f.type == 'bool' %}{{ '✓ ' if f.value is sameas true }}{{ f.label }}
-{%- elif f.type == 'rating' %}{{ stars(f.value) }}
+{#- A bool IS its label ("✓ Cooked"), the one type whose value can't speak
+    without its name — but in a TABLE the column heading already said it, so
+    every cell read "✓ Visited"/"Visited" under a header saying Visited. There
+    the mark alone carries it, with an em dash for a stored false so it stays
+    distinguishable from a field this item simply has no value for (blank). -#}
+{%- elif f.type == 'bool' and f.value is not boolean %}{{ f.value }}
+{%- elif f.type == 'bool' and with_label %}{{ '✓ ' if f.value }}{{ f.label }}
+{%- elif f.type == 'bool' %}{{ '✓' if f.value else '—' }}
+{%- elif f.type == 'rating' %}{{ stars(f.value) if f.value is number and f.value is not boolean else f.value }}
 {%- elif f.type == 'multiselect' %}{{ (f.value if f.value is sequence and f.value is not string else [f.value]) | join(', ') }}
 {%- elif f.type == 'location' %}{{ loc_text(f.value) }}
 {%- elif f.unit %}{{ f.value }} {{ f.unit }}
@@ -527,7 +549,7 @@
   <a class="badge hover:border-black hover:text-black transition-colors gap-1" title="{{ f.label }}"
      href="{{ loc_url(f.value) }}" target="_blank" rel="noopener">{{ icon('map-pin', 'w-3 h-3') }}{{ loc_text(f.value) }}</a>
 {%- else -%}
-<span class="badge{% if f.type == 'location' %} gap-1{% endif %}{% if f.type == 'bool' and f.value is not sameas true %} opacity-50{% endif %}" title="{{ f.label }}">
+<span class="badge{% if f.type == 'location' %} gap-1{% endif %}{% if f.type == 'bool' and f.value is boolean and not f.value %} opacity-50{% endif %}" title="{{ f.label }}">
   {%- if f.type == 'number' and not f.unit %}{{ f.label }}: {% endif -%}
   {%- if f.type == 'location' %}{{ icon('map-pin', 'w-3 h-3') }}{% endif -%}
   {{- field_text(f) -}}

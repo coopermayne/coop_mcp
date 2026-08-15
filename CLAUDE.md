@@ -652,8 +652,19 @@ working.
   come back as `mistyped` {key: item count} (`_mistyped_keys`, one key at a time
   since `_bad_data` stops at the first error). Both are advisory, never
   blocking, like `unfilled_fields`; and `macros.field_text` prints an
-  impossible-for-its-type value rather than raising, because after a retype it
-  meets them as a matter of course. Shape is the model's; LAYOUT is not — the legacy
+  impossible-for-its-type value RAW rather than raising OR coercing, because
+  after a retype it meets them as a matter of course — coercing was the worse
+  half of that: `float(0)` on a stored "very good" drew five empty stars, which
+  reads as a real zero-star rating instead of as a value wanting a fix, so each
+  typed branch guards on the value and not just on the declaration. What is NOT
+  advisory is the webapp's ARRANGEMENT: `group_by`/`sort_by` name a field AND
+  depend on its type, so dropping or retyping that field is RESET here
+  (`_prune_display`, reported as `display_reset`) rather than reported. It
+  can't be left for later — `set_collection_display` checks the type only when
+  the pref is SET, so a stale one leaves the page still grouped by a key the
+  Display popover no longer offers, i.e. showing "Nothing" while the page obeys
+  it, and the next Apply writes that lie back.
+  Shape is the model's; LAYOUT is not — the legacy
   `display_hint` column is dormant, the view lives in the webapp-only `display`
   JSON (see the popover below). Items hold markdown `body` (the prose), a `featured_image_url` (the
   FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
@@ -735,7 +746,13 @@ working.
   label moves to the `title` tooltip. Two exceptions, both fields whose value
   can't speak for itself: a bare NUMBER, which keeps its label unless the field
   declares a `unit` — which says it shorter — and a BOOL, which IS its label
-  ("✓ Cooked", muted when false). `macros.field_badge`/`field_text` own those
+  ("✓ Cooked", muted when false). The bool exception INVERTS in the table, the
+  one view whose columns are already HEADED with the label: there every cell
+  read "✓ Visited"/"Visited" under a header saying Visited, so
+  `field_text(with_label=False)` (the table's call, and only the table's) drops
+  to a bare ✓ / — , the em dash keeping a stored false distinguishable from a
+  field this item has no value for at all (blank).
+  `macros.field_badge`/`field_text` own those
   rules plus date formatting and every semantic type's rendering, so all three
   views and the item page agree. `field_badge(linkify=…)` is OFF by default and
   that's structural, not a preference: list rows and cards wrap the whole item in
@@ -780,6 +797,15 @@ working.
   heading down the whole table, is the same word twice. The field is dropped ONLY
   when a band is there to carry it, which is why one rule can't move without the
   other: apply the hiding to a degenerate grouping and the value vanishes entirely.
+  A MULTISELECT is the exception to the hiding, and for the same reason the two
+  rules are joined — it breaks the assumption underneath it. A band names ONE
+  value while the item carries several, so dropping the field took the item's
+  OTHER tags off the row with it: under "cheap", an item tagged cheap+date
+  showed no tags at all, and "date" appeared nowhere on the page. It keeps the
+  field and trims just the band's own value per row instead
+  (`data._without_group_value`, a per-band COPY since the same item is in
+  several bands and each drops something different) — the same intent, don't
+  say twice what the band already says, applied per value rather than per field.
   A labelled group's
   band is a TOGGLE — the stack folds away — in all three views, since the point
   of naming buckets is being able to put the ones you're not reading away.
