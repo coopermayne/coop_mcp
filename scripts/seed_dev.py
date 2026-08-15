@@ -370,3 +370,178 @@ server.update_profile({
     "goals": "stay healthy; nudge bench past 200lb by EOY; sub-25 5k",
 })
 print("profile updated.")
+
+
+# --------------------------------------------------------------------------- #
+# Collections + items
+#
+# Breadth over volume: the point is to exercise the RENDERING, so between them
+# these four collections cover every field type (text/number/date/select), all
+# three views, grouped and ungrouped, every image size, items with and without a
+# featured image, and declared fields left unfilled. Plus loose inbox notes, so
+# /collections has something in its bottom half.
+#
+# Idempotent: collections are looked up by name and items by (collection, title),
+# so re-running edits in place rather than stacking duplicates.
+
+# picsum gives a stable photo per seed, so a re-run doesn't reshuffle the grid.
+def photo(seed: str) -> str:
+    return f"https://picsum.photos/seed/{seed}/800/600"
+
+
+COLLECTIONS = [
+    ("Recipes", "Things worth cooking twice.", "chef-hat", [
+        {"key": "cuisine", "label": "Cuisine", "type": "select",
+         "options": ["Italian", "Sichuan", "Mexican", "Japanese", "Levantine", "American"]},
+        {"key": "time_min", "label": "Time", "type": "number"},
+        {"key": "source", "label": "Source", "type": "text"},
+    ]),
+    ("Reading", "Books in, out, and abandoned.", "book-open", [
+        {"key": "author", "label": "Author", "type": "text"},
+        {"key": "status", "label": "Status", "type": "select",
+         "options": ["Reading", "Finished", "Queued", "Abandoned"]},
+        {"key": "finished", "label": "Finished", "type": "date"},
+        {"key": "rating", "label": "Rating", "type": "number"},
+    ]),
+    ("Trip ideas", "Places to go when there's a week free.", "plane", [
+        {"key": "region", "label": "Region", "type": "select",
+         "options": ["California", "Southwest", "Pacific NW", "Mexico", "Japan", "Europe"]},
+        {"key": "season", "label": "Best season", "type": "select",
+         "options": ["Spring", "Summer", "Fall", "Winter"]},
+        {"key": "nights", "label": "Nights", "type": "number"},
+    ]),
+    # Deliberately field-less: a collection can be just titles and prose, and the
+    # page has to look composed with no badges, no columns, no images.
+    ("Sayings", "Lines worth keeping.", "quote", []),
+]
+
+for name, desc, icon, fields in COLLECTIONS:
+    server.save_collection(name=name, description=desc, icon=icon,
+                           fields=fields, force=True)
+print(f"collections: {len(COLLECTIONS)}")
+
+
+# (collection, title, data, body, image-seed or None)
+ITEMS = [
+    # -- Recipes: images on most, one without, one missing every declared field.
+    ("Recipes", "Sunday ragù", {"cuisine": "Italian", "time_min": 240, "source": "Marcella Hazan"},
+     "Soffritto low and slow — 45 minutes before the meat goes anywhere near it.\n\n"
+     "Milk first, then wine, then tomato. The milk is the whole trick; skip it and it's\n"
+     "just a red sauce with beef in it.\n\n**Serves 6.** Freezes well in pint containers.", "ragu"),
+    ("Recipes", "Mapo tofu", {"cuisine": "Sichuan", "time_min": 35, "source": "Fuchsia Dunlop"},
+     "Doubanjiang is the whole dish — the Pixian stuff, not the generic chili bean paste.\n\n"
+     "Fry it until the oil goes red before anything else joins. Silken tofu, cubed, slid in\n"
+     "at the end and pushed around with the back of the ladle so it doesn't break.", "mapo"),
+    ("Recipes", "Weeknight carnitas", {"cuisine": "Mexican", "time_min": 180, "source": "adapted from Kenji"},
+     "Shoulder, orange, bay, lard. Oven at 275 until it shreds, then broil the tray for the\n"
+     "crispy edges — that step is not optional.", "carnitas"),
+    ("Recipes", "Shoyu tamago", {"cuisine": "Japanese", "time_min": 15, "source": "kitchen improv"},
+     "Six and a half minutes, ice bath, then overnight in soy + mirin + a little dashi.", "tamago"),
+    ("Recipes", "Muhammara", {"cuisine": "Levantine", "time_min": 20, "source": "Ottolenghi"},
+     "Roasted red pepper, walnut, pomegranate molasses, aleppo. Should be coarse, not smooth —\n"
+     "stop the processor while it still has texture.", "muhammara"),
+    ("Recipes", "Buttermilk pancakes", {"cuisine": "American", "time_min": 25},
+     "The one we actually make. Rest the batter 10 minutes or they're tough.", "pancakes"),
+    # No image, no fields filled: the row that has to hold its own on a page of photos.
+    ("Recipes", "Dad's grilled artichokes", {},
+     "Steam first, then halve, scoop the choke, oil hard, and grill cut-side down until\n"
+     "there are real black marks. Lemon aioli. Never written down before now.", None),
+
+    # -- Reading: grouped by status, so several buckets + a missing-value bucket.
+    ("Reading", "The Overstory", {"author": "Richard Powers", "status": "Finished",
+                                  "finished": "2026-03-02", "rating": 5},
+     "The first 150 pages are the best short-story collection I've read. It sags in the middle\n"
+     "and then earns all of it back.", "overstory"),
+    ("Reading", "Piranesi", {"author": "Susanna Clarke", "status": "Finished",
+                             "finished": "2026-04-11", "rating": 5},
+     "Read it in two sittings. Say nothing about it to anyone before they read it.", "piranesi"),
+    ("Reading", "Seeing Like a State", {"author": "James C. Scott", "status": "Reading"},
+     "Legibility as the thing states want and the thing that kills the local knowledge they\n"
+     "were trying to organize. Halfway; the forestry chapter alone was worth it.", "state"),
+    ("Reading", "The Power Broker", {"author": "Robert Caro", "status": "Reading"},
+     "Year two. Genuinely might finish it this time — I'm past the Triborough.", None),
+    ("Reading", "Intermezzo", {"author": "Sally Rooney", "status": "Queued"},
+     "Hallie finished it in a weekend and has been waiting for me to catch up.", "intermezzo"),
+    ("Reading", "The Master and Margarita", {"author": "Mikhail Bulgakov", "status": "Queued"},
+     "", "margarita"),
+    ("Reading", "Infinite Jest", {"author": "David Foster Wallace", "status": "Abandoned",
+                                  "rating": 2},
+     "Page 340, twice, four years apart. Calling it.", None),
+    # Status left blank on purpose — this one has to land in the trailing bucket.
+    ("Reading", "A Fine Balance", {"author": "Rohinton Mistry"},
+     "Recommended by Maya. Haven't decided whether I'm up for it.", None),
+
+    # -- Trip ideas: the cards view, so mostly photos.
+    ("Trip ideas", "Lost Coast traverse", {"region": "California", "season": "Fall", "nights": 3},
+     "Shelter Cove to Mattole, 25 miles, and the tide table decides the schedule rather than\n"
+     "you. Need to book the shuttle well ahead.", "lostcoast"),
+    ("Trip ideas", "Oaxaca for Día de Muertos", {"region": "Mexico", "season": "Fall", "nights": 6},
+     "Everyone says go, and everyone says book a year out. Mezcal, mole, the markets.", "oaxaca"),
+    ("Trip ideas", "Kiso Valley walk", {"region": "Japan", "season": "Spring", "nights": 5},
+     "Magome to Tsumago on the old post road, staying in ryokan along the way. The easy version\n"
+     "of a walking trip — bags get forwarded.", "kiso"),
+    ("Trip ideas", "Olympic peninsula loop", {"region": "Pacific NW", "season": "Summer", "nights": 4},
+     "Hoh rainforest, Rialto Beach, hot springs. Rent something with a real roof.", "olympic"),
+    ("Trip ideas", "Marfa", {"region": "Southwest", "season": "Spring", "nights": 3},
+     "Chinati, the lights, and not much else, which is the point.", "marfa"),
+    ("Trip ideas", "Puglia in the shoulder season", {"region": "Europe", "nights": 8},
+     "Masseria, orecchiette, nobody there in October. Season left blank because May works too.", "puglia"),
+
+    # -- Sayings: no fields at all, no images. Pure prose rows.
+    ("Sayings", "On finishing", {},
+     "“The perfect is the enemy of the shipped.” — Priya, in about four different standups.", None),
+    ("Sayings", "Dad on drawing", {},
+     "“If you can't draw it small, you don't understand it yet.”", None),
+    ("Sayings", "On travel", {},
+     "“Two weeks in one place beats four cities in ten days.” Learned the expensive way.", None),
+]
+
+for coll, title, data, body, seed in ITEMS:
+    with server.db() as conn:
+        row = conn.execute(
+            """SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
+               WHERE i.title=? AND lower(c.name)=?""", (title, coll.lower())).fetchone()
+    img = photo(seed) if seed else None
+    if row:
+        server.update_item(item_id=row["id"], body=body, data=data,
+                           featured_image_url=img or "")
+    else:
+        server.save_item(title=title, body=body, collection=coll, data=data,
+                         featured_image_url=img)
+print(f"collection items: {len(ITEMS)}")
+
+
+# Loose inbox notes — capture-first-file-second, so the inbox is never empty.
+NOTES = [
+    ("Guest room paint", "Hallie's leaning toward the greyed-green. Get samples on the wall\n"
+                         "before deciding — the north light in there kills anything cool.", None),
+    ("Bike tune-up", "Rear derailleur is skipping under load in the 3 smallest cogs.", None),
+    ("Gift ideas for Mom", "The Japanese pruning shears she kept picking up at the nursery.\n"
+                           "Backup: a print from the Otis faculty show.", None),
+    ("That wine from Gjelina", "Nerello Mascalese, Etna. Ask them next time — the label was\n"
+                               "hand-drawn, mostly white, with a mountain on it.", "wine"),
+    ("Podcast rec from Dev", "Something about the history of container shipping. He said the\n"
+                             "third episode is the one.", None),
+]
+for title, body, seed in NOTES:
+    with server.db() as conn:
+        row = conn.execute(
+            "SELECT id FROM items WHERE title=? AND collection_id IS NULL", (title,)).fetchone()
+    img = photo(seed) if seed else None
+    if row:
+        server.update_item(item_id=row["id"], body=body, featured_image_url=img or "")
+    else:
+        server.save_item(title=title, body=body, featured_image_url=img)
+print(f"inbox notes: {len(NOTES)}")
+
+
+# Display prefs — the webapp-only half. One collection per view, so a pass
+# through /collections shows all three without touching a popover.
+server.set_collection_display("Recipes", view="cards", image_size="medium",
+                              sort_by="title", sort_dir="asc", show_body=True)
+server.set_collection_display("Reading", view="table", group_by="status",
+                              sort_by="title", sort_dir="asc", image_size="small")
+server.set_collection_display("Trip ideas", view="list", group_by="region",
+                              image_size="medium", show_body=True, sort_by="title")
+server.set_collection_display("Sayings", view="list", image_size="off", show_body=True)
+print("display prefs set.")
