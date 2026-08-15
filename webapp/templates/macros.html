@@ -443,27 +443,94 @@
 <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{{ text }}</p>
 {% endmacro %}
 
+{# A URL's HOST, which is what a link should say: the badge reading
+   "HTTPS://WWW.NYTIMES.COM/2024/…/RECIPE" spelled out a path nobody reads and
+   wrapped the row to do it. Defensive on purpose — see field_text. #}
+{% macro url_host(v) %}
+{%- set h = (v | string).split('//')[-1].split('/')[0] -%}
+{{- h[4:] if h.startswith('www.') else h -}}
+{% endmacro %}
+
+{# 0-5 in halves as stars. A half is its own glyph rather than a half-filled
+   star: the badge is 10px, and at that size a partial fill is just a smudge. #}
+{% macro stars(v) %}
+{%- set n = (v | float(0)) -%}
+{%- set full = n | int -%}
+{%- set half = 1 if (n - full) >= 0.5 else 0 -%}
+{{- '★' * full }}{{ '½' if half }}{{ '☆' * (5 - full - half) -}}
+{% endmacro %}
+
 {# ONE declared field's value, rendered per its declaration (data._item_view
-   hands over the type and unit with every value). A `date` field goes through
-   the app's own date format rather than showing raw ISO — a table column
-   reading "2026-04-11" next to a byline reading "Apr 11, 2026" is the same day
-   spelled two ways. A number wears its unit. #}
+   hands over the type and unit with every value). The TYPE is semantic — it
+   says what the value means — so this is where meaning becomes markup: a date
+   goes through the app's own date format rather than showing raw ISO (a table
+   column reading "2026-04-11" beside a byline reading "Apr 11, 2026" is one day
+   spelled two ways), a url shows its host, a rating draws stars, a location
+   wears a pin. A number wears its unit.
+
+   Every branch falls back to PRINTING THE RAW VALUE rather than raising:
+   retyping a field leaves the old values sitting in the items (that's what
+   collections_save reports as `mistyped`), so this macro meets values its type
+   says are impossible as a matter of course, and a page that 500s is a worse
+   answer than one that shows what's actually stored. #}
 {% macro field_text(f) %}
 {%- if f.type == 'date' %}{{ f.value | short_date }}
+{%- elif f.type == 'url' %}{{ url_host(f.value) }}
+{%- elif f.type == 'bool' %}{{ '✓ ' if f.value is sameas true }}{{ f.label }}
+{%- elif f.type == 'rating' %}{{ stars(f.value) }}
+{%- elif f.type == 'multiselect' %}{{ (f.value if f.value is sequence and f.value is not string else [f.value]) | join(', ') }}
+{%- elif f.type == 'location' %}{{ loc_text(f.value) }}
 {%- elif f.unit %}{{ f.value }} {{ f.unit }}
 {%- else %}{{ f.value }}{% endif -%}
+{% endmacro %}
+
+{# A location's own words: its label if it has one, else the address. The
+   coordinates are STORED but never shown — "37.7734, -122.4222" is not what a
+   place is called; they're what the map link is built from. #}
+{% macro loc_text(v) %}
+{%- if v is mapping %}{{ v.label or v.address or ((v.lat ~ ', ' ~ v.lng) if 'lat' in v else '') }}
+{%- else %}{{ v }}{% endif -%}
+{% endmacro %}
+
+{# Where a location points. Coordinates win when they're there (a pin lands
+   exactly), the address is the fallback. One URL, one provider — swapping maps
+   apps is this line. #}
+{% macro loc_url(v) %}
+{%- if 'lat' in v and 'lng' in v %}https://www.google.com/maps/search/?api=1&amp;query={{ v.lat }},{{ v.lng }}
+{%- else %}https://www.google.com/maps/search/?api=1&amp;query={{ v.address | urlencode }}{% endif -%}
 {% endmacro %}
 
 {# One field as a badge. The LABEL is dropped to a tooltip, because inside a
    collection the value almost always names its own field: under a chef-hat
    called Recipes, "CUISINE: ITALIAN" is a word of scaffolding in front of the
    only word that carries anything, and three of them wrapped the badge row to
-   two lines on every card. The exception is a bare number, which really can't
-   speak for itself — so it keeps its label UNLESS the field declares a unit,
-   which says the same thing in less ("240 min" beats "Time: 240"). #}
-{% macro field_badge(f) %}
-<span class="badge" title="{{ f.label }}">
+   two lines on every card. Two exceptions, both fields whose value can't speak
+   alone: a bare number (which keeps its label UNLESS a unit says the same thing
+   in less — "240 min" beats "Time: 240"), and a bool, which IS its label
+   ("✓ Cooked" / a muted "Cooked").
+
+   A multiselect is several badges, one per value — it's a row of tags, and one
+   badge holding "vegetarian, quick" reads as a single odd tag.
+
+   `linkify` is OFF by default and that's structural, not a preference: the list
+   rows and cards wrap the whole item in an <a> to /item/{id}, and an anchor
+   inside an anchor is illegal HTML that browsers silently unnest. Only the item
+   page — where the row isn't a link — passes True, so that's where a url and a
+   location become clickable. #}
+{% macro field_badge(f, linkify=False) %}
+{%- if f.type == 'multiselect' and f.value is sequence and f.value is not string -%}
+  {%- for v in f.value %}<span class="badge" title="{{ f.label }}">{{ v }}</span>{% if not loop.last %} {% endif %}{% endfor -%}
+{%- elif f.type == 'url' and linkify -%}
+  <a class="badge hover:border-black hover:text-black transition-colors" title="{{ f.label }}"
+     href="{{ f.value }}" target="_blank" rel="noopener">{{ url_host(f.value) }}</a>
+{%- elif f.type == 'location' and linkify and f.value is mapping -%}
+  <a class="badge hover:border-black hover:text-black transition-colors gap-1" title="{{ f.label }}"
+     href="{{ loc_url(f.value) }}" target="_blank" rel="noopener">{{ icon('map-pin', 'w-3 h-3') }}{{ loc_text(f.value) }}</a>
+{%- else -%}
+<span class="badge{% if f.type == 'location' %} gap-1{% endif %}{% if f.type == 'bool' and f.value is not sameas true %} opacity-50{% endif %}" title="{{ f.label }}">
   {%- if f.type == 'number' and not f.unit %}{{ f.label }}: {% endif -%}
+  {%- if f.type == 'location' %}{{ icon('map-pin', 'w-3 h-3') }}{% endif -%}
   {{- field_text(f) -}}
 </span>
+{%- endif -%}
 {% endmacro %}

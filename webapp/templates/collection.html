@@ -65,20 +65,26 @@
         </label>
         {% endfor %}
       </div>
+      {# Only the fields you can actually arrange BY (data.groupable_fields /
+         sortable_fields, from the server's own tables): a url makes one bucket
+         per item and a location has no order, so offering them would be
+         offering an arrangement the save then rejects. #}
+      {% if c.groupable_fields %}
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Group by</p>
       <select id="disp-group" class="w-full mb-4 border border-gray-200 rounded-[4px] px-2 py-1.5 text-sm">
         <option value="" {% if not c.display.group_by %}selected{% endif %}>Nothing</option>
-        {% for f in c.all_fields %}
+        {% for f in c.groupable_fields %}
         <option value="{{ f.key }}" {% if c.display.group_by == f.key %}selected{% endif %}>{{ f.label }}</option>
         {% endfor %}
       </select>
+      {% endif %}
       {% endif %}
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Sort by</p>
       <select id="disp-sort" class="w-full mb-2 border border-gray-200 rounded-[4px] px-2 py-1.5 text-sm">
         <option value="" {% if not c.display.sort_by %}selected{% endif %}>Recently updated</option>
         <option value="title" {% if c.display.sort_by == 'title' %}selected{% endif %}>Title</option>
         <option value="updated" {% if c.display.sort_by == 'updated' %}selected{% endif %}>Updated date</option>
-        {% for f in c.all_fields %}
+        {% for f in c.sortable_fields %}
         <option value="{{ f.key }}" {% if c.display.sort_by == f.key %}selected{% endif %}>{{ f.label }}</option>
         {% endfor %}
       </select>
