@@ -419,8 +419,9 @@ working.
   number the model can report but not judge, so it either says nothing useful or
   spends a second `intake_summary` call on a goal already in the DB. Malformed
   entries are skipped exactly as `data.nutrient_targets()` skips them (`_bad_targets`
-  guards the write; a hand-edited blob must not fail a log call), and ceiling-vs-floor
-  DIRECTION is still a webapp reading — deliberately neither stored nor returned.
+  guards the write; a hand-edited blob must not fail a log call). Just the numbers —
+  there is no ceiling/floor direction to return, here or in the webapp (see the
+  `intake_items` row).
   The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
   `macros.eating_block`) — one line per item: the item (led by its circled index) and
   its calories + protein. Those two figures are on the line because they're what the
@@ -458,17 +459,21 @@ working.
   mean every unfilled box quietly clearing a goal), and `None` DROPS an override back
   to the default — so a blank input hands a goal back instead of zeroing it, and the
   popover shows a set number in the input with the default only as a placeholder.
-  What stays display-only is DIRECTION — which
-  nutrient is a ceiling vs a floor is a webapp reading, never stored. A `ceiling`
-  target (calories, sodium, alcohol, and fat)
-  turns the ring clay once passed; a floor one (protein, carbs, fiber, water)
-  doesn't, and an untargeted nutrient (fat, until you give it one) draws a DASHED
-  track with no arc — an
-  empty solid ring would read as "0% of goal" rather than "no goal set". Direction is
-  DECLARED for every nutrient (`data.NUTRIENT_CEILINGS`, checked against `NUTRIENTS`
-  at import), not derived from which ones carry a default: fat has no default, so
-  when it was derived a fat target set in the profile fell through to "floor" and the
-  ring never turned clay on the one nutrient you'd most likely be capping. A tapped
+  **A target is JUST A TARGET — there is no ceiling/floor direction anywhere**, and
+  the deletion is the design. Direction used to be declared per nutrient
+  (`data.NUTRIENT_CEILINGS`) and drove a second ring color, which meant every
+  consumer had to carry the flag — the rings, `/api/today.json`, the SwiftBar
+  plugin's red/green, the popover's cap/goal labels — while the MODEL, which sees
+  these same numbers in `intake_log`'s `targets`, had no way to get it. So the app
+  could turn a ring clay at 90g of fat while the chat read it as 120% of a goal and
+  encouraged more. Rather than plumb direction to a fifth consumer, it's gone: one
+  fill color, every nutrient, arc capped at a full circle. Where a target really is
+  a cap ("2,000 is the aim, 2,200 the ceiling"; "carbs are informational"), that
+  goes in the eating profile's PROSE, which can phrase the nuance a boolean was
+  flattening — and which both the rings' owner and the model already read. An
+  untargeted nutrient (fat, until you give it one) still draws a DASHED track with
+  no arc: an empty solid ring would read as "0% of goal" rather than "no goal set".
+  A tapped
   top-up has no text, so it's named from what it carries ("16oz water"). Four
   things a rendered day can't say for itself — an
   item's OWN nutrients (the rings show the day summed), a ring's TARGET (an arc can
@@ -730,7 +735,7 @@ working.
   goals) merged via `intake_set_profile` and surfaced by `intake_summary`, so a new
   conversation needs no pasted preamble. The webapp's rings read `targets` too
   (`data.nutrient_targets()` merges it over the display defaults) — one source of
-  truth for goals, ceiling/floor direction still webapp-only. That's also why
+  truth for goals, and one number per nutrient with no direction attached. That's also why
   `targets` alone has a SECOND writer, `server.set_nutrient_targets` (a NON-tool,
   website-only path behind `/food`'s Targets popover — see `intake_items` above):
   the goals are the one part of the profile the user reads on a screen and wants to

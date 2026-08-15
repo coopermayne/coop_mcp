@@ -35,18 +35,15 @@
           <span class="flex-1 text-[13px] text-gray-600">{{ u.label }}</span>
           <input type="number" step="any" min="0" data-nutrient="{{ key }}"
                  value="{{ stored[key] | num if key in stored else '' }}"
-                 placeholder="{{ defaults[key].target | num if key in defaults else 'none' }}"
+                 placeholder="{{ defaults[key] | num if key in defaults else 'none' }}"
                  class="w-20 border border-gray-200 rounded-[4px] px-2 py-1 text-sm text-right tabular-nums">
           <span class="w-6 text-[11px] text-gray-400">{{ u.suffix }}</span>
-          {# Direction is a webapp reading (data.NUTRIENT_CEILINGS), never stored —
-             but it decides whether a ring turns clay, so the popover says which
-             kind of number you're typing. #}
-          <span class="w-7 text-[10px] uppercase tracking-widest text-gray-400">{{ 'cap' if ceilings[key] else 'goal' }}</span>
         </label>
         {% endfor %}
       </div>
       <p class="text-[11px] text-gray-400 mt-3 mb-3 leading-snug">
-        Blank falls back to the default. A <span class="uppercase tracking-widest">cap</span> turns its ring clay once the day is past it.
+        Blank falls back to the default. Whether a number is one to reach or stay
+        under is a note for the eating profile, not something the ring decides.
       </p>
       <p id="tgt-err" hidden class="text-[11px] text-red-600 mb-3 leading-snug"></p>
       <button id="tgt-apply" type="button"
