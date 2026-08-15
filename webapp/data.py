@@ -905,12 +905,15 @@ def _field_value(it: dict, key: str):
 
 def _sorted_items(items: list[dict], key: str, desc: bool,
                   ftypes: dict[str, str]) -> list[dict]:
-    """Items by one key. Numbers compare numerically, everything else as
-    case-folded text; items MISSING the value sort last in both directions
-    (a blank is 'unknown', not 'smallest')."""
+    """Items by one key. Numbers (and ratings, which are numbers with stars on)
+    compare numerically, bools false-then-true, everything else as case-folded
+    text; items MISSING the value sort last in both directions (a blank is
+    'unknown', not 'smallest'). Which types may be sorted at all is
+    server.SORTABLE_TYPES — this only has to know how."""
     if not key:
         return items
-    numeric = ftypes.get(key) == "number"
+    ftype = ftypes.get(key)
+    numeric = ftype in ("number", "rating")
 
     def val(it):
         v = _field_value(it, key)
@@ -919,8 +922,16 @@ def _sorted_items(items: list[dict], key: str, desc: bool,
                 return float(v)
             except (TypeError, ValueError):
                 return 0.0
+        if ftype == "bool":
+            # Sorted explicitly rather than leaning on str(False) < str(True)
+            # being alphabetically right by luck.
+            return 1.0 if v is True else 0.0
         return str(v).lower()
 
+    # "Absent" is None or empty string ONLY — False and 0 are VALUES, and a bool
+    # or rating field would otherwise dump every false/zero into the trailing
+    # bucket. `not in (None, "")` gets this right because `False == 0` but
+    # neither equals None or ""; a tempting rewrite to `if not v` would not.
     present = [i for i in items if _field_value(i, key) not in (None, "")]
     absent = [i for i in items if _field_value(i, key) in (None, "")]
     return sorted(present, key=val, reverse=desc) + absent
@@ -931,15 +942,28 @@ def _grouped_items(items: list[dict], field: dict | None) -> list[dict]:
     field's own declared `options` order wins (so a status column reads in its
     intended order); otherwise groups go alphabetically. Items missing the value
     land in a trailing '—' bucket. No field = one unlabeled bucket, which is what
-    the templates iterate either way."""
+    the templates iterate either way.
+
+    A MULTISELECT fans an item into one bucket per value — the single place an
+    item appears more than once on a page, and the reason the type groups but
+    doesn't sort (there's no one value to compare it by). A BOOL gets Yes/No,
+    in that order: a bool has a declared order the way a select's options do,
+    it just doesn't have to say it."""
     if not field:
         return [{"label": None, "value": None, "rows": items}]
-    key = field["key"]
+    key, ftype = field["key"], field.get("type", "text")
     buckets: dict[str, list[dict]] = {}
     for it in items:
         v = _field_value(it, key)
-        buckets.setdefault("" if v in (None, "") else str(v), []).append(it)
-    options = [str(o) for o in (field.get("options") or [])]
+        if ftype == "multiselect" and isinstance(v, list) and v:
+            for one in v:
+                buckets.setdefault(str(one), []).append(it)
+        elif ftype == "bool" and isinstance(v, bool):
+            buckets.setdefault("Yes" if v else "No", []).append(it)
+        else:
+            buckets.setdefault("" if v in (None, "") else str(v), []).append(it)
+    options = ["Yes", "No"] if ftype == "bool" else \
+              [str(o) for o in (field.get("options") or [])]
     order = [o for o in options if o in buckets] + \
             sorted((v for v in buckets if v and v not in options), key=str.lower)
     return [{"label": v, "value": v, "rows": buckets[v]} for v in order] + \
@@ -1037,6 +1061,14 @@ def collection_page(name: str) -> dict | None:
             "fields": visible,
             "icon": c["icon"] or server.icon_set.DEFAULT_ICON,
             "all_fields": fields, "display": display,
+            # What the Display popover may OFFER, so its two selects can't
+            # propose an arrangement server.set_collection_display then refuses
+            # (grouping by a url = a bucket per item; sorting a location = no
+            # order at all). The tables are the server's — one rule, two users.
+            "groupable_fields": [f for f in fields
+                                 if f.get("type", "text") in server.GROUPABLE_TYPES],
+            "sortable_fields": [f for f in fields
+                                if f.get("type", "text") in server.SORTABLE_TYPES],
             "groups": groups, "rows": items,
             # Label for the popover's current sort, so the header can say it.
             "sort_label": ({"title": "Title", "updated": "Updated"}.get(

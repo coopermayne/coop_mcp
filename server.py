@@ -143,14 +143,31 @@ class PlannedExercise(TypedDict):
 
 class CollectionField(TypedDict):
     """One field of a collection's shape. `key` is snake_case and is what item
-    `data` blobs are keyed by; `type` is one of text|number|date|select (select
-    with an `options` list). Keep fields FEW — a field earns its place by being
-    worth scanning in a list, not by existing in the prose anyway.
+    `data` blobs are keyed by; `type` is one of text|number|date|select|url|
+    bool|rating|multiselect|location (select and multiselect need an `options`
+    list). Keep fields FEW — a field earns its place by being worth scanning in
+    a list, not by existing in the prose anyway.
+
+    The type is SEMANTIC: it says what the value MEANS, and the app renders it
+    accordingly (a url as its host, a rating as stars, a location as a pin that
+    opens a map). Reach for the type that fits rather than defaulting to text.
 
     `unit` is for NUMBER fields only ("min", "lbs", "nights") and is what makes
     a bare figure legible: the app renders a number with its unit and drops the
     label, so a recipe reads "240 min" instead of "Time: 240" — the value saying
-    what it is rather than being introduced. Set it whenever the number has one."""
+    what it is rather than being introduced. Set it whenever the number has one.
+
+    An item's `data` is a plain dict — no nested JSON Schema is emitted for it,
+    unlike the TypedDict payloads elsewhere — so the two structured VALUE shapes
+    have to be stated here in prose:
+      - multiselect → a non-empty list of strings, each one of the field's own
+        `options` (["vegetarian", "quick"]).
+      - location → {"label"?: str, "address"?: str, "lat"?: number,
+        "lng"?: number}, carrying at least an address or BOTH lat and lng. The
+        server can't geocode, so the coordinates are yours to supply from what
+        you know; an address alone is a complete value when you don't.
+    The rest are what they sound like: url is a full http(s) URL, bool a real
+    JSON true/false, rating a number 0-5 in halves."""
     key: str
     label: NotRequired[str]
     type: NotRequired[str]
@@ -331,7 +348,10 @@ Three rules govern it:
     note's fields from its own text. One stray idea never warrants a new collection.
   - FIELDS STAY FEW. A field earns its place by being worth scanning in a list
     (status, a date, a rating); everything else is prose in the item's body. Facts
-    with no matching field go in the body — don't invent data keys."""
+    with no matching field go in the body — don't invent data keys. When a field
+    DOES earn its place, give it the type that fits (url, rating, bool,
+    multiselect, location — not text) — the app renders a typed value as the
+    thing it is, and text is where meaning goes to be spelled out."""
 
 
 _TRAINER_NOTE = "(Workouts/training live on a separate `trainer` MCP server.)"
@@ -3321,7 +3341,24 @@ def find_past_items(query: str, limit: int = 8) -> dict:
 # migration in init_db(), never an MCP call.
 # --------------------------------------------------------------------------- #
 
-FIELD_TYPES = ("text", "number", "date", "select")
+# A field's type is SEMANTIC, not just a validator: it's what lets the app know
+# a value is a link (render the host, not the URL spelled out), a rating (stars,
+# not "4"), or a place (a pin that opens a map). That's why the five beyond the
+# original four are on the SHAPE axis the model already owns rather than a new
+# collection-level "kind" — a collection would otherwise state its shape twice.
+FIELD_TYPES = ("text", "number", "date", "select",
+               "url", "bool", "rating", "multiselect", "location")
+# Which types can be GROUPED / SORTED by, stated once here rather than
+# re-derived at each view. `url` and `location` are neither: a bucket per URL is
+# a bucket per item, and a coordinate pair has no order. `multiselect` groups but
+# doesn't sort — an item belongs to several buckets at once, so there's no single
+# value to compare it by.
+GROUPABLE_TYPES = ("text", "select", "bool", "multiselect", "date")
+SORTABLE_TYPES = ("text", "number", "date", "select", "rating", "bool")
+# A rating is 0-5, halves allowed, and NOT configurable: a max is a second thing
+# to declare and to render against, and every collection that wanted one wanted
+# five stars.
+RATING_MAX = 5
 # How the webapp lays a collection out. Webapp-only: it lives in the `display`
 # JSON and the model never sets it (see set_collection_display).
 COLLECTION_VIEWS = ("list", "table", "cards")
@@ -3355,18 +3392,19 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
         norm = {"key": key, "label": (f.get("label") or key.replace("_", " ")).strip(),
                 "type": ftype}
         opts = [str(o).strip() for o in (f.get("options") or []) if str(o).strip()]
-        if ftype == "select":
+        if ftype in ("select", "multiselect"):
             # A select IS its options: _bad_data only checks a value against them
             # when they exist, so an optionless select silently degraded into a
             # text field that merely CLAIMED to be a closed set — and the webapp
             # groups a select in its declared order, which an empty list can't
             # give. Say so instead of accepting a field that can't do its job.
+            # A multiselect is the same field with many values, so same branch.
             if not opts:
-                return [], (f"select field {key!r} needs an `options` list — without "
+                return [], (f"{ftype} field {key!r} needs an `options` list — without "
                             "one it can't constrain anything; use type 'text' if the "
                             "values really are open-ended")
             if len(set(opts)) != len(opts):
-                return [], f"duplicate options in select field {key!r}: {opts}"
+                return [], f"duplicate options in {ftype} field {key!r}: {opts}"
             norm["options"] = opts
         # A unit belongs to a NUMBER and nothing else: it's what lets the app
         # drop the label and still be read ("240 min"), which only works when
@@ -3388,6 +3426,47 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
     return out, None
 
 
+def _is_http_url(v) -> bool:
+    """Is this an http(s) URL? The one check, shared by the featured image and
+    `url` fields — both end up in an href/`<img src>`, so a javascript:/data:
+    value has no business in either, and two copies of the rule drift."""
+    return isinstance(v, str) and v.strip().lower().startswith(("http://", "https://"))
+
+
+def _bad_location(k: str, v) -> Optional[str]:
+    """Check one `location` value. A place is {label?, address?, lat?, lng?} and
+    must carry AT LEAST an address or a lat/lng pair: the server can't geocode
+    (no LLM, no network — see the architectural rule), so the coordinates come
+    from the MODEL's own knowledge, and an address on its own is a complete
+    answer when it hasn't got them."""
+    if not isinstance(v, dict):
+        return (f"data[{k!r}] must be a location object like "
+                '{"label": "Zuni Café", "address": "1658 Market St, San Francisco", '
+                '"lat": 37.7734, "lng": -122.4222}, got ' + repr(v))
+    if bad := [j for j in v if j not in ("label", "address", "lat", "lng")]:
+        return (f"data[{k!r}]: unknown location keys {sorted(bad)}; a location "
+                "carries only label, address, lat, lng")
+    for j in ("label", "address"):
+        if j in v and not isinstance(v[j], str):
+            return f"data[{k!r}].{j} must be a string, got {v[j]!r}"
+    has_ll = "lat" in v or "lng" in v
+    if has_ll:
+        # lat/lng are a PAIR — half a coordinate points at nothing.
+        if not ("lat" in v and "lng" in v):
+            return f"data[{k!r}] has only one of lat/lng — send both or neither"
+        for j, lim in (("lat", 90), ("lng", 180)):
+            x = v[j]
+            if isinstance(x, bool) or not isinstance(x, (int, float)):
+                return f"data[{k!r}].{j} must be a number, got {x!r}"
+            if not -lim <= x <= lim:
+                return f"data[{k!r}].{j} must be between {-lim} and {lim}, got {x!r}"
+    if not (v.get("address") or has_ll):
+        return (f"data[{k!r}] needs an `address` or a lat/lng pair — a label alone "
+                "isn't a place the app can point at; supply the coordinates you "
+                "know, or just the address if you don't")
+    return None
+
+
 def _bad_data(data: dict, fields: list[dict], *, allow_null: bool = False) -> Optional[str]:
     """Check an item's data blob against its collection's fields. Actionable
     errors, same spirit as _bad_set — the model needs the fix, not a traceback."""
@@ -3406,16 +3485,43 @@ def _bad_data(data: dict, fields: list[dict], *, allow_null: bool = False) -> Op
             known = sorted(valid) or ["<none — the collection has no fields>"]
             return (f"unknown data key {k!r}; this collection's fields are {known}. "
                     "Add the field first with collections_save, or put the fact in the body.")
-        if f["type"] == "number" and (isinstance(v, bool) or not isinstance(v, (int, float))):
+        ftype = f["type"]
+        # isinstance(True, int) is True, so every numeric branch rejects bools
+        # FIRST — otherwise `rating: true` sails through as a 1.
+        if ftype == "number" and (isinstance(v, bool) or not isinstance(v, (int, float))):
             return f"data[{k!r}] must be a number, got {v!r}"
-        if f["type"] == "date":
+        if ftype == "date":
             err = _bad_date(str(v), f"data[{k}]")
             if err:
                 return err["error"]
-        if f["type"] == "select" and f.get("options") and str(v) not in f["options"]:
+        if ftype == "select" and f.get("options") and str(v) not in f["options"]:
             return f"data[{k!r}] must be one of {f['options']}, got {v!r}"
-        if f["type"] in ("text", "select") and not isinstance(v, str):
+        if ftype in ("text", "select") and not isinstance(v, str):
             return f"data[{k!r}] must be a string, got {v!r}"
+        if ftype == "url" and not _is_http_url(v):
+            return (f"data[{k!r}] must be a full http(s) URL, got {v!r} — the app "
+                    "renders it as a link, so include the scheme "
+                    "(https://example.com, not example.com)")
+        if ftype == "bool" and not isinstance(v, bool):
+            return (f"data[{k!r}] must be true or false (JSON booleans), got {v!r} — "
+                    'not "yes"/"no" or 1/0')
+        if ftype == "rating":
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return f"data[{k!r}] must be a number 0-{RATING_MAX}, got {v!r}"
+            if not 0 <= v <= RATING_MAX or (v * 2) % 1:
+                return (f"data[{k!r}] must be 0-{RATING_MAX} in halves "
+                        f"(3, 4.5), got {v!r}")
+        if ftype == "multiselect":
+            if not isinstance(v, list) or not v or not all(isinstance(x, str) for x in v):
+                return (f"data[{k!r}] must be a non-empty list of strings, got {v!r} — "
+                        "omit the key instead of sending an empty list")
+            if len(set(v)) != len(v):
+                return f"data[{k!r}] repeats a value: {v!r}"
+            if opts := f.get("options"):
+                if bad := [x for x in v if x not in opts]:
+                    return f"data[{k!r}] values {bad} aren't in {opts}"
+        if ftype == "location" and (err := _bad_location(k, v)):
+            return err
     return None
 
 
@@ -3525,21 +3631,36 @@ def set_collection_display(name: str, view: Optional[str] = None,
         disp = _coll_display(row)
         if view is not None:
             disp["view"] = view
-        keys = {f["key"] for f in _coll_fields(row)}
+        coll_fields = _coll_fields(row)
+        keys = {f["key"] for f in coll_fields}
+        ftypes = {f["key"]: f.get("type", "text") for f in coll_fields}
         if hidden_fields is not None:
             if bad := [k for k in hidden_fields if k not in keys]:
                 return {"error": f"unknown field keys {bad}; "
                                  f"declared: {sorted(keys)}"}
             disp["hidden_fields"] = list(dict.fromkeys(hidden_fields))
+        # A key isn't enough — it has to be a key you can arrange BY. Grouping a
+        # url field makes one bucket per item; sorting a location compares
+        # coordinate pairs. The tables say which is which (GROUPABLE_TYPES /
+        # SORTABLE_TYPES); the popover offers only the legal ones, and this is
+        # the gate behind it.
         if group_by is not None:
             if group_by and group_by not in keys:
                 return {"error": f"unknown field key {group_by!r} for group_by; "
                                  f"declared: {sorted(keys)}"}
+            if group_by and ftypes[group_by] not in GROUPABLE_TYPES:
+                return {"error": f"can't group by {group_by!r}: a "
+                                 f"{ftypes[group_by]!r} field has no buckets; "
+                                 f"groupable types are {list(GROUPABLE_TYPES)}"}
             disp["group_by"] = group_by
         if sort_by is not None:
             if sort_by and sort_by not in keys and sort_by not in SORT_INTRINSICS:
                 return {"error": f"unknown sort_by {sort_by!r}; use one of "
                                  f"{list(SORT_INTRINSICS)} or {sorted(keys)}"}
+            if sort_by in keys and ftypes[sort_by] not in SORTABLE_TYPES:
+                return {"error": f"can't sort by {sort_by!r}: a "
+                                 f"{ftypes[sort_by]!r} field has no order; "
+                                 f"sortable types are {list(SORTABLE_TYPES)}"}
             disp["sort_by"] = sort_by
         if sort_dir is not None:
             if sort_dir not in ("asc", "desc"):
@@ -3573,6 +3694,25 @@ def _stranded_keys(conn: sqlite3.Connection, collection_id: int,
                           (collection_id,)):
         for k in _item_data(r):
             if k not in declared:
+                out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))
+
+
+def _mistyped_keys(conn: sqlite3.Connection, collection_id: int,
+                   fields: list[dict]) -> dict:
+    """{data key: how many items hold a value the field's type now rejects}.
+    `_stranded_keys` for RETYPES: changing text→rating doesn't touch the stored
+    values, so every "4 out of 5" quietly stops validating and nothing says so
+    until the next write of that item fails, on a page that renders it fine.
+    One key at a time (rather than the whole blob) because _bad_data stops at
+    the first error and the point here is which fields to go fix. Counts only —
+    advisory, never blocking, like `unfilled_fields`."""
+    out: dict[str, int] = {}
+    declared = {f["key"] for f in fields}
+    for r in conn.execute("SELECT data FROM items WHERE collection_id=?",
+                          (collection_id,)):
+        for k, v in _item_data(r).items():
+            if k in declared and _bad_data({k: v}, fields):
                 out[k] = out.get(k, 0) + 1
     return dict(sorted(out.items()))
 
@@ -3628,7 +3768,7 @@ def _clean_featured_image(url: Optional[str]) -> tuple[Optional[str], Optional[s
     u = (url or "").strip()
     if not u:
         return None, None
-    if not u.lower().startswith(("http://", "https://")):
+    if not _is_http_url(u):
         return None, (f"featured_image_url must be an http(s) URL, got {u[:40]!r}")
     return u, None
 
@@ -3690,12 +3830,32 @@ def save_collection(name: str, description: Optional[str] = None,
     and its values stay on the items, where nothing renders them and notes_file
     then rejects the item; the return names them as `stranded` {key: how many
     items} so you can re-declare the field or clear each with
-    notes_update(item_id, data={key: None}). A `select` field needs a non-empty
-    `options` list — without one it constrains nothing, so use 'text' instead.
-    A `number` field should carry a `unit` whenever it has one ("min", "nights",
+    notes_update(item_id, data={key: None}). Keeping a field but CHANGING its
+    type leaves the old values behind the same way — they stop validating where
+    they sit — so those come back as `mistyped` {key: how many items}; fix each
+    with notes_update or put the type back. Both are advisory: the save happens
+    either way.
+
+    A `select` field needs a non-empty
+    `options` list — without one it constrains nothing, so use 'text' instead;
+    same for `multiselect`, which is the same closed set with several values per
+    item (["vegetarian", "quick"]). A `number` field should carry a `unit`
+    whenever it has one ("min", "nights",
     "lbs"): the app renders the figure with its unit and drops the label, so
     "240 min" reads on its own where a labelled "Time: 240" only raises the
     question. Units are for numbers only.
+
+    The other types earn their place by what the app can then DO with the value:
+    `url` renders as its host as a real link (a full http(s) URL — the recipe's
+    source, the restaurant's site); `bool` is a real JSON true/false and reads as
+    a checked label ("✓ Cooked"), the one field whose value can't speak without
+    its name; `rating` is 0-5 in halves and draws stars; `location` is a place —
+    {label?, address?, lat?, lng?} — that becomes a pin linking out to a map, so
+    a saved restaurant is one tap from directions. YOU supply the coordinates
+    from what you know (the server can't geocode); an address with no lat/lng is
+    a perfectly good value, a label with neither is not.
+    Grouping and sorting follow the type too: url and location can be neither,
+    and a multiselect groups but doesn't sort.
 
     Creating is DELIBERATE: propose it and get the user's yes first — a stray
     one-off belongs in the inbox, not a new near-empty collection. A new name
@@ -3732,7 +3892,7 @@ def save_collection(name: str, description: Optional[str] = None,
         return {"error": "name is required"}
     if icon is not None and (err := _bad_icon(icon)):
         return err
-    norm_fields, stranded = None, None
+    norm_fields, stranded, mistyped = None, None, None
     if fields is not None:
         norm_fields, err = _norm_fields(fields)
         if err:
@@ -3774,17 +3934,29 @@ def save_collection(name: str, description: Optional[str] = None,
             # named. See _fold_image_fields for the image-shaped version of this.
             if norm_fields is not None:
                 stranded = _stranded_keys(conn, row["id"], norm_fields)
+                # Same failure mode one step over: a field kept but RETYPED
+                # leaves values that no longer validate. Reported for the same
+                # reason silence is what let the image orphans run to 16 items.
+                mistyped = _mistyped_keys(conn, row["id"], norm_fields)
         out = conn.execute("SELECT * FROM collections WHERE lower(name)=?", (n,)).fetchone()
     res = {"id": out["id"], "name": out["name"], "description": out["description"],
            "fields": _coll_fields(out),
            "icon": out["icon"] or icon_set.DEFAULT_ICON, "created": created}
     if url := _app_url(f"/collections/{quote(out['name'])}"):
         res["url"] = url
+    notes = []
     if stranded:
         res["stranded"] = stranded
-        res["note"] = ("these keys are still on items but no longer declared, so they "
-                       "render nowhere and block notes_file: re-declare the field, or "
-                       "clear each with notes_update(item_id, data={key: None})")
+        notes.append("`stranded`: these keys are still on items but no longer declared, "
+                     "so they render nowhere and block notes_file — re-declare the "
+                     "field, or clear each with notes_update(item_id, data={key: None})")
+    if mistyped:
+        res["mistyped"] = mistyped
+        notes.append("`mistyped`: these items' existing values don't fit the field's "
+                     "type any more — rewrite each with notes_update, or put the type "
+                     "back")
+    if notes:
+        res["note"] = " · ".join(notes)
     return res
 
 
