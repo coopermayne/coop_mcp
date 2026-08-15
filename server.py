@@ -3031,8 +3031,9 @@ def _day_targets(conn: sqlite3.Connection) -> dict:
 
     Malformed entries are SKIPPED, exactly as the webapp's nutrient_targets() skips
     them — _bad_targets guards the write, but a hand-edited blob shouldn't make a
-    log call fail. Direction (which of these is a ceiling and which a floor) stays
-    a webapp reading and is deliberately NOT stored or returned."""
+    log call fail. There is no ceiling/floor direction on any of this: a target is
+    just a target, and whether being over one matters is a nuance the profile's
+    prose can phrase far better than a flag could encode."""
     t = _get_eating_profile(conn).get("targets")
     if not isinstance(t, dict):
         return {}
@@ -3084,9 +3085,10 @@ def update_eating_profile(profile: dict) -> dict:
     One key is structured: `targets` is a flat {nutrient: number} dict on the intake
     nutrient keys (calories, protein_g, carbs_g, fat_g, sodium_mg, fiber_g,
     standard_drinks, water_oz) — daily targets, e.g.
-    {"targets": {"calories": 2100, "protein_g": 150, "water_oz": 88}}. Whether a
-    number is a floor (protein) or a ceiling (sodium) stays a reading of the
-    nutrient, not stored data. Everything else is free-form — keep durable coaching
+    {"targets": {"calories": 2100, "protein_g": 150, "water_oz": 88}}. Just the
+    number — there is no floor/ceiling flag anywhere, so when a target is really a
+    cap, or is informational only, SAY SO in the prose below, which is the half of
+    the profile you and the user can phrase freely. Everything else is free-form — keep durable coaching
     facts here the way you'd keep them in a person's summary: e.g.
     {"protein_floor_g": 120, "goal": "cut to 180 by December", "stats": "6'4\", 205",
     "context": "on semaglutide — front-load protein, watch fiber + water"}.
@@ -3126,9 +3128,9 @@ def set_nutrient_targets(targets: dict) -> dict:
     pop harmlessly, since removing junk from the blob is the one thing it can do.
     Everything else in the profile — goals, stats, coaching context — is untouched.
 
-    Direction (ceiling vs floor) is deliberately NOT here: it's a reading of the
-    nutrient rather than a number about the user, and it stays in the webapp
-    (data.NUTRIENT_CEILINGS)."""
+    There is no direction here, and none in the webapp either: a target is just a
+    target. Say a number is really a cap in the profile's prose, where a nuance
+    ("2,000 is the aim, 2,200 the ceiling") can be phrased rather than encoded."""
     if not isinstance(targets, dict):
         return {"error": f"targets must be a {{nutrient: number}} dict, got {targets!r}"}
     if (err := _bad_targets({k: v for k, v in targets.items() if v is not None})):

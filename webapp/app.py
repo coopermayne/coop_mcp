@@ -667,13 +667,17 @@ async def today_json(request: Request):
     laptop or phone can't be turned into a data exfil. Auth is a session or
     WIDGET_TOKEN (see `_widget_authorized`).
 
-    Returns each nutrient as {total, target, ceiling}. `total` is null when nothing
+    Returns each nutrient as {total, target}. `total` is null when nothing
     logged carries that nutrient — the SAME distinction the rings draw between "0 so
     far" and "unestimated", so a client can render a dashed/unknown state instead of
     claiming a zero. Targets ride along from `data.nutrient_targets()` — the stored
     eating profile's numbers over the webapp defaults, the same merge the rings
     read — so the widget always agrees with the page and with what the model is
     coaching against.
+
+    There is no ceiling/floor flag: a target is just a target here, the same
+    simplification the rings make, so a client shows progress toward a number and
+    leaves whether being over is good or bad to the eating profile's prose.
 
     UNITS are deliberately NOT here. They're a rendering choice that already lives in
     `macros.html`, and duplicating them server-side is how the two copies drift; a
@@ -695,9 +699,7 @@ async def today_json(request: Request):
     return JSONResponse({
         "date": day,
         "nutrients": {
-            key: {"total": totals.get(key),
-                  "target": (targets.get(key) or {}).get("target"),
-                  "ceiling": (targets.get(key) or {}).get("ceiling", False)}
+            key: {"total": totals.get(key), "target": targets.get(key)}
             for key in server.NUTRIENTS
         },
     })
@@ -936,8 +938,7 @@ async def food(request: Request, since: str = ""):
                 has_more=res["has_more"], next_since=res["next_since"],
                 # The Targets popover wants the two apart: what's actually SET
                 # goes in the inputs, the defaults are only placeholders.
-                defaults=data.NUTRIENT_TARGETS, ceilings=data.NUTRIENT_CEILINGS,
-                stored=data.stored_targets())
+                defaults=data.NUTRIENT_TARGETS, stored=data.stored_targets())
 
 
 @app.post("/food/targets")

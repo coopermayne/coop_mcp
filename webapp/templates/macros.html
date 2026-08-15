@@ -227,11 +227,11 @@
 {# One nutrient, whole: the figure (with its unit) and a short label both sit INSIDE
    the ring, so each nutrient is one self-contained object instead of a stack. The
    arc is share-of-target, capped at a full circle so an overshoot doesn't wrap
-   around and read as a small number. Color carries the only judgment — muted sage
-   while the day is within its target, muted clay once a CEILING nutrient (sodium,
-   calories, alcohol) is past it. A floor nutrient (protein, carbs, fiber, water)
-   never turns clay: going over your protein target isn't a problem. Colors are custom classes (see
-   base.html) so they flip with the theme like everything else.
+   around and read as a small number. One fill color for every nutrient (muted sage,
+   a custom class in base.html so it flips with the theme): a target is just a target
+   here, and a second color for "past it" would need a ceiling/floor flag the model
+   coaching against these same numbers has no way to see. Whether being over matters
+   is a judgment, and it lives in the eating profile's prose, not in the ring.
 
    An UNTARGETED nutrient (no entry in nutrient_targets()) still gets a ring, but
    with a DASHED track and no arc — a solid empty track would read as "0% of goal"
@@ -241,8 +241,7 @@
    to fit the same inner diameter as a 3-character "10g". #}
 {% set circ = 150.8 %}{# 2πr at r=24 — the dasharray works in path length, not degrees #}
 {% set logged = value is not none %}
-{% set pct = (value / goal.target) if (logged and goal and goal.target) else 0 %}
-{% set over = goal and goal.ceiling and pct > 1 %}
+{% set pct = (value / goal) if (logged and goal) else 0 %}
 {% set arc = (circ * (1 if pct > 1 else pct)) | round(1) %}
 {% set figure = ((value | num) ~ unit.suffix) if logged else '' %}
 {% set size = 15 if figure|length <= 3 else (13 if figure|length == 4 else (11.5 if figure|length == 5 else 10)) %}
@@ -253,9 +252,9 @@
    detail modal. Rows are built here and handed over as JSON, the same shape an
    intake item uses. `gap` is signed: what's left vs. how far past. #}
 {% set rows = [{'label': 'Logged', 'value': ((value | num) ~ u) if logged else '—'}] %}
-{% set _ = rows.append({'label': 'Target', 'value': ((goal.target | num) ~ u) if goal else 'None set'}) %}
+{% set _ = rows.append({'label': 'Target', 'value': ((goal | num) ~ u) if goal else 'None set'}) %}
 {% if goal and logged %}
-  {% set gap = (goal.target - value) | round(1) %}
+  {% set gap = (goal - value) | round(1) %}
   {% set _ = rows.append({'label': 'Remaining' if gap >= 0 else 'Over by',
                           'value': ((gap if gap >= 0 else -gap) | num) ~ u}) %}
   {% set _ = rows.append({'label': 'Of target', 'value': ((pct * 100) | round | int) ~ '%'}) %}
@@ -269,9 +268,8 @@
     {% set _ = rows.append({'label': "Of day's calories", 'value': alcohol.share ~ '%'}) %}
   {% endif %}
 {% endif %}
-{% set kind_note = ('A ceiling — the ring turns clay once the day is past it.' if goal and goal.ceiling
-                    else ('A floor — going over is fine, the ring stays sage.' if goal
-                          else 'No target set for this one, so the ring draws a dashed track and no arc.')) %}
+{% set kind_note = ('' if goal else
+                    'No target set for this one, so the ring draws a dashed track and no arc.') %}
 {# An alcohol item with no calorie figure would otherwise make a partial sum look
    complete, so the modal says how many are missing. Counting ITEMS, not drinks —
    one item can carry several. #}
@@ -282,16 +280,16 @@
                     else ' ' ~ items_phrase ~ ', so the figure above is partial.')) %}
 {% set payload = {
     'kicker': 'Nutrient', 'title': unit.label, 'rows': rows,
-    'note': kind_note ~ gap_note } %}
+    'note': (kind_note ~ gap_note) | trim } %}
 <svg viewBox="0 0 56 56" class="w-14 h-14 shrink-0 text-gray-600 cursor-pointer hover:text-black transition-colors"
      role="button" tabindex="0" data-detail='{{ payload | tojson }}'
-     aria-label="{{ spoken }}{{ ' of %s target' % (goal.target | num) if goal else '' }}">
+     aria-label="{{ spoken }}{{ ' of %s target' % (goal | num) if goal else '' }}">
   <circle cx="28" cy="28" r="24" fill="none" stroke-width="3" class="ring-track"
           {% if not goal or not logged %}stroke-dasharray="2 3.5"{% endif %}/>
   {% if arc > 0 %}
   <circle cx="28" cy="28" r="24" fill="none" stroke-width="3" stroke-linecap="round"
           stroke-dasharray="{{ arc }} {{ circ }}" transform="rotate(-90 28 28)"
-          class="{{ 'ring-over' if over else 'ring-fill' }}"/>
+          class="ring-fill"/>
   {% endif %}
   {# Figure over label, the PAIR centered on the ring rather than the figure alone —
      hence both sit ~2 above the geometric middle (the label hangs below it). #}

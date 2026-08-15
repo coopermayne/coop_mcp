@@ -267,67 +267,42 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
 # stored eating profile doesn't name a number. The NUMBERS come from the DB (settings
 # key 'eating_profile', its `targets` dict, written from either door — the model's
 # server.update_eating_profile or the /food popover's server.set_nutrient_targets) so
-# the rings and the model coach against the SAME goals; what
-# stays display-only is the DIRECTION: `ceiling` marks a number you're trying to stay
-# UNDER (sodium, calories, alcohol) rather than reach — it only changes the ring's
-# color once it's past the target, and it's a reading of the nutrient, not stored data.
+# the rings and the model coach against the SAME goals.
 # Read targets through nutrient_targets(), never this dict directly.
+#
+# A target is JUST A TARGET — there is no ceiling/floor direction here, and that is
+# the point. Direction was once declared per nutrient and drove a second ring color,
+# which meant every consumer needed the flag (the rings, the widget API, the SwiftBar
+# plugin, the popover's cap/goal labels) and the MODEL — which sees these same numbers
+# in intake_log's `targets` — had no way to get it, so the app and the coaching could
+# read the same number opposite ways. One number per nutrient is the whole model now;
+# where a target is really a cap, say so in the eating profile's prose, which is the
+# one place a nuance like that can be phrased instead of encoded.
 #
 # The default macros are set so they add up to the calorie target rather than each
 # being picked on its own (130p + 200c + 75f = 1,995 kcal): protein is fixed by muscle
-# preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder — which
-# is also why carbs is NOT a ceiling. It's the flex macro, and calories already has
-# a ceiling ring to catch a genuine overshoot; a second warning color the moment
-# carbs pass 200 would be noise. Fat has no default target, so it renders a dashed
-# ring until the profile gives it one — and when it does, that number reads as a CAP
-# (NUTRIENT_CEILINGS below), which is the only thing you'd be setting one for.
+# preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder. Fat
+# carries no default at all, so its ring stays dashed until the profile names one.
 NUTRIENT_TARGETS = {
-    "calories":  {"target": 2000, "ceiling": True},
-    "protein_g": {"target": 130,  "ceiling": False},
-    "carbs_g":   {"target": 200,  "ceiling": False},
-    "sodium_mg": {"target": 2300, "ceiling": True},
-    "fiber_g":   {"target": 30,   "ceiling": False},
-    "water_oz":  {"target": 88,   "ceiling": False},
-    "standard_drinks": {"target": 2, "ceiling": True},
+    "calories":  2000,
+    "protein_g": 130,
+    "carbs_g":   200,
+    "sodium_mg": 2300,
+    "fiber_g":   30,
+    "water_oz":  88,
+    "standard_drinks": 2,
 }
-
-# Ceiling-vs-floor for EVERY nutrient, declared rather than derived from the
-# defaults above. Direction is a reading of the nutrient, not stored data — but a
-# reading that only covers the nutrients which happen to carry a DEFAULT is a guess
-# about the rest. Fat is the case that proved it: no default target, so a fat number
-# set in the profile fell through to "floor" and the ring never turned clay on the
-# one nutrient you'd most likely be capping. Keyed off the full NUTRIENTS tuple and
-# checked at import, so adding a nutrient means STATING its direction instead of
-# silently inheriting one.
-NUTRIENT_CEILINGS = {
-    "calories":  True,
-    "protein_g": False,
-    "carbs_g":   False,   # the flex macro — see the note above
-    "fat_g":     True,    # no default, but a fat number you set is a cap
-    "sodium_mg": True,
-    "fiber_g":   False,
-    "standard_drinks": True,
-    "water_oz":  False,
-}
-_undeclared = [n for n in server.NUTRIENTS if n not in NUTRIENT_CEILINGS]
-if _undeclared:
-    raise RuntimeError(
-        f"no ceiling/floor direction declared for {_undeclared} — every nutrient "
-        f"needs one in data.NUTRIENT_CEILINGS, or its ring can't judge the day")
 
 
 def nutrient_targets() -> dict:
-    """The live targets: NUTRIENT_TARGETS defaults, overridden per nutrient by any
-    number in the stored eating profile's `targets` — written from either door,
-    server.update_eating_profile (the model, in chat) or server.set_nutrient_targets
-    (the user, from /food's Targets popover). Read per-request, so a target changed
-    either way shows on the next page load. Only well-formed overrides count: a real
-    nutrient key carrying a positive number; anything else in the blob is the
-    model's business, not the rings'."""
-    out = {k: dict(v) for k, v in NUTRIENT_TARGETS.items()}
-    for k, v in stored_targets().items():
-        out[k] = {"target": v, "ceiling": NUTRIENT_CEILINGS[k]}
-    return out
+    """The live targets, {nutrient: number}: NUTRIENT_TARGETS defaults, overridden per
+    nutrient by any number in the stored eating profile's `targets` — written from
+    either door, server.update_eating_profile (the model, in chat) or
+    server.set_nutrient_targets (the user, from /food's Targets popover). Read
+    per-request, so a target changed either way shows on the next page load. Only
+    well-formed overrides count: a real nutrient key carrying a positive number;
+    anything else in the blob is the model's business, not the rings'."""
+    return {**NUTRIENT_TARGETS, **stored_targets()}
 
 
 def stored_targets() -> dict:

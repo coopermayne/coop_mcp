@@ -421,13 +421,15 @@ curl -H "Authorization: Bearer $WIDGET_TOKEN" https://YOUR-DOMAIN/app/api/today.
 
 ```json
 {"date": "2026-08-06",
- "nutrients": {"protein_g": {"total": 92, "target": 150, "ceiling": false},
-               "water_oz":  {"total": 48, "target": 128, "ceiling": false}, ...}}
+ "nutrients": {"protein_g": {"total": 92, "target": 150},
+               "water_oz":  {"total": 48, "target": 128}, ...}}
 ```
 
 `total` is `null` when nothing logged carries that nutrient — the same distinction the
 journal rings draw between "0 so far" and "unestimated", so a client can show an unknown
 state rather than claiming a zero. An untargeted nutrient (fat) reports `target: null`.
+There is no ceiling/floor flag: a target is just a target, so a client renders progress
+toward a number and leaves whether being over it matters to the eating profile's prose.
 Units aren't included: they're a rendering choice that lives in `macros.html`, and a
 second server-side copy is how the two drift.
 
@@ -456,8 +458,8 @@ prefer to keep the file pristine.)
 
 The **refresh interval is the filename** — `macros.1m.py` polls every minute; rename
 to `.1m.` / `.15m.` to change it. The dropdown carries a Refresh item for right after you
-log something. It shows the full nutrient breakdown, greens a floor you've met and reds a
-ceiling you've passed, and links back to the journal. If the server is unreachable the
+log something. It shows the full nutrient breakdown — gauge, figure and target, no
+color, since a target is just a target — and links back to the journal. If the server is unreachable the
 menu bar goes quiet (grey dashes) and the detail lands in the dropdown — a bar that shouts
 on every dropped wifi connection is a bar you learn to ignore.
 

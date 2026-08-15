@@ -326,23 +326,18 @@ def main() -> None:
         info = n.get(key)
         if not info:
             continue
-        total, target, ceiling = info.get("total"), info.get("target"), info.get("ceiling")
+        total, target = info.get("total"), info.get("target")
         # The unit rides with a figure, never with the "–" placeholder: "–g" reads
         # like a quantity of grams rather than "nothing logged carries this".
         line = (f"{label:<9} {gauge(total, target)}  "
                 f"{num(total)}{suffix if total is not None else ''}")
         if target is not None:
             line += f" / {num(target)}{suffix}"
-        # Only a CEILING can be violated by going up (sodium, calories, alcohol); a
-        # floor just isn't met yet, and colouring "not yet" red all morning would
-        # train you to ignore the colour.
-        color = ""
-        if total is not None and target:
-            if ceiling and total > target:
-                color = " | color=red"
-            elif not ceiling and total >= target:
-                color = " | color=green"
-        print(f"{line}{color} | font=Menlo size=12")
+        # No color. Red-vs-green needed a ceiling/floor flag the API no longer
+        # carries — a target is just a target now — and there is no direction-free
+        # way to say "past it is bad" that doesn't quietly guess one. The gauge and
+        # the two figures already say where the day stands.
+        print(f"{line} | font=Menlo size=12")
     print("---")
     # The menu shows macros, so it links to the food log (its own page since the
     # journal/food split) — not the journal, which is entries-only now.

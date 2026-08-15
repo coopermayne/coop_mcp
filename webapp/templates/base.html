@@ -66,15 +66,15 @@
     }
     .badge-dark { border-color: #000; color: #000; }
     /* Eating-block progress rings (macros.nutrient_ring). The only color in an
-       otherwise monochrome UI, so both hues are desaturated to sit quietly next
-       to the gray text: sage while a nutrient is within its target, clay once a
-       ceiling one (sodium, calories) is past it. The track is a hair darker than
-       a hairline border so a barely-started ring still reads as a ring. */
+       otherwise monochrome UI, so the hue is desaturated to sit quietly next to
+       the gray text. ONE fill for every nutrient: a target is just a target, and
+       a second "past it" color would need a ceiling/floor flag that the model
+       reading these same numbers can't see. The track is a hair darker than a
+       hairline border so a barely-started ring still reads as a ring. */
     .ring-track { stroke: #ececea; }
     /* The short name under the figure — quieter than the number it labels. */
     .ring-sublabel { fill: #9ca3af; text-transform: uppercase; letter-spacing: .06em; }
     .ring-fill  { stroke: #8ba58f; }
-    .ring-over  { stroke: #bb8a80; }
     button.badge { cursor: pointer; }
     button.badge:hover { border-color: #000; color: #000; }
     /* Inline person reference inside journal prose — present but quiet: a faint
@@ -185,7 +185,6 @@
     html[data-theme="dark"] .ring-track { stroke: #262626; }
     html[data-theme="dark"] .ring-sublabel { fill: #737373; }
     html[data-theme="dark"] .ring-fill  { stroke: #7d9a83; }
-    html[data-theme="dark"] .ring-over  { stroke: #b58179; }
     html[data-theme="dark"] .person-link              { text-decoration-color: #404040; }
     html[data-theme="dark"] .person-link:hover        { color: #fafafa; text-decoration-color: #fafafa; }
     html[data-theme="dark"] .entry-open               { color: #404040; }
