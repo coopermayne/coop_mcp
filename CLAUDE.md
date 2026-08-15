@@ -608,10 +608,35 @@ working.
   folder — written ONLY by `collections_save`: the glyph is part of what a collection IS,
   so it's the model's like `fields`, not a rendering pref the Display popover touches), and
   carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?,unit?}]`,
-  types text|number|date|select — a `select` MUST carry a non-empty, duplicate-free
+  types text|number|date|select|url|bool|rating|multiselect|location. A field's
+  type is SEMANTIC — it says what the value MEANS, and the app renders it as that
+  thing: a `url` as its host (a real link on the item page), a `bool` as a checked
+  label ("✓ Cooked" — the one type whose value can't speak without its name), a
+  `rating` as stars (0-5 in halves, no configurable max), a `multiselect` as one
+  badge per value, a `location` as a pin that opens a maps app. The five beyond
+  the original four extend the SHAPE axis the model already owns rather than
+  adding a collection-level "kind": a kind would fight both existing axes and
+  make a collection state its shape twice — this is the same move `unit` on a
+  number already made. There is deliberately NO MAP LIBRARY: a location renders
+  as a labelled chip linking out. Its coordinates are STORED all the same
+  (`{label?, address?, lat?, lng?}`, needing at least an address or a lat/lng
+  pair), so a real map view later is a pure webapp change — and the model
+  supplies the coordinates from its own knowledge, since the server can't
+  geocode (no LLM, no network) and an address alone is a complete value.
+  Which types can be arranged by lives in `GROUPABLE_TYPES`/`SORTABLE_TYPES`,
+  once, read by both the `set_collection_display` gate and the Display popover's
+  two selects (`data.groupable_fields`/`sortable_fields`) so the UI can't offer
+  an arrangement the save then refuses: `url` and `location` are NEITHER (a
+  bucket per URL is a bucket per item; a coordinate pair has no order), and
+  `multiselect` groups but doesn't sort — it fans an item into one bucket per
+  value, the single place an item appears twice on a page, which is exactly why
+  there's no one value to sort it by. A `select` MUST carry a non-empty,
+  duplicate-free
   `options` list, since `_bad_data` can only constrain a value when options exist
   and the webapp groups in their declared order: an optionless select silently
-  degraded into a text field that merely CLAIMED to be a closed set; a `unit`
+  degraded into a text field that merely CLAIMED to be a closed set (a
+  `multiselect` is that same closed set with several values, so it shares the
+  branch); a `unit`
   ("min", "nights") is NUMBER-ONLY and rejected elsewhere, because its whole job
   is letting the renderer drop the label — a figure with a unit says what it is
   ("240 min"), a bare one has to be introduced ("Time: 240"), and on a type with
@@ -621,7 +646,14 @@ working.
   blocking (`notes_file` validates the whole merged blob). `collections_save`
   doesn't delete those values, but it now reports them as `stranded`
   {key: item count} with the fix, since silence is exactly how the
-  `featured_image` orphans survived 16 items unnoticed. Shape is the model's; LAYOUT is not — the legacy
+  `featured_image` orphans survived 16 items unnoticed. Keeping a field but
+  RETYPING it fails the same way one step over — the values sit there and
+  quietly stop validating, on a page that still renders them fine — so those
+  come back as `mistyped` {key: item count} (`_mistyped_keys`, one key at a time
+  since `_bad_data` stops at the first error). Both are advisory, never
+  blocking, like `unfilled_fields`; and `macros.field_text` prints an
+  impossible-for-its-type value rather than raising, because after a retype it
+  meets them as a matter of course. Shape is the model's; LAYOUT is not — the legacy
   `display_hint` column is dormant, the view lives in the webapp-only `display`
   JSON (see the popover below). Items hold markdown `body` (the prose), a `featured_image_url` (the
   FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
@@ -700,10 +732,16 @@ working.
   A declared field renders as its VALUE, not `LABEL: value` — inside a collection
   the value almost always names its own field ("ITALIAN" under a chef-hat called
   Recipes), and the prefix wrapped a badge row onto two lines to say nothing. The
-  label moves to the `title` tooltip. The one exception is a bare NUMBER, which
-  genuinely can't speak for itself, so it keeps its label unless the field
-  declares a `unit` — which says it shorter. `macros.field_badge`/`field_text` own
-  both rules plus date formatting, so all three views and the item page agree.
+  label moves to the `title` tooltip. Two exceptions, both fields whose value
+  can't speak for itself: a bare NUMBER, which keeps its label unless the field
+  declares a `unit` — which says it shorter — and a BOOL, which IS its label
+  ("✓ Cooked", muted when false). `macros.field_badge`/`field_text` own those
+  rules plus date formatting and every semantic type's rendering, so all three
+  views and the item page agree. `field_badge(linkify=…)` is OFF by default and
+  that's structural, not a preference: list rows and cards wrap the whole item in
+  an `<a>` to `/item/{id}`, and an anchor inside an anchor is illegal HTML — so
+  only `item.html`, whose rows aren't links, passes True, and it's the only page
+  where a url or a location is clickable.
   The one thing the browser writes is PRESENTATION: each collection page has a
   **Display** popover (`view` = list|table|cards, webapp-only: it was a model-written
   `display_hint` column until that guess proved worthless — the first popover

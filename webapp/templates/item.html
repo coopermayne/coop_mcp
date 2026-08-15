@@ -12,8 +12,11 @@
 <h1 class="mt-4 text-2xl font-bold tracking-tight">{{ it.title }}</h1>
 
 {% if it.data %}
+{# linkify=True HERE and nowhere else: this is the one surface whose rows aren't
+   themselves links to /item/{id}, so a url or a location can carry its own
+   anchor without nesting one inside another. #}
 <div class="flex flex-wrap items-center gap-2 mt-3">
-  {% for f in it.data %}{{ m.field_badge(f) }}{% endfor %}
+  {% for f in it.data %}{{ m.field_badge(f, linkify=True) }}{% endfor %}
 </div>
 {% endif %}
 
