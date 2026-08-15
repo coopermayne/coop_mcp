@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros.html" as m with context %}
 {% block title %}{{ it.title }} · Journal{% endblock %}
 {% block content %}
 
@@ -12,7 +13,7 @@
 
 {% if it.data %}
 <div class="flex flex-wrap items-center gap-2 mt-3">
-  {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
+  {% for f in it.data %}{{ m.field_badge(f) }}{% endfor %}
 </div>
 {% endif %}
 

@@ -867,17 +867,30 @@ def _item_view(r, fields: list[dict] | None = None) -> dict:
 
     `fields=None` means no collection context (inbox notes) — show whatever the
     blob carries; an EMPTY list is a real answer ("show no fields"), so it must
-    not fall back to showing everything."""
+    not fall back to showing everything.
+
+    Each entry carries the field's TYPE and UNIT alongside its value, because
+    how a value renders is a question only the declaration can answer: a date
+    wants the app's date format rather than raw ISO, and a bare number needs
+    either a unit or its label to mean anything (macros.field_badge decides).
+    `cells` is the same entries keyed for the table, which walks the collection's
+    columns rather than the item's values. `data_map` stays RAW — it's what
+    grouping and sorting compare, and those want the stored value, not a
+    formatted one."""
     data_blob = server._item_data(r)
     if fields is not None:
-        ordered = [(f["key"], f["label"], data_blob.get(f["key"]))
+        ordered = [{"key": f["key"], "label": f["label"],
+                    "value": data_blob.get(f["key"]),
+                    "type": f.get("type", "text"), "unit": f.get("unit", "")}
                    for f in fields if f["key"] in data_blob]
     else:
-        ordered = [(k, k.replace("_", " "), v) for k, v in data_blob.items()]
+        ordered = [{"key": k, "label": k.replace("_", " "), "value": v,
+                    "type": "text", "unit": ""} for k, v in data_blob.items()]
     return {"item_id": r["id"], "title": r["title"], "body": r["body"] or "",
             "featured_image_url": r["featured_image_url"] or "",
             "data": ordered, "data_map": data_blob,
-            "updated": (r["updated_at"] or "")[:10]}
+            "cells": {e["key"]: e for e in ordered},
+            "updated": server.pacific_day(r["updated_at"])}
 
 
 def _field_value(it: dict, key: str):
@@ -980,7 +993,18 @@ def collection_page(name: str) -> dict | None:
 
     Arrangement is resolved HERE, not in the template: `groups` is always a list
     of buckets (one unlabeled bucket when the user isn't grouping), each already
-    sorted, so both views just loop. `rows` stays the flat list for counts."""
+    sorted, so both views just loop. `rows` stays the flat list for counts.
+
+    Two things about grouping are decided here rather than left to the views.
+    A bucketing where EVERY bucket holds one item isn't a grouping — it's one
+    band of chrome per row, ~90px of heading to introduce a single line — so it
+    collapses back to ungrouped (grouping a six-item list by a field with six
+    distinct values was the case that showed it). And when the bands DO survive,
+    the grouped field stops rendering per item: the band above already says
+    "California", so a `REGION: CALIFORNIA` badge on the only row under it, or a
+    Status column repeating the heading down the whole table, is the same word
+    twice. The two rules are joined on purpose — the field is only dropped when a
+    band is actually there to carry it, so the value never just disappears."""
     with server.db() as conn:
         c = conn.execute("SELECT * FROM collections WHERE lower(name)=?",
                          ((name or "").strip().lower(),)).fetchone()
@@ -995,7 +1019,17 @@ def collection_page(name: str) -> dict | None:
             (c["id"],))]
     by_key = {f["key"]: f for f in fields}
     ftypes = {k: f.get("type", "text") for k, f in by_key.items()}
-    groups = _grouped_items(items, by_key.get(display["group_by"]))
+    gkey = display["group_by"]
+    groups = _grouped_items(items, by_key.get(gkey))
+    grouped = bool(by_key.get(gkey)) and not (
+        len(groups) > 1 and all(len(g["rows"]) == 1 for g in groups))
+    if not grouped:
+        groups = _grouped_items(items, None)
+    else:
+        visible = [f for f in visible if f["key"] != gkey]
+        for it in items:
+            it["data"] = [e for e in it["data"] if e["key"] != gkey]
+            it["cells"].pop(gkey, None)
     for g in groups:
         g["rows"] = _sorted_items(g["rows"], display["sort_by"],
                                   display["sort_dir"] == "desc", ftypes)
@@ -1021,5 +1055,5 @@ def item_page(item_id: int) -> dict | None:
         # undeclared-fields collection falls back to the blob's own keys.
         view = _item_view(r, (server._coll_fields(c) or None) if c else None)
     view["collection"] = c["name"] if c else None
-    view["created"] = (r["created_at"] or "")[:10]
+    view["created"] = server.pacific_day(r["created_at"])
     return view

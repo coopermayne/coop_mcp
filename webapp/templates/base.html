@@ -65,6 +65,21 @@
       letter-spacing: 0.025em; line-height: 1.625; border-radius: 2px; color: #6b7280;
     }
     .badge-dark { border-color: #000; color: #000; }
+    /* Right-edge fade on a container that scrolls sideways (the collection
+       table). A wide table already scrolled inside itself so the PAGE never
+       does — correct, but silent: on a phone the last columns simply weren't
+       there, with nothing to say a swipe would reach them (measured at 430px,
+       a 5-column table hid 37% of its width). The fade is drawn only while
+       there's something still to the right, so it doubles as the "you're at
+       the end" signal; it's painted over the content and must not eat taps,
+       hence pointer-events. */
+    .hscroll { position: relative; }
+    .hscroll-cue {
+      position: absolute; top: 1px; bottom: 1px; right: 1px; width: 2.5rem;
+      pointer-events: none; opacity: 0; transition: opacity .15s;
+      background: linear-gradient(to right, rgba(255,255,255,0), #fff);
+    }
+    .hscroll[data-more] .hscroll-cue { opacity: 1; }
     /* Eating-block progress rings (macros.nutrient_ring). The only color in an
        otherwise monochrome UI, so the hue is desaturated to sit quietly next to
        the gray text. ONE fill for every nutrient: a target is just a target, and
@@ -148,6 +163,12 @@
     html[data-theme="dark"] body { background-color: #0a0a0a; color: #fafafa; }
     html[data-theme="dark"] .bg-white                                 { background-color: #0a0a0a; }
     html[data-theme="dark"] .bg-gray-50, html[data-theme="dark"] .hover\:bg-gray-50:hover{ background-color: #171717; }
+    /* Collection group bands (all three views). Without these the band kept its
+       light #f3f4f6 fill in dark mode — a bright strip across the page, and the
+       one element whose whole job is to be a STEP darker than the row hover, so
+       it has to sit just above .bg-gray-50's #171717 rather than below it. */
+    html[data-theme="dark"] .bg-gray-100                                { background-color: #1f1f1f; }
+    html[data-theme="dark"] .hover\:bg-gray-200\/70:hover               { background-color: #2a2a2a; }
     html[data-theme="dark"] .bg-black, html[data-theme="dark"] .hover\:bg-black:hover    { background-color: #fafafa; color: #0a0a0a; }
     html[data-theme="dark"] .bg-gray-800, html[data-theme="dark"] .hover\:bg-gray-800:hover { background-color: #e5e5e5; color: #0a0a0a; }
     html[data-theme="dark"] .text-black, html[data-theme="dark"] .hover\:text-black:hover{ color: #fafafa; }
@@ -185,6 +206,7 @@
     html[data-theme="dark"] .ring-track { stroke: #262626; }
     html[data-theme="dark"] .ring-sublabel { fill: #737373; }
     html[data-theme="dark"] .ring-fill  { stroke: #7d9a83; }
+    html[data-theme="dark"] .hscroll-cue { background: linear-gradient(to right, rgba(10,10,10,0), #0a0a0a); }
     html[data-theme="dark"] .person-link              { text-decoration-color: #404040; }
     html[data-theme="dark"] .person-link:hover        { color: #fafafa; text-decoration-color: #fafafa; }
     html[data-theme="dark"] .entry-open               { color: #404040; }
@@ -630,6 +652,27 @@
       document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape' && box.hasAttribute('data-open')) close();
       });
+    })();
+
+    /* Sideways-scroll cue: flag any .hscroll that still has content past its
+       right edge, so the CSS above can fade it. Re-checked on scroll and on
+       resize because both change the answer, and once on load for the images
+       and fonts that settle after parse. Any page can opt in by wrapping a
+       scroller in .hscroll and dropping in a .hscroll-cue span. */
+    (function () {
+      function sync() {
+        document.querySelectorAll('.hscroll').forEach(function (wrap) {
+          var sc = wrap.querySelector('[data-hscroll]');
+          if (!sc) return;
+          var more = sc.scrollWidth - sc.clientWidth - sc.scrollLeft > 2;
+          if (more) wrap.setAttribute('data-more', '1');
+          else wrap.removeAttribute('data-more');
+        });
+      }
+      document.addEventListener('scroll', sync, true);   // capture: inner scrollers don't bubble
+      window.addEventListener('resize', sync);
+      window.addEventListener('load', sync);
+      sync();
     })();
   </script>
   {% block scripts %}{% endblock %}

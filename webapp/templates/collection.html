@@ -143,10 +143,13 @@
    one-column table of titles — still recognizably the table view, which is
    what the user picked; falling back to the list stack here made the two
    views indistinguishable. Wide tables scroll inside their own container so
-   the page never scrolls sideways. Grouping (data.collection_page resolved it
-   into buckets) is a spanning heading row, so one table keeps its columns
-   aligned across every group. #}
-<div class="border border-gray-200 rounded-[4px] overflow-x-auto">
+   the page never scrolls sideways — with a right-edge fade (.hscroll, base.html)
+   while columns remain out of view, since containing the scroll also hid the
+   fact that there was one. Grouping (data.collection_page resolved it into
+   buckets) is a spanning heading row, so one table keeps its columns aligned
+   across every group. #}
+<div class="hscroll">
+<div data-hscroll class="border border-gray-200 rounded-[4px] overflow-x-auto">
   <table class="w-full text-sm">
     <thead>
       <tr class="text-left text-[10px] uppercase tracking-widest text-gray-400 border-b border-gray-200">
@@ -186,13 +189,17 @@
           </a>
         </td>
         {% for f in c.fields %}
-        <td class="px-4 py-3 text-gray-600 whitespace-nowrap tabular-nums">{{ it.data_map.get(f.key, '') }}</td>
+        <td class="px-4 py-3 text-gray-600 whitespace-nowrap tabular-nums">
+          {%- if it.cells.get(f.key) %}{{ m.field_text(it.cells[f.key]) }}{% endif -%}
+        </td>
         {% endfor %}
       </tr>
       {% endfor %}
     </tbody>
     {% endfor %}
   </table>
+</div>
+<span class="hscroll-cue"></span>
 </div>
 
 {% elif c.display.view == 'cards' %}
@@ -231,7 +238,7 @@
       <div class="text-sm font-medium group-hover:underline underline-offset-2">{{ it.title }}</div>
       {% if it.data %}
       <div class="flex flex-wrap items-center gap-2 mt-2">
-        {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
+        {% for f in it.data %}{{ m.field_badge(f) }}{% endfor %}
       </div>
       {% endif %}
       {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-2 line-clamp-3">{{ it.body | truncate(200) }}</p>{% endif %}
@@ -271,7 +278,7 @@
     </div>
     {% if it.data %}
     <div class="flex flex-wrap items-center gap-2 mt-1.5">
-      {% for key, label, val in it.data %}<span class="badge">{{ label }}: {{ val }}</span>{% endfor %}
+      {% for f in it.data %}{{ m.field_badge(f) }}{% endfor %}
     </div>
     {% endif %}
     {% if c.display.show_body and it.body %}<p class="text-xs text-gray-500 mt-1.5 line-clamp-2">{{ it.body | truncate(200) }}</p>{% endif %}

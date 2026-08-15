@@ -442,3 +442,28 @@
 {% macro section_label(text) %}
 <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{{ text }}</p>
 {% endmacro %}
+
+{# ONE declared field's value, rendered per its declaration (data._item_view
+   hands over the type and unit with every value). A `date` field goes through
+   the app's own date format rather than showing raw ISO — a table column
+   reading "2026-04-11" next to a byline reading "Apr 11, 2026" is the same day
+   spelled two ways. A number wears its unit. #}
+{% macro field_text(f) %}
+{%- if f.type == 'date' %}{{ f.value | short_date }}
+{%- elif f.unit %}{{ f.value }} {{ f.unit }}
+{%- else %}{{ f.value }}{% endif -%}
+{% endmacro %}
+
+{# One field as a badge. The LABEL is dropped to a tooltip, because inside a
+   collection the value almost always names its own field: under a chef-hat
+   called Recipes, "CUISINE: ITALIAN" is a word of scaffolding in front of the
+   only word that carries anything, and three of them wrapped the badge row to
+   two lines on every card. The exception is a bare number, which really can't
+   speak for itself — so it keeps its label UNLESS the field declares a unit,
+   which says the same thing in less ("240 min" beats "Time: 240"). #}
+{% macro field_badge(f) %}
+<span class="badge" title="{{ f.label }}">
+  {%- if f.type == 'number' and not f.unit %}{{ f.label }}: {% endif -%}
+  {{- field_text(f) -}}
+</span>
+{% endmacro %}
