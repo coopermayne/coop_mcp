@@ -106,7 +106,13 @@ There is no exercise-selection or progression logic in the server either.
   and every date default (`entry_date`, `drink_date`, `workout_date`) plus streak/recency
   math roll over at Pacific midnight, via `PACIFIC = ZoneInfo("America/Los_Angeles")` —
   never the server's UTC midnight. `created_at` stays UTC (an unambiguous storage
-  timestamp, not a user date). Both briefings return `now` (`current_clock()`) — which
+  timestamp, not a user date) — but a UTC stamp that gets SHOWN has to be converted,
+  and `pacific_day()` is the one way to do it. Slicing `ts[:10]` off a stored
+  timestamp looks like the same thing and isn't: it yields the UTC day, which is
+  already tomorrow for the seven or eight hours after Pacific 4/5pm, so every
+  collection item saved in the evening rendered (and sorted) a day ahead. Anything
+  turning `created_at`/`updated_at` into a date the user reads goes through the
+  helper. Both briefings return `now` (`current_clock()`) — which
   precomputes `date`/`yesterday`/`tomorrow` so the model uses those exact strings rather
   than doing its own +/-1 arithmetic (an off-by-one source) — so it can anchor
   "today"/"yesterday"/"tomorrow" before defaulting or back-dating. The webapp `/chat`
@@ -601,11 +607,15 @@ working.
   `icon` (a name from the vendored Lucide set — see `icons.py`; NULL draws the default
   folder — written ONLY by `collections_save`: the glyph is part of what a collection IS,
   so it's the model's like `fields`, not a rendering pref the Display popover touches), and
-  carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?}]`, types
-  text|number|date|select — a `select` MUST carry a non-empty, duplicate-free
+  carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?,unit?}]`,
+  types text|number|date|select — a `select` MUST carry a non-empty, duplicate-free
   `options` list, since `_bad_data` can only constrain a value when options exist
   and the webapp groups in their declared order: an optionless select silently
-  degraded into a text field that merely CLAIMED to be a closed set). Because
+  degraded into a text field that merely CLAIMED to be a closed set; a `unit`
+  ("min", "nights") is NUMBER-ONLY and rejected elsewhere, because its whole job
+  is letting the renderer drop the label — a figure with a unit says what it is
+  ("240 min"), a bare one has to be introduced ("Time: 240"), and on a type with
+  no figure there'd be nowhere to put it). Because
   `fields` REPLACES the list, an edit that forgets a field un-declares it and
   STRANDS its values on every item — invisible (only declared fields render) and
   blocking (`notes_file` validates the whole merged blob). `collections_save`
@@ -678,6 +688,22 @@ working.
   shortcuts run 1-4 in nav order, then 5 graphs / 6 trainer), and `/collections` is a
   GRID of icon cards rather than a list — the icon is what you aim at, and a stack of
   near-identical text rows made every collection look alike.
+  A collection's NAME is stored exactly as written and rendered with no
+  text-transform anywhere; only the LOOKUP lowercases (`_resolve_collection`,
+  `lower(name)=?`). Folding the case at the door instead — which is what
+  `collections_save` used to do — threw the capitalization away and left the two
+  read surfaces to invent their own: the grid title-cased with CSS (so "Trip ideas"
+  came back "Trip Ideas", capitalizing a word nobody wrote) while the collection
+  page printed the stored lowercase, and one collection wore two spellings
+  depending on which page you were standing on. Re-saving with new capitalization
+  RE-CASES the row, which is the migration path for anything created earlier.
+  A declared field renders as its VALUE, not `LABEL: value` — inside a collection
+  the value almost always names its own field ("ITALIAN" under a chef-hat called
+  Recipes), and the prefix wrapped a badge row onto two lines to say nothing. The
+  label moves to the `title` tooltip. The one exception is a bare NUMBER, which
+  genuinely can't speak for itself, so it keeps its label unless the field
+  declares a `unit` — which says it shorter. `macros.field_badge`/`field_text` own
+  both rules plus date formatting, so all three views and the item page agree.
   The one thing the browser writes is PRESENTATION: each collection page has a
   **Display** popover (`view` = list|table|cards, webapp-only: it was a model-written
   `display_hint` column until that guess proved worthless — the first popover
@@ -685,7 +711,9 @@ working.
   won. `init_db` folds the old column into the JSON once and it's dormant after,
   kept not dropped; which declared fields show as table
   columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
-  notes-preview, updated, and `image_size` (`off|small|medium|large`, the
+  notes-preview, updated (default OFF: a collection is usually saved in a batch,
+  so the stamp repeats identically down every row and spends a line per item
+  saying nothing that tells them apart), and `image_size` (`off|small|medium|large`, the
   featured image's thumbnail edge, a step smaller in the denser table view —
   and in `cards`, where the picture is the card's whole top edge rather than a
   tile beside the text, the same pref sizes the CARD (the grid's minimum column)
@@ -704,7 +732,17 @@ working.
   resolved in `data.collection_page`, which always hands the template `groups`
   (one unlabeled bucket when ungrouped), each bucket pre-sorted, so every view
   just loops; a bucket for items MISSING the grouped value sorts last, and a
-  `select` field groups in its own declared `options` order. A labelled group's
+  `select` field groups in its own declared `options` order. Two things about
+  grouping are decided THERE rather than per view, and they're joined on purpose.
+  A bucketing where EVERY bucket holds one item collapses back to ungrouped: six
+  trip ideas grouped by region gave six bands, each ~90px of heading introducing a
+  single row, so the page became mostly furniture. And when the bands DO survive,
+  the grouped field stops rendering per item — the band already says "California",
+  so a `REGION: CALIFORNIA` badge under it, or a Status column repeating its
+  heading down the whole table, is the same word twice. The field is dropped ONLY
+  when a band is there to carry it, which is why one rule can't move without the
+  other: apply the hiding to a degenerate grouping and the value vanishes entirely.
+  A labelled group's
   band is a TOGGLE — the stack folds away — in all three views, since the point
   of naming buckets is being able to put the ones you're not reading away.
   Which labels are folded is the ONE piece of collection view state kept in
@@ -714,7 +752,14 @@ working.
   flipped several times a minute — a POST per chevron is the wrong tempo. Keyed
   by label, so a fold survives a re-sort. The table view pays for it in markup:
   collapsing means hiding a run of `<tr>`s, so each group there is its own pair
-  of `<tbody>`s (band, then rows) — valid HTML, columns still aligned.
+  of `<tbody>`s (band, then rows) — valid HTML, columns still aligned. A wide
+  table scrolls INSIDE itself so the page never scrolls sideways, which is right
+  and was also silent: on a phone the trailing columns simply weren't there, with
+  nothing to say a swipe would reach them (measured at 430px, a five-column table
+  hid 37% of its width). The `.hscroll`/`.hscroll-cue` pair in `base.html` fades
+  the right edge while content remains past it — so it doubles as the "that's the
+  end" signal — and any page can opt in by wrapping a scroller and dropping the
+  span in.
   A `checklist` hint
   was dropped (it rendered exactly like `list`, and an item has no done-state to
   check), migrated to `list` in `init_db`; `cards` earns its place the way that

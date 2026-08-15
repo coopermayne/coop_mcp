@@ -52,15 +52,23 @@
 {% if collections %}
 {# A GRID of cards, not a list: a collection is a place you go, and its icon is
    what you actually aim at — a row of near-identical text lines made every
-   collection look the same. Two up on phones, three from sm. #}
-<div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+   collection look the same. Two up on phones, three from sm, four from lg:
+   a wide screen at three-up left a fourth collection stranded alone on a
+   second row, which reads as a gap rather than a grid. #}
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
   {% for c in collections %}
   <a href="{{ base }}/collections/{{ c.name }}"
      class="group flex flex-col border border-gray-200 rounded-[4px] p-4 hover:border-black transition-colors">
     <span class="text-gray-400 group-hover:text-black transition-colors">{{ m.icon(c.icon, "w-6 h-6") }}</span>
-    <span class="mt-3 text-sm font-medium capitalize">{{ c.name }}</span>
+    {# No text-transform: the name renders as it was SAVED. `capitalize` here
+       title-cased every word ("trip ideas" → "Trip Ideas") while the collection
+       page printed the stored string, so the same collection wore two spellings
+       depending on which page you were on. #}
+    <span class="mt-3 text-sm font-medium">{{ c.name }}</span>
     {% if c.description %}<span class="mt-1 text-xs text-gray-500 line-clamp-2">{{ c.description }}</span>{% endif %}
-    <span class="mt-3 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ c.count }} {% if c.count == 1 %}item{% else %}items{% endif %}</span>
+    {# mt-auto, not mt-3: the count is pinned to the card's bottom edge so it
+       lines up across the row whether a description ran to one line or two. #}
+    <span class="mt-auto pt-3 text-[10px] uppercase tracking-widest text-gray-400 tabular-nums">{{ c.count }} {% if c.count == 1 %}item{% else %}items{% endif %}</span>
   </a>
   {% endfor %}
 </div>

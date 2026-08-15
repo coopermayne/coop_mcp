@@ -145,11 +145,17 @@ class CollectionField(TypedDict):
     """One field of a collection's shape. `key` is snake_case and is what item
     `data` blobs are keyed by; `type` is one of text|number|date|select (select
     with an `options` list). Keep fields FEW — a field earns its place by being
-    worth scanning in a list, not by existing in the prose anyway."""
+    worth scanning in a list, not by existing in the prose anyway.
+
+    `unit` is for NUMBER fields only ("min", "lbs", "nights") and is what makes
+    a bare figure legible: the app renders a number with its unit and drops the
+    label, so a recipe reads "240 min" instead of "Time: 240" — the value saying
+    what it is rather than being introduced. Set it whenever the number has one."""
     key: str
     label: NotRequired[str]
     type: NotRequired[str]
     options: NotRequired[list[str]]
+    unit: NotRequired[str]
 
 
 def _build_auth(public_url: Optional[str] = None):
@@ -1271,6 +1277,27 @@ def today() -> str:
     """Current calendar date (YYYY-MM-DD) in Pacific time — the canonical
     'today' for every date field in this log."""
     return datetime.now(PACIFIC).strftime("%Y-%m-%d")
+
+
+def pacific_day(ts: Optional[str]) -> str:
+    """The Pacific calendar day a stored UTC timestamp (created_at/updated_at)
+    falls on — the bridge between the two halves of the rule above.
+
+    Storage stamps are UTC on purpose; every date the app SHOWS is Pacific. The
+    two disagree for the seven or eight hours between Pacific 4/5pm and UTC
+    midnight, so slicing the first ten characters off a stored timestamp — which
+    is what the item views used to do — is an evening-only off-by-one: a note
+    saved at 6pm Tuesday renders, and sorts, as Wednesday. Anything unparseable
+    falls back to that slice rather than raising; a byline is not worth a 500."""
+    if not ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return ts[:10]
+    if dt.tzinfo is None:                      # legacy naive rows were UTC too
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(PACIFIC).strftime("%Y-%m-%d")
 
 
 def _app_url(path: str) -> Optional[str]:
@@ -3341,6 +3368,22 @@ def _norm_fields(fields) -> tuple[list[dict], Optional[str]]:
             if len(set(opts)) != len(opts):
                 return [], f"duplicate options in select field {key!r}: {opts}"
             norm["options"] = opts
+        # A unit belongs to a NUMBER and nothing else: it's what lets the app
+        # drop the label and still be read ("240 min"), which only works when
+        # there's a figure to attach it to. On a text/date/select field it would
+        # be decoration the renderer has nowhere to put, so say so rather than
+        # storing a key that silently does nothing.
+        unit = (f.get("unit") or "").strip()
+        if unit:
+            if ftype != "number":
+                return [], (f"field {key!r} is type {ftype!r}, so it can't carry a "
+                            f"`unit` ({unit!r}) — units are for numbers; put it in "
+                            "the label if it belongs in the name")
+            if len(unit) > 8:
+                return [], (f"unit {unit!r} on field {key!r} is too long — it sits "
+                            "next to the figure in a badge; use a short symbol "
+                            "like 'min', 'lbs', 'kcal'")
+            norm["unit"] = unit
         out.append(norm)
     return out, None
 
@@ -3401,9 +3444,14 @@ def _resolve_collection(conn: sqlite3.Connection, name: str):
     return None, [{"name": r["name"], "score": round(sc, 2)} for sc, r in cands[:3]]
 
 
+# show_updated defaults OFF: a collection is usually saved in a batch, so the
+# stamp repeats identically down every row (all three Sayings, all seven
+# Recipes) and pays a line of chrome per item to say nothing that distinguishes
+# them. It's still one click away in the popover for the collections where
+# recency IS the point, and the item's own page always carries it.
 COLLECTION_DISPLAY_DEFAULTS = {"view": "list",
                                "hidden_fields": [], "show_body": True,
-                               "show_updated": True, "image_size": "medium",
+                               "show_updated": False, "image_size": "medium",
                                # "" = don't group / the default sort. group_by
                                # and sort_by are a declared field key; sort_by
                                # also takes the two intrinsic columns below.
@@ -3644,6 +3692,10 @@ def save_collection(name: str, description: Optional[str] = None,
     items} so you can re-declare the field or clear each with
     notes_update(item_id, data={key: None}). A `select` field needs a non-empty
     `options` list — without one it constrains nothing, so use 'text' instead.
+    A `number` field should carry a `unit` whenever it has one ("min", "nights",
+    "lbs"): the app renders the figure with its unit and drops the label, so
+    "240 min" reads on its own where a labelled "Time: 240" only raises the
+    question. Units are for numbers only.
 
     Creating is DELIBERATE: propose it and get the user's yes first — a stray
     one-off belongs in the inbox, not a new near-empty collection. A new name
@@ -3666,7 +3718,16 @@ def save_collection(name: str, description: Optional[str] = None,
     description, icon, field definitions) and its items survive as inbox notes.
     Deleting a note itself is notes_delete. The return's `url` is the
     collection's page in the app, worth offering once you've just built one."""
-    n = (name or "").strip().lower()
+    # The name is STORED as written and only LOWERCASED to match on. Folding the
+    # case at the door threw the capitalization away and left the two read
+    # surfaces to invent their own: the /collections grid title-cased with CSS
+    # ("Trip ideas" came back as "Trip Ideas", capitalizing a word nobody had)
+    # while the collection page printed the stored lowercase, so one collection
+    # wore two spellings and neither was the one that was saved. Re-saving with
+    # different capitalization RE-CASES the existing row — that's the migration
+    # path for anything created while the fold was in place.
+    display_name = (name or "").strip()
+    n = display_name.lower()
     if not n:
         return {"error": "name is required"}
     if icon is not None and (err := _bad_icon(icon)):
@@ -3686,10 +3747,13 @@ def save_collection(name: str, description: Optional[str] = None,
             conn.execute(
                 "INSERT INTO collections(name, description, fields, icon, created_at) "
                 "VALUES (?,?,?,?,?)",
-                (n, description, json.dumps(norm_fields or []), icon or None, now()))
+                (display_name, description, json.dumps(norm_fields or []),
+                 icon or None, now()))
             created = True
         else:
             sets, vals = [], []
+            if row["name"] != display_name:
+                sets.append("name=?"); vals.append(display_name)
             if description is not None:
                 sets.append("description=?"); vals.append(description)
             if norm_fields is not None:

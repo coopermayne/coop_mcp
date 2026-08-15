@@ -393,7 +393,7 @@ COLLECTIONS = [
     ("Recipes", "Things worth cooking twice.", "chef-hat", [
         {"key": "cuisine", "label": "Cuisine", "type": "select",
          "options": ["Italian", "Sichuan", "Mexican", "Japanese", "Levantine", "American"]},
-        {"key": "time_min", "label": "Time", "type": "number"},
+        {"key": "time_min", "label": "Time", "type": "number", "unit": "min"},
         {"key": "source", "label": "Source", "type": "text"},
     ]),
     ("Reading", "Books in, out, and abandoned.", "book-open", [
@@ -408,7 +408,7 @@ COLLECTIONS = [
          "options": ["California", "Southwest", "Pacific NW", "Mexico", "Japan", "Europe"]},
         {"key": "season", "label": "Best season", "type": "select",
          "options": ["Spring", "Summer", "Fall", "Winter"]},
-        {"key": "nights", "label": "Nights", "type": "number"},
+        {"key": "nights", "label": "Nights", "type": "number", "unit": "nights"},
     ]),
     # Deliberately field-less: a collection can be just titles and prose, and the
     # page has to look composed with no badges, no columns, no images.
