@@ -486,10 +486,22 @@
 
 {# A location's own words: its label if it has one, else the address. The
    coordinates are STORED but never shown — "37.7734, -122.4222" is not what a
-   place is called; they're what the map link is built from. #}
-{% macro loc_text(v) %}
-{%- if v is mapping %}{{ v.label or v.address or ((v.lat ~ ', ' ~ v.lng) if 'lat' in v else '') }}
-{%- else %}{{ v }}{% endif -%}
+   place is called; they're what the map link is built from.
+
+   `full` shows the STREET ADDRESS instead, and it's the ITEM page's reading (it
+   rides on `linkify`, the same "this row isn't a link" condition): in a list or
+   a card the label is the whole point — a column of full addresses is
+   unscannable, and "TARZANA" places a restaurant well enough to pick it out of
+   twenty — but on the page for that ONE place, the label alone is the map link
+   refusing to say where it goes, and the address is the fact you came for. The
+   label still leads when it says something the address doesn't ("Grand Central
+   Market · 317 S Broadway…"); when the address already contains it — the common
+   case, a neighbourhood label over the street it's on — it's dropped rather than
+   printed twice. #}
+{% macro loc_text(v, full=False) %}
+{%- if v is not mapping %}{{ v }}
+{%- elif full and v.address %}{{ (v.label ~ ' · ') if v.label and v.label|lower not in v.address|lower }}{{ v.address }}
+{%- else %}{{ v.label or v.address or ((v.lat ~ ', ' ~ v.lng) if 'lat' in v else '') }}{% endif -%}
 {% endmacro %}
 
 {# Where a location points. Coordinates win when they're there (a pin lands
@@ -525,7 +537,7 @@
      href="{{ f.value }}" target="_blank" rel="noopener">{{ url_host(f.value) }}</a>
 {%- elif f.type == 'location' and linkify and f.value is mapping -%}
   <a class="badge hover:border-black hover:text-black transition-colors gap-1" title="{{ f.label }}"
-     href="{{ loc_url(f.value) }}" target="_blank" rel="noopener">{{ icon('map-pin', 'w-3 h-3') }}{{ loc_text(f.value) }}</a>
+     href="{{ loc_url(f.value) }}" target="_blank" rel="noopener">{{ icon('map-pin', 'w-3 h-3') }}{{ loc_text(f.value, full=True) }}</a>
 {%- else -%}
 <span class="badge{% if f.type == 'location' %} gap-1{% endif %}{% if f.type == 'bool' and f.value is not sameas true %} opacity-50{% endif %}" title="{{ f.label }}">
   {%- if f.type == 'number' and not f.unit %}{{ f.label }}: {% endif -%}

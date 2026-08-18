@@ -613,7 +613,11 @@ working.
   thing: a `url` as its host (a real link on the item page), a `bool` as a checked
   label ("✓ Cooked" — the one type whose value can't speak without its name), a
   `rating` as stars (0-5 in halves, no configurable max), a `multiselect` as one
-  badge per value, a `location` as a pin that opens a maps app. The five beyond
+  badge per value, a `location` as a pin that opens a maps app (showing its
+  short label in lists and cards, but the FULL STREET ADDRESS on the item
+  page — where the pin is the one thing on screen and a label alone won't
+  say where it goes; the label still leads when the address doesn't already
+  contain it). The five beyond
   the original four extend the SHAPE axis the model already owns rather than
   adding a collection-level "kind": a kind would fight both existing axes and
   make a collection state its shape twice — this is the same move `unit` on a
