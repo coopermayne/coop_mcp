@@ -46,6 +46,10 @@
 
   /* ---------- state (persisted) ----------------------------------------- */
   var STORE_KEY = 'graphs.state';
+  // `ex` is deliberately NOT restored from storage: the panel always opens on
+  // the lift trained most recently, so a visit starts on what you just did
+  // rather than on whatever you happened to be looking at weeks ago. The
+  // cycler/dropdown still move freely within the visit.
   var state = { range: 90, panels: { weight: true, drinks: true, exercises: true },
                 ex: null, metric: 'top' };
   try {
@@ -53,7 +57,6 @@
     if (saved && typeof saved === 'object') {
       if (typeof saved.range === 'number') state.range = saved.range;
       if (saved.panels) state.panels = Object.assign(state.panels, saved.panels);
-      if (saved.ex != null) state.ex = saved.ex;
       if (saved.metric) state.metric = saved.metric;
     }
   } catch (e) {}
