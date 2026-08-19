@@ -1,0 +1,69 @@
+#!/bin/bash
+#
+# Blocks a commit that would put private data in this PUBLIC repo.
+#
+# The repo is public by choice, so the rule is: code is public, life is not.
+# Everything below is checked against the STAGED content only.
+#
+# NOTE ON THE NAME LIST: real names are deliberately NOT in this file — writing
+# them into a tracked denylist would commit the very strings it's meant to keep
+# out. Personal patterns live in `.git/private-denylist` (one regex per line),
+# which is inside .git and therefore never committed. Structural checks below
+# need no list and work for anyone who clones this.
+#
+# Install:  git config core.hooksPath .githooks
+# Bypass (deliberate, rare):  git commit --no-verify
+set -uo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+fail=0
+flag() { echo "  ✗ $1"; fail=1; }
+
+echo "pre-commit: scanning staged changes for private data…"
+
+# --- 1. files that should never be committed at all ---------------------------
+bad_files=$(printf '%s\n' "$staged" | grep -E '(^|/)\.env$|\.env\.[^e]|\.db$|\.db\.bak$|\.sqlite3?$|/private-|id_rsa|\.pem$' || true)
+[ -n "$bad_files" ] && flag "file that must not be committed: $(echo $bad_files | tr '\n' ' ')"
+
+# --- 2. credentials in the diff ----------------------------------------------
+# Placeholders (sk-ant-..., YOUR-TOKEN, $VAR, empty) are allowed through.
+creds=$(git diff --cached -U0 | grep -E '^\+' | \
+  grep -nEi 'sk-ant-[A-Za-z0-9_-]{10,}|GOCSPX-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}|ghp_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|(BACKUP_TOKEN|WIDGET_TOKEN|SESSION_SECRET|CLIENT_SECRET|API_KEY|PASSWORD)\s*[:=]\s*["'"'"']?[A-Za-z0-9@#%^&*!._-]{6,}' | \
+  grep -vE '\$\{?[A-Z_]+|YOUR|<[a-z]|example|placeholder|\.\.\.|os\.environ|getenv' || true)
+[ -n "$creds" ] && flag "possible credential:
+$(echo "$creds" | head -3 | sed 's/^/      /')"
+
+# --- 3. real-world identifiers -------------------------------------------------
+# Real emails (the repo's own placeholders are fine), and absolute home paths.
+emails=$(git diff --cached -U0 | grep -E '^\+' | \
+  grep -oEi '[a-z0-9._%+-]+@[a-z0-9.-]+\.(com|net|org|io|dev)' | \
+  grep -viE 'example\.com|noreply|you@|your@|user@|tom@work\.com|@users\.noreply|coopermayne@' || true)
+[ -n "$emails" ] && flag "real-looking email: $(echo $emails | tr '\n' ' ')"
+
+# NOTE: the [s] below is bracketed so this file does not match its own pattern.
+paths=$(git diff --cached -U0 | grep -E '^\+' | grep -oE '/User[s]/[a-zA-Z0-9._-]+' | sort -u || true)
+[ -n "$paths" ] && flag "absolute home path (use \$HOME or a __HOME__ placeholder): $(echo $paths | tr '\n' ' ')"
+
+# --- 4. personal denylist (local, never committed) ----------------------------
+DENY="$(git rev-parse --git-dir)/private-denylist"
+if [ -r "$DENY" ]; then
+  while IFS= read -r pat; do
+    [ -z "$pat" ] && continue
+    case "$pat" in \#*) continue ;; esac
+    hit=$(git diff --cached -U0 | grep -E '^\+' | grep -nEi -- "$pat" | head -2 || true)
+    [ -n "$hit" ] && flag "private pattern /$pat/ in staged diff:
+$(echo "$hit" | sed 's/^/      /')"
+  done < "$DENY"
+fi
+
+if [ $fail -ne 0 ]; then
+  cat <<'MSG'
+
+COMMIT BLOCKED — this repo is public; code is public, life is not.
+Fix the lines above, or if it's a false positive:  git commit --no-verify
+MSG
+  exit 1
+fi
+echo "  ✓ clean"
+exit 0

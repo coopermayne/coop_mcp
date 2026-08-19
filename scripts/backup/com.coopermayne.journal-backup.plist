@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily journal backup. Install:
+    sed -e "s|__REPO__|$(pwd)|g" -e "s|__HOME__|$HOME|g" \
+        scripts/backup/com.coopermayne.journal-backup.plist \
+        > ~/Library/LaunchAgents/com.coopermayne.journal-backup.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.coopermayne.journal-backup.plist
+
+  Committed with __REPO__/__HOME__ placeholders so no absolute home path lands in a
+  public repo; the sed fills them in for the installed copy.
+
+  Runs at 12:30 local, not overnight: this is a laptop that sleeps, and launchd
+  fires a missed StartCalendarInterval once on wake rather than at the scheduled
+  hour. Midday is simply when the lid is most often open. RunAtLoad also catches
+  the case where the machine was off for several days.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.coopermayne.journal-backup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/scripts/backup/journal-backup.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>   <integer>12</integer>
+        <key>Minute</key> <integer>30</integer>
+    </dict>
+    <key>RunAtLoad</key>        <true/>
+    <key>StandardOutPath</key>  <string>__HOME__/Library/Logs/journal-backup.launchd.log</string>
+    <key>StandardErrorPath</key><string>__HOME__/Library/Logs/journal-backup.launchd.log</string>
+    <key>ProcessType</key>      <string>Background</string>
+    <key>LowPriorityIO</key>    <true/>
+</dict>
+</plist>
