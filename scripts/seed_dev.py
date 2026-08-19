@@ -23,17 +23,21 @@ server.init_db()
 
 PEOPLE = [
     # (canonical_name, role, aliases, groups, summary)
-    ("Robin Vale",   "wife",              ["Robin", "Rob"],            ["Vale Family", "Wexler Family"], "Cooper's wife. Architecture background; teaches at a design school."),
-    ("Tom Wexler",      "father",            ["Dad", "Tom", "Pops"],       ["Wexler Family"],                 "Architect; lives in the coast."),
-    ("Ada Wexler",   "mother",            ["Mom", "Mama", "Ada"],    ["Wexler Family"],                 "Painter; teaches at an art college."),
-    ("Sam Wexler",      "brother",           ["Sam", "Sammy"],             ["Wexler Family"],                 "Lives in Brooklyn; works in product."),
-    ("Nina Vale",     "mother-in-law",     ["Nina"],                     ["Vale Family"],                 "Robin's mom; based in Berkeley."),
-    ("Karl Vale",     "father-in-law",     ["Karl"],                     ["Vale Family"],                 "Robin's dad; retired civil engineer."),
-    ("Theo Vale",       "brother-in-law",    ["Theo", "Theodore"],             ["Vale Family"],                 "Robin's brother; software at a fintech."),
-    ("Alex Chen",      "law school friend", ["Alex"],                     ["Friends"],                      "Met at law school; works at a nonprofit in Oakland."),
+    # INVENTED PERSONAS ONLY. This file is committed to a public repo, so no real
+    # names, relationships, employers or cities belong here — the seed's job is to
+    # exercise resolution (a wife, two parents, in-laws, alias matching), and a
+    # made-up cast does that just as well.
+    ("Robin Vale",     "wife",              ["Robin", "Rob"],             ["Vale Family", "Wexler Family"], "The user's wife. Architecture background; teaches part-time."),
+    ("Tom Wexler",     "father",            ["Dad", "Tom", "Pops"],       ["Wexler Family"],                "Architect; lives an hour up the coast."),
+    ("Ada Wexler",     "mother",            ["Mom", "Mama", "Ada"],       ["Wexler Family"],                "Painter; teaches at an art college."),
+    ("Sam Wexler",     "brother",           ["Sam", "Sammy"],             ["Wexler Family"],                "Lives out east; works in product."),
+    ("Nina Vale",      "mother-in-law",     ["Nina"],                     ["Vale Family"],                  "Robin's mom; lives in the bay."),
+    ("Karl Vale",      "father-in-law",     ["Karl"],                     ["Vale Family"],                  "Robin's dad; retired civil engineer."),
+    ("Theo Vale",      "brother-in-law",    ["Theo", "Theodore"],         ["Vale Family"],                  "Robin's brother; software at a fintech."),
+    ("Alex Chen",      "law school friend", ["Alex"],                     ["Friends"],                      "Met in law school; works at a nonprofit."),
     ("Maya Iyer",      "college friend",    ["Maya"],                     ["Friends"],                      "Climbing partner; works in product design."),
     ("Jordan Reese",   "neighbor",          ["Jordan"],                   ["Neighbors"],                    "Across-the-courtyard neighbor; has a beagle."),
-    ("Priya Shah",     "manager",           ["Priya"],                    ["Work"],                         "Engineering manager; ex-Stripe."),
+    ("Priya Shah",     "manager",           ["Priya"],                    ["Work"],                         "Engineering manager."),
     ("Dev Krishnan",   "engineer",          ["Dev"],                      ["Work"],                         "Backend lead on the platform team."),
     ("Chris Park",     "designer",          ["Chris"],                    ["Work"],                         "Design partner on the new onboarding flow."),
     ("Dr. Patel",      "doctor",            ["Dr. Patel", "Patel"],       ["Care"],                         "Primary care; quarterly checkups."),
@@ -74,11 +78,11 @@ d = apr5
 add(d, "Walked to the farmers market with Robin. Picked up strawberries and that olive bread she likes. Quiet morning, no plans.", ["Robin"])
 
 d = apr5 + timedelta(days=2)
-add(d, "Lunch with Alex in Oakland. He's thinking about leaving the nonprofit — burnout, mostly, plus the new ED is a mess. Walked along the lake after.", ["Alex"])
+add(d, "Lunch with Alex in across the bay. He's thinking about leaving the nonprofit — burnout, mostly, plus the new ED is a mess. Walked along the lake after.", ["Alex"])
 add(d, "Quick call with Priya about the Q2 roadmap. She wants to push the migration into May; I pushed back, we landed on staged rollout.", ["Priya"])
 
 d = apr5 + timedelta(days=4)
-add(d, "Dinner at Mom and Dad's. Sam was in town from Brooklyn — first time the three of us have been in the same room since Christmas. Mom made the lamb thing.", ["Mom", "Dad", "Sam"])
+add(d, "Dinner at Mom and Dad's. Sam was in town from out east — first time the three of us have been in the same room since Christmas. Mom made the lamb thing.", ["Mom", "Dad", "Sam"])
 
 # Week of Apr 12
 d = date(2026, 4, 13)
@@ -113,7 +117,7 @@ d = date(2026, 4, 28)
 add(d, "Hard conversation with Priya — Q2 priorities are slipping. I pushed for cutting the analytics revamp; she wants to keep it. Compromise: shrink scope.", ["Priya"])
 
 d = date(2026, 4, 30)
-add(d, "Sam called from Brooklyn — he might come out for a long weekend in late May. Apartment hunt is going badly.", ["Sam"])
+add(d, "Sam called from out east — he might come out for a long weekend in late May. Apartment hunt is going badly.", ["Sam"])
 
 # May
 d = date(2026, 5, 2)
@@ -517,7 +521,7 @@ NOTES = [
                          "before deciding — the north light in there kills anything cool.", None),
     ("Bike tune-up", "Rear derailleur is skipping under load in the 3 smallest cogs.", None),
     ("Gift ideas for Mom", "The Japanese pruning shears she kept picking up at the nursery.\n"
-                           "Backup: a print from the Otis faculty show.", None),
+                           "Backup: a print from the an art college faculty show.", None),
     ("That wine from Gjelina", "Nerello Mascalese, Etna. Ask them next time — the label was\n"
                                "hand-drawn, mostly white, with a mountain on it.", "wine"),
     ("Podcast rec from Dev", "Something about the history of container shipping. He said the\n"
