@@ -1058,7 +1058,27 @@ async def trainer(request: Request):
     client-side from the bootstrapped JSON so chat-driven and tap-driven changes share
     one render path (static/trainer.js)."""
     return page(request, "trainer.html", active="trainer",
-                plan=_with_bodyweight(data.active_plan()))
+                plan=_with_bodyweight(data.active_plan()),
+                # The Coaching popover wants the two apart: what the user actually
+                # WROTE goes in the textarea, the default is only a placeholder.
+                coaching=data.stored_coaching(),
+                coaching_default=server.DEFAULT_COACHING)
+
+
+@app.post("/trainer/profile")
+async def trainer_profile(request: Request):
+    """Save the /trainer page's Coaching popover — the user's own standing
+    instructions to the trainer (session size, tone, what to nudge). A website-only
+    write path through server.set_trainer_profile (never a FastMCP tool), the twin
+    of /food/targets: it writes the same settings.profile the model reads through
+    get_fitness_briefing, so what's typed here is what coaches the next session, on
+    the connector and the in-app chat alike, with nothing to redeploy.
+    Body: {coaching: str} — blank hands the default back."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    res = server.set_trainer_profile(body.get("coaching"))
+    code = 400 if isinstance(res, dict) and res.get("error") else 200
+    return JSONResponse(res, status_code=code)
 
 
 @app.get("/trainer/library")

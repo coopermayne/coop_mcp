@@ -867,8 +867,9 @@ working.
   lookup, deliberately not the model's FTS `notes_search`. The three
   judgment rules (capture first/file second; structure proposed, never imposed;
   fields stay few) live in the journal server `instructions`.
-- `settings` — generic JSON KV; holds `profile` (injury, split, goals) merged via
-  `update_profile` and surfaced by `get_fitness_briefing`, and `eating_profile`
+- `settings` — generic JSON KV; holds `profile` (injury, split, goals, and
+  `coaching`) merged via `update_profile` and surfaced by `get_fitness_briefing`,
+  and `eating_profile`
   (its journal-side twin: durable eating facts — goals, stats, coaching context —
   plus the one structured key `targets`, a flat {nutrient: number} dict of daily
   goals) merged via `intake_set_profile` and surfaced by `intake_summary`, so a new
@@ -908,6 +909,28 @@ working.
   rings read it: `nutrient_targets()` skips any override that isn't well-formed,
   so an unvalidated write reported success while the ring you were aiming at
   silently kept the old number, with nothing anywhere to say why.
+  **`profile.coaching` is the trainer's user-editable prompt**, and it's the
+  eating side's targets story told about prose. It holds the user's own standing
+  instructions about HOW to coach — session size, tone, what to nudge — and it has
+  the same two doors onto one copy: `update_profile` (the model, in chat) and
+  `server.set_trainer_profile` (the user, via `POST /trainer/profile` ← the
+  /trainer page's **Coaching** popover, a NON-tool website-only path like
+  `set_nutrient_targets`). Defaults live in code (`DEFAULT_COACHING`) and are
+  resolved on read by `_resolved_profile`, exactly as `nutrient_targets()` merges
+  over `data.NUTRIENT_TARGETS`; a blank save DROPS the key, so the default can be
+  handed BACK rather than only overwritten. Its two sentences (session sizing, the
+  weigh-in nudge) used to sit in `trainer_mcp`'s `instructions` — the wrong home,
+  for a reason worth keeping straight when the next knob comes along.
+  `instructions` is CONTRACT: the rotation policy, the closed catalog, the signed-
+  weight convention — rules that pair with tool code, belong in git, and must not
+  be editable from a textarea. These were PREFERENCE, the part the user wants to
+  tune between sessions. And the delivery differs: `instructions` reaches a
+  connector only at its initialize handshake, so an edit there needs a redeploy,
+  while the profile rides in on every `get_fitness_briefing` — the same text
+  landing on the connector and the in-app chat with nothing to restart. So the
+  instructions now POINT at the key (read it as instruction, not background; it
+  can't loosen the rules; it's the user's to edit) instead of restating what it
+  says.
 
 ## Matching (in `find_candidates` / `score_surface_against_alias`)
 

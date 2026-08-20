@@ -5,9 +5,39 @@
 
 <div class="flex items-center justify-between mb-8">
   <h1 class="text-2xl font-bold tracking-tight">Trainer</h1>
-  <a href="{{ base }}/trainer/library" aria-label="Exercise library" title="Exercise library" class="text-gray-400 hover:text-black transition-colors">
+  <div class="relative flex items-center gap-4">
+    {# The Coaching popover — the standing instructions the trainer reads at the top
+       of every session. It saves via POST /trainer/profile
+       (server.set_trainer_profile, a website-only path) into the same
+       settings.profile the model gets from get_fitness_briefing, so a preference
+       changed here is the one it coaches by next time — on the connector and the
+       in-app chat both, with nothing to redeploy. It's here, and not in the Python
+       string it used to live in, because this is the screen where you notice the
+       coaching is off. #}
+    <button id="coach-btn" type="button"
+            class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Coaching</button>
+    <a href="{{ base }}/trainer/library" aria-label="Exercise library" title="Exercise library" class="text-gray-400 hover:text-black transition-colors">
     <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
-  </a>
+    </a>
+    <div id="coach-pop" hidden
+         class="absolute right-0 top-7 z-20 w-80 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
+      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-3">How to coach me</p>
+      {# Placeholder, not value: the default has to read differently from a line you
+         wrote, and clearing the box has to hand it back rather than silence the
+         trainer. #}
+      <textarea id="coach-text" rows="9"
+                placeholder="{{ coaching_default }}"
+                class="w-full border border-gray-200 rounded-[4px] px-2 py-1.5 text-[13px] leading-snug text-gray-700">{{ coaching }}</textarea>
+      <p class="text-[11px] text-gray-400 mt-2 mb-3 leading-snug">
+        Read at the start of every session. Blank falls back to the default shown.
+        Preferences only — how you train is yours to set, but the rotation and the
+        exercise library stay under your control either way.
+      </p>
+      <p id="coach-err" hidden class="text-[11px] text-red-600 mb-3 leading-snug"></p>
+      <button id="coach-apply" type="button"
+              class="w-full px-3 py-2 border border-gray-200 text-gray-500 text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors">Save</button>
+    </div>
+  </div>
 </div>
 
 {# Plan card — rendered entirely by static/trainer.js from the bootstrapped JSON,
@@ -23,6 +53,43 @@
     plan here once one is started.
   </p>
 {% endif %}
+
+<script>
+// Coaching popover — the same shape as /food's Targets popover (click outside or
+// Escape to dismiss, Save then reload), minus the per-field validation: this is one
+// blob of prose, and the only thing the server can reject is a non-string.
+(function () {
+  var btn = document.getElementById('coach-btn'), pop = document.getElementById('coach-pop');
+  if (!btn) return;
+  var err = document.getElementById('coach-err');
+  function close() { pop.hidden = true; }
+  btn.addEventListener('click', function () { if (pop.hidden) pop.hidden = false; else close(); });
+  document.addEventListener('click', function (e) {
+    if (!pop.hidden && !pop.contains(e.target) && !btn.contains(e.target)) close();
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  document.getElementById('coach-apply').addEventListener('click', function () {
+    err.hidden = true;
+    fetch("{{ base }}/trainer/profile", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coaching: document.getElementById('coach-text').value })
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) {
+          err.textContent = (j && j.error) || 'Could not save that.';
+          err.hidden = false;
+          return;
+        }
+        location.reload();
+      });
+    }).catch(function () {
+      err.textContent = 'Could not reach the server.';
+      err.hidden = false;
+    });
+  });
+})();
+</script>
 
 <script src="{{ base }}/static/trainer.js"></script>
 {% endblock %}

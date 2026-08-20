@@ -326,6 +326,17 @@ def stored_targets_note() -> str:
     return note if isinstance(note, str) else ""
 
 
+def stored_coaching() -> str:
+    """Only the trainer `coaching` text the user actually WROTE, without the default
+    behind it — the /trainer popover needs the two apart for the same reason the
+    Targets popover does: text you chose belongs in the textarea, an inherited
+    default is only a placeholder, and clearing the box has to be able to hand it
+    back. The model reads the resolved version (server._resolved_profile)."""
+    with server.db() as conn:
+        text = server._get_profile(conn).get("coaching")
+    return text if isinstance(text, str) else ""
+
+
 def _day_nutrition(items: list) -> dict:
     """One day's intake, shaped for the templates: summed totals plus the item rows.
     Totals are SUMMED here from the item rows (server.intake_items) rather than read
