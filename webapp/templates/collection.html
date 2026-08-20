@@ -31,6 +31,17 @@
      The popup's link is an item link like any other on the page, so it goes back
      to inheriting; the attribution keeps a muted tone of its own below. */
   .leaflet-popup-content a { color: inherit; }
+  /* Our own country labels (see the wide-view block in the script). Styled as
+     the page's own small-caps label, not as map typography, since at these
+     zooms they ARE the page's furniture — and given no box, no border and no
+     pointer events, so they read as text lying on the map rather than as
+     something to click. */
+  .map-label {
+    background: none; border: 0; white-space: nowrap; pointer-events: none;
+    font-size: 9px; line-height: 1; letter-spacing: .12em; text-transform: uppercase;
+    color: #9ca3af; transform: translate(-50%, -50%);
+    transition: opacity .18s ease; }
+  html[data-theme="dark"] .map-label { color: #737373; }
   .leaflet-control-attribution { font-size: 10px; background: rgba(255,255,255,.8); }
   /* Dark theme swaps to CARTO's real dark basemap (see the tile URLs below)
      rather than inverting the light one — an inverted raster turns the water
@@ -288,6 +299,12 @@
 <script>
 (function () {
   var pins = JSON.parse(document.getElementById('map-pins').textContent || '[]');
+  {# Used by both the country labels and the pin popups, so it's declared
+     before either rather than beside one of them. #}
+  var esc = function (t) {
+    var d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML;
+  };
+
   {# minZoom 2 rather than Leaflet's 0: at zoom 1 the whole world is 512px tall
      and the pane is up to 560, so the map ends before its container does and
      the page shows a bald strip above the north pole. At 2 the world is 1024px
@@ -347,13 +364,101 @@
   fetch("{{ base }}/static/vendor/borders.geo.json")
     .then(function (r) { return r.json(); })
     .then(function (geo) {
-      var lines = L.geoJSON(geo, {
+      var lines = L.geoJSON(worldCopies(geo), {
+        renderer: L.canvas(),
         style: { color: BORDER[theme()], weight: 1, opacity: 0.85, fill: false,
                  interactive: false }
       }).addTo(map);
       map.__borders = lines;
     })
     .catch(function () {});
+
+  {# Three copies of the world, at a lap west, home, and a lap east.
+     Longitudes were normalized above so the pins sit in ONE continuous run,
+     which for a Pacific-spanning collection means the map is centered past
+     180 — and a border drawn at its literal longitude is then in a copy of
+     the world that's off-screen (this is exactly how the Americas lost their
+     outlines while Asia kept its). Tiles don't have the problem because a
+     raster layer wraps itself; a vector layer is drawn once, where you put it.
+     Three copies cover any view the minZoom-2 map can show, since at z2 the
+     whole world is one screen wide.
+
+     They go on a CANVAS renderer: 331 features times three is a thousand
+     paths, which is a lot of SVG nodes for a decoration and nothing at all
+     for a canvas. #}
+  function worldCopies(geo) {
+    var out = [];
+    [-360, 0, 360].forEach(function (dx) {
+      geo.features.forEach(function (f) {
+        out.push({ type: 'Feature', properties: {}, geometry: {
+          type: f.geometry.type,
+          coordinates: dx === 0 ? f.geometry.coordinates : offset(f.geometry.coordinates, dx)
+        }});
+      });
+    });
+    return { type: 'FeatureCollection', features: out };
+  }
+  function offset(c, dx) {
+    return (typeof c[0] === 'number') ? [c[0] + dx, c[1]]
+                                      : c.map(function (x) { return offset(x, dx); });
+  }
+
+  {# Country names for the WIDE view, drawn by us, because the basemap's own
+     labels are switched off below LABEL_ZOOM (they're the ones that arrive in
+     mixed scripts) — and a line drawing of borders with nothing named is a
+     puzzle rather than a map. Natural Earth again: its NAME field is the SHORT
+     English cartographic label ("China", "Dem. Rep. Congo", not the formal
+     "People's Republic of China"), and it carries LABEL_X/LABEL_Y — a point a
+     cartographer chose, not a centroid, so the name lands on the country
+     rather than in the bay it wraps around.
+
+     Which names appear at which zoom is NE's own MIN_LABEL, not a rule of
+     ours: 31 countries at z2, 104 at z3, 151 at z4, tuned by people who do
+     this for a living. That's the whole collision-avoidance strategy, and it's
+     better than anything we'd invent — the alternative is measuring label
+     boxes and hiding overlaps on every pan.
+
+     They stop at LABEL_ZOOM exactly where the basemap's own labels start, so
+     the two sets are never both on screen. 5KB, vendored, and silent on
+     failure like the borders. #}
+  var labelLayer = L.layerGroup().addTo(map);
+  var countryLabels = [];
+  fetch("{{ base }}/static/vendor/country-labels.json")
+    .then(function (r) { return r.json(); })
+    .then(function (rows) {
+      rows.forEach(function (row) {
+        var mk = L.marker([row[1], row[2]], {
+          interactive: false, keyboard: false,
+          icon: L.divIcon({ className: 'map-label', html: esc(row[0]),
+                            iconSize: [0, 0] })
+        });
+        mk.__min = row[3];
+        mk.__lat = row[1];
+        mk.__lng = row[2];
+        countryLabels.push(mk);
+      });
+      paintLabels();
+    })
+    .catch(function () {});
+
+  {# A label is a single point, so it doesn't need copies — it just needs to be
+     in the RIGHT copy: each one is placed in the lap nearest the current
+     centre, which is recomputed on every move for the same reason the borders
+     are tripled (see worldCopies). #}
+  function paintLabels() {
+    var z = map.getZoom(), on = z < LABEL_ZOOM, mid = map.getCenter().lng;
+    countryLabels.forEach(function (mk) {
+      var show = on && z >= mk.__min;
+      if (show) {
+        var lng = mk.__lng + 360 * Math.round((mid - mk.__lng) / 360);
+        mk.setLatLng([mk.__lat, lng]);
+        if (!labelLayer.hasLayer(mk)) labelLayer.addLayer(mk);
+      } else if (labelLayer.hasLayer(mk)) {
+        labelLayer.removeLayer(mk);
+      }
+    });
+  }
+  map.on('zoomend moveend', paintLabels);
 
   {# The theme toggle in the nav flips data-theme on <html> live, and the OS can
      flip it too on an un-pinned app, so the map watches the attribute rather
@@ -364,10 +469,6 @@
     labels.setUrl(LABELS[theme()]);
     if (map.__borders) map.__borders.setStyle({ color: BORDER[theme()] });
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-
-  var esc = function (t) {
-    var d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML;
-  };
 
   {# Longitudes go the SHORT way around before anything is fitted. A collection
      with a pin in California and one in Japan is a third of the globe across
