@@ -319,7 +319,15 @@ trustworthy:
     happens to say. Load it BEFORE THE FIRST LOG of a conversation, not just before
     answering a question: a session opens with "log a beer" far more often than with
     "how am I doing", and logging without it is how the coaching goes quietly missing
-    for a whole day. Fold in durable changes as they come up, like a person's summary."""
+    for a whole day. Fold in durable changes as they come up, like a person's summary.
+    The NUMBERS live in one place only — the profile's `targets`, which the user edits
+    on the /food page — so never write one into the profile's prose. A spelled-out
+    number is a second copy: the user changes the goal on the page, the sentence goes
+    on quoting the old one, and the two then say different things with nothing to
+    show which is current. Refer to a target by placeholder instead, "{calories}",
+    and the live number is substituted when you read the profile back. There are no
+    floors or ceilings anywhere, only targets; whether a number is one to reach or
+    stay under goes in `targets_note`, in words."""
 
 
 # Connector-ONLY (not in JOURNAL_CHAT_INSTRUCTIONS): a Claude conversation writes
@@ -2962,6 +2970,9 @@ def get_intake(days: int = 14, since: Optional[str] = None,
             "ORDER BY food_date DESC, position, id", (since, until),
         ).fetchall()
         prof = _get_eating_profile(conn)
+        # Prose comes back with its {nutrient} placeholders filled from the live
+        # targets, so a note about a goal can never quote a stale number.
+        prof = _render_profile(prof, _day_targets(conn))
     by_day: dict = {}
     for r in rows:
         by_day.setdefault(r["food_date"], []).append(r)
@@ -3117,6 +3128,86 @@ def _bad_targets(targets) -> Optional[str]:
     return None
 
 
+# The placeholder convention: prose in the eating profile refers to a target by
+# NAME, "{calories}", and the number is substituted at read time. This is the whole
+# fix for the mixed-messages problem — a note that spelled the number out was a
+# SECOND copy of it, and the /food popover could change the first one without ever
+# touching the second, silently. There is no LLM in this path: it is a regex and a
+# dict lookup.
+_TARGET_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _fmt_target(v) -> str:
+    """A target as prose reads it: 2000 not 2000.0, 1.5 kept as 1.5."""
+    return str(int(v)) if float(v) == int(v) else str(v)
+
+
+def _render_targets_prose(text: str, targets: dict) -> str:
+    """Substitute {nutrient} placeholders with the live numbers. A placeholder whose
+    nutrient has no target set renders as "(no target set)" rather than a number:
+    the server can't see the webapp's DISPLAY defaults (webapp/data.NUTRIENT_TARGETS),
+    and inventing one here would be exactly the second copy this convention exists to
+    prevent. An unknown name is left verbatim — _bad_targets_note rejects those at the
+    door, so anything that survives to a read is not ours to rewrite."""
+    if not isinstance(text, str) or "{" not in text:
+        return text
+    def sub(m):
+        k = m.group(1)
+        if k not in NUTRIENTS:
+            return m.group(0)
+        v = targets.get(k)
+        return _fmt_target(v) if v is not None else "(no target set)"
+    return _TARGET_PLACEHOLDER.sub(sub, text)
+
+
+def _render_profile(profile: dict, targets: dict) -> dict:
+    """The profile as the model should READ it: every prose value with its
+    placeholders filled from the current targets. The STORED blob keeps the
+    placeholders — that's the copy the popover edits and the one that can't go
+    stale."""
+    return {k: (_render_targets_prose(v, targets) if isinstance(v, str) else v)
+            for k, v in profile.items()}
+
+
+def _bad_targets_note(note) -> Optional[str]:
+    """Validate the one prose key with a second door — `targets_note`, edited from
+    the /food popover as well as by the model. Only the PLACEHOLDERS are checked, in
+    the actionable-error habit of _bad_targets/_bad_icon: a typo'd "{protien_g}"
+    would otherwise render verbatim in the model's context, looking like prose."""
+    if note is None:
+        return None
+    if not isinstance(note, str):
+        return f"targets_note must be a string, got {note!r}"
+    for k in _TARGET_PLACEHOLDER.findall(note):
+        if k not in NUTRIENTS:
+            near = max(NUTRIENTS,
+                       key=lambda n: jellyfish.jaro_winkler_similarity(k, n))
+            return (f"unknown nutrient {{{k}}} in targets_note — did you mean "
+                    f"{{{near}}}? The nutrients are {list(NUTRIENTS)}")
+    return None
+
+
+def _note_literals(note, targets: dict) -> list:
+    """ADVISORY (never blocking, like unfilled_fields/stranded): a bare number in the
+    note that EQUALS a current target is a second copy of it, which is how the note
+    and the popover came to disagree in the first place. Deterministic — it compares
+    the numbers actually stored, so it can't guess wrong about which is which."""
+    if not isinstance(note, str) or not targets:
+        return []
+    seen, out = set(), []
+    for tok in re.findall(r"\d[\d,]*(?:\.\d+)?", note):
+        try:
+            n = float(tok.replace(",", ""))
+        except ValueError:
+            continue
+        for k, v in targets.items():
+            if float(v) == n and tok not in seen:
+                seen.add(tok)
+                out.append(f"the note says {tok}, which is targets.{k} — "
+                           f"write {{{k}}} instead so it follows the number")
+    return out
+
+
 @mcp.tool(name="intake_set_profile", annotations=WRITE_IDEMPOTENT)
 def update_eating_profile(profile: dict) -> dict:
     """Merge fields into the stored eating profile (JSON) — the trainer profile's
@@ -3129,18 +3220,27 @@ def update_eating_profile(profile: dict) -> dict:
     key wholesale (read the current profile via intake_summary first), a key set to null
     is dropped, and unmentioned keys are preserved.
 
-    One key is structured: `targets` is a flat {nutrient: number} dict on the intake
+    Two keys are special. `targets` is a flat {nutrient: number} dict on the intake
     nutrient keys (calories, protein_g, carbs_g, fat_g, sodium_mg, fiber_g,
-    standard_drinks, water_oz) — daily targets, e.g.
-    {"targets": {"calories": 2100, "protein_g": 150, "water_oz": 88}}. Just the
-    number — there is no floor/ceiling flag anywhere, so when a target is really a
-    cap, or is informational only, SAY SO in the prose below, which is the half of
-    the profile you and the user can phrase freely. Everything else is free-form — keep durable coaching
-    facts here the way you'd keep them in a person's summary: e.g.
-    {"protein_floor_g": 120, "goal": "cut to 180 by December", "stats": "6'4\", 205",
-    "context": "on semaglutide — front-load protein, watch fiber + water"}.
+    standard_drinks, water_oz) — the daily goals, e.g.
+    {"targets": {"calories": 2100, "protein_g": 150, "water_oz": 128}}. It is the
+    SINGLE SOURCE OF TRUTH for every one of those numbers, and the user edits it on
+    the /food page. `targets_note` is its prose companion — direction and nuance, the
+    things a bare number can't say — and it has that same second door, so treat it as
+    the user's text and edit it sparingly.
+
+    NEVER WRITE A TARGET'S NUMBER INTO PROSE — see the server instructions for why.
+    Refer to one by placeholder, "{calories}", and the current number is substituted
+    when you read the profile back. Everything else is free-form: keep durable coaching
+    facts here the way you'd keep them in a person's summary, e.g.
+    {"goal": "cut to 180 by December", "stats": "6'4\", 205",
+     "context": "on semaglutide — front-load protein, watch fiber + water",
+     "targets_note": "calories and sodium are numbers to stay under; protein and "
+                     "water are numbers to reach. Flag a day well under {calories}."}
     """
     if (err := _bad_targets(profile.get("targets"))):
+        return {"error": err}
+    if (err := _bad_targets_note(profile.get("targets_note"))):
         return {"error": err}
     with db() as conn:
         current = _get_eating_profile(conn)
@@ -3151,12 +3251,16 @@ def update_eating_profile(profile: dict) -> dict:
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
             (json.dumps(current),),
         )
-    return {"profile": current}
+        stale = _note_literals(current.get("targets_note"), _day_targets(conn))
+    out = {"profile": current}
+    if stale:
+        out["stale_prose"] = stale
+    return out
 
 
-def set_nutrient_targets(targets: dict) -> dict:
-    """Set the daily nutrient targets from the WEBSITE — the /food page's Targets
-    popover. A NON-tool, website-only path like set_collection_display and
+def set_nutrient_targets(targets: dict, note: Optional[str] = None) -> dict:
+    """Set the daily nutrient targets, and the note that explains them, from the
+    WEBSITE — the /food page's Targets popover. A NON-tool, website-only path like set_collection_display and
     set_archived: never a FastMCP tool, so no connector can reach it.
 
     It writes the SAME place update_eating_profile does (settings →
@@ -3176,11 +3280,20 @@ def set_nutrient_targets(targets: dict) -> dict:
     Everything else in the profile — goals, stats, coaching context — is untouched.
 
     There is no direction here, and none in the webapp either: a target is just a
-    target. Say a number is really a cap in the profile's prose, where a nuance
-    ("2,000 is the aim, 2,200 the ceiling") can be phrased rather than encoded."""
+    target. Which numbers are caps, which are floors, which are informational — that
+    is what `note` is for, and it rides along on this same save BECAUSE the screen
+    where you change a number is the screen that should show the sentence describing
+    it. Editing them apart is precisely how the note came to contradict the numbers.
+    Unlike the per-nutrient merge above, `note` REPLACES targets_note wholesale (it is
+    one blob of prose, not a dict) and "" drops it — the same hand-it-back gesture a
+    blank number input makes. Pass None to leave it untouched. It may refer to a
+    target by placeholder, "{calories}"; it must not spell the number out, and
+    `stale_prose` in the return says so when it does."""
     if not isinstance(targets, dict):
         return {"error": f"targets must be a {{nutrient: number}} dict, got {targets!r}"}
     if (err := _bad_targets({k: v for k, v in targets.items() if v is not None})):
+        return {"error": err}
+    if (err := _bad_targets_note(note)):
         return {"error": err}
     with db() as conn:
         profile = _get_eating_profile(conn)
@@ -3195,12 +3308,21 @@ def set_nutrient_targets(targets: dict) -> dict:
             profile["targets"] = cur
         else:
             profile.pop("targets", None)
+        if note is not None:
+            if note.strip():
+                profile["targets_note"] = note.strip()
+            else:
+                profile.pop("targets_note", None)
         conn.execute(
             """INSERT INTO settings(key, value) VALUES ('eating_profile', ?)
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
             (json.dumps(profile),),
         )
-    return {"targets": cur}
+        stale = _note_literals(profile.get("targets_note"), cur)
+    out = {"targets": cur, "note": profile.get("targets_note", "")}
+    if stale:
+        out["stale_prose"] = stale
+    return out
 
 
 # --------------------------------------------------------------------------- #

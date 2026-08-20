@@ -474,9 +474,11 @@ working.
   could turn a ring clay at 90g of fat while the chat read it as 120% of a goal and
   encouraged more. Rather than plumb direction to a fifth consumer, it's gone: one
   fill color, every nutrient, arc capped at a full circle. Where a target really is
-  a cap ("2,000 is the aim, 2,200 the ceiling"; "carbs are informational"), that
-  goes in the eating profile's PROSE, which can phrase the nuance a boolean was
-  flattening — and which both the rings' owner and the model already read. An
+  a cap, or is informational only, that goes in the eating profile's `targets_note`
+  — edited in this page's own Targets popover, alongside the numbers it describes —
+  which can phrase the nuance a boolean was flattening, and which both the rings'
+  owner and the model already read. In WORDS, never repeating the figure: the note
+  writes `{calories}` and the live number is substituted on read (see `settings`). An
   untargeted nutrient (fat, until you give it one) still draws a DASHED track with
   no arc: an empty solid ring would read as "0% of goal" rather than "no goal set".
   A tapped
@@ -823,13 +825,34 @@ working.
   conversation needs no pasted preamble. The webapp's rings read `targets` too
   (`data.nutrient_targets()` merges it over the display defaults) — one source of
   truth for goals, and one number per nutrient with no direction attached. That's also why
-  `targets` alone has a SECOND writer, `server.set_nutrient_targets` (a NON-tool,
+  `targets` has a SECOND writer, `server.set_nutrient_targets` (a NON-tool,
   website-only path behind `/food`'s Targets popover — see `intake_items` above):
   the goals are the one part of the profile the user reads on a screen and wants to
   change there, and it writes this same key rather than keeping a display copy.
   It merges per nutrient (null drops back to the default) instead of replacing the
-  key wholesale, since a form submits every box at once. The rest of the blob
-  is free-form, but `targets` is VALIDATED (`_bad_targets`, shared by both writers:
+  key wholesale, since a form submits every box at once.
+  **A number lives in `targets` and NOWHERE ELSE — the profile's PROSE must never
+  spell one out.** It was learned the expensive way: with direction deliberately
+  moved out of the schema and into prose ("a target is just a target"), nothing
+  stopped the prose from restating the NUMBER as well — so the blob ended up
+  carrying `targets.protein_g` 140, a `targets_note` saying "150 is a floor, 120 the
+  hard minimum", and a fake-structured `protein_floor_g` of 120: three answers to one
+  question, only the first of which the popover could change. Prose refers to a
+  target by PLACEHOLDER instead — `{calories}` — and `_render_targets_prose`
+  substitutes the live number into every string value on the way OUT
+  (`intake_summary`'s `profile`); the stored blob keeps the placeholder, so the
+  sentence follows the target instead of quoting it. A placeholder for an unset
+  nutrient renders `(no target set)` rather than a number, because the server can't
+  see the webapp's DISPLAY defaults (`data.NUTRIENT_TARGETS`) and inventing one here
+  would be the second copy all over again. Two guards, both deterministic and shared
+  by both doors: `_bad_targets_note` REJECTS an unknown placeholder (closest-name
+  suggestion, the `_bad_icon` habit), and `_note_literals` returns `stale_prose`
+  ADVISORY (never blocking, like `unfilled_fields`) when the note spells out a number
+  a target already carries. So `targets_note` is the one PROSE key with two doors
+  too — the popover edits it in the same round trip as the numbers, on purpose: the
+  note and the numbers drifted apart precisely because changing one never showed you
+  the other. There are no floors or ceilings anywhere, only targets. The rest of the
+  blob is free-form, but `targets` is VALIDATED (`_bad_targets`, shared by both writers:
   a real nutrient key,
   a positive number, closest-name suggestion on a typo) precisely BECAUSE the
   rings read it: `nutrient_targets()` skips any override that isn't well-formed,

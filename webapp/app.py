@@ -938,7 +938,10 @@ async def food(request: Request, since: str = ""):
                 has_more=res["has_more"], next_since=res["next_since"],
                 # The Targets popover wants the two apart: what's actually SET
                 # goes in the inputs, the defaults are only placeholders.
-                defaults=data.NUTRIENT_TARGETS, stored=data.stored_targets())
+                defaults=data.NUTRIENT_TARGETS, stored=data.stored_targets(),
+                # The note rides along with the numbers it explains — see
+                # server.set_nutrient_targets on why they're edited together.
+                targets_note=data.stored_targets_note())
 
 
 @app.post("/food/targets")
@@ -949,11 +952,13 @@ async def food_targets(request: Request):
     still enters through the MCP tools alone. Targets aren't content — they're the
     same kind of fact as a collection's Display prefs, except they live where the
     model can read them too, since it coaches against the same numbers.
-    Body: {targets: {nutrient: number|null}} — null hands a goal back to its
-    default. Outside the journal lock, like the page itself."""
+    Body: {targets: {nutrient: number|null}, note?: str} — null hands a goal back to
+    its default, and `note` is the prose explaining them (targets_note), saved in the
+    same round trip so the two can't be edited apart. Outside the journal lock, like
+    the page itself."""
     from fastapi.responses import JSONResponse
     body = await request.json()
-    res = server.set_nutrient_targets(body.get("targets"))
+    res = server.set_nutrient_targets(body.get("targets"), body.get("note"))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 

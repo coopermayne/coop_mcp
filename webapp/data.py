@@ -315,6 +315,17 @@ def stored_targets() -> dict:
         return server._day_targets(conn)
 
 
+def stored_targets_note() -> str:
+    """The prose that explains the targets — direction, nuance, what a bare number
+    can't say. Edited in the same /food popover as the numbers, deliberately: the
+    note and the numbers drifted apart precisely because changing one never showed
+    you the other. Returned RAW, with its {nutrient} placeholders unresolved, since
+    the popover edits the template, not the rendering of it."""
+    with server.db() as conn:
+        note = server._get_eating_profile(conn).get("targets_note")
+    return note if isinstance(note, str) else ""
+
+
 def _day_nutrition(items: list) -> dict:
     """One day's intake, shaped for the templates: summed totals plus the item rows.
     Totals are SUMMED here from the item rows (server.intake_items) rather than read
