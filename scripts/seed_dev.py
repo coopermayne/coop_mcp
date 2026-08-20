@@ -380,10 +380,12 @@ print("profile updated.")
 # Collections + items
 #
 # Breadth over volume: the point is to exercise the RENDERING, so between them
-# these four collections cover every field type (text/number/date/select), all
-# three views, grouped and ungrouped, every image size, items with and without a
-# featured image, and declared fields left unfilled. Plus loose inbox notes, so
-# /collections has something in its bottom half.
+# these four collections cover text/number/date/select/location, all four views
+# (including the map, which only Trip ideas can offer), grouped and ungrouped,
+# every image size, items with and without a featured image, and declared fields
+# left unfilled — including a place-less trip, so the map view has something to
+# report as unplottable instead of only ever showing a full set of pins. Plus
+# loose inbox notes, so /collections has something in its bottom half.
 #
 # Idempotent: collections are looked up by name and items by (collection, title),
 # so re-running edits in place rather than stacking duplicates.
@@ -407,12 +409,18 @@ COLLECTIONS = [
         {"key": "finished", "label": "Finished", "type": "date"},
         {"key": "rating", "label": "Rating", "type": "number"},
     ]),
+    # The location field is here rather than anywhere else because this is the
+    # collection that gets asked a geographic question ("what's near where I'll
+    # be"), which is what the map view answers. Coordinates are REQUIRED on the
+    # type — an address alone can't be plotted — and these came from
+    # server.geocode_place, i.e. the same lookup the model uses.
     ("Trip ideas", "Places to go when there's a week free.", "plane", [
         {"key": "region", "label": "Region", "type": "select",
          "options": ["California", "Southwest", "Pacific NW", "Mexico", "Japan", "Europe"]},
         {"key": "season", "label": "Best season", "type": "select",
          "options": ["Spring", "Summer", "Fall", "Winter"]},
         {"key": "nights", "label": "Nights", "type": "number", "unit": "nights"},
+        {"key": "place", "label": "Place", "type": "location"},
     ]),
     # Deliberately field-less: a collection can be just titles and prose, and the
     # page has to look composed with no badges, no columns, no images.
@@ -476,18 +484,19 @@ ITEMS = [
      "Recommended by Maya. Haven't decided whether I'm up for it.", None),
 
     # -- Trip ideas: the cards view, so mostly photos.
-    ("Trip ideas", "Lost Coast traverse", {"region": "California", "season": "Fall", "nights": 3},
+    ("Trip ideas", "Lost Coast traverse", {"region": "California", "season": "Fall", "nights": 3, "place": {"label": "Shelter Cove", "address": "Shelter Cove, Humboldt County, California", "lat": 40.038019, "lng": -124.055745}},
      "Shelter Cove to Mattole, 25 miles, and the tide table decides the schedule rather than\n"
      "you. Need to book the shuttle well ahead.", "lostcoast"),
-    ("Trip ideas", "Oaxaca for Día de Muertos", {"region": "Mexico", "season": "Fall", "nights": 6},
+    ("Trip ideas", "Oaxaca for Día de Muertos", {"region": "Mexico", "season": "Fall", "nights": 6, "place": {"label": "Oaxaca de Juárez", "address": "Oaxaca de Juárez, Oaxaca, Mexico", "lat": 17.096587, "lng": -96.720782}},
      "Everyone says go, and everyone says book a year out. Mezcal, mole, the markets.", "oaxaca"),
-    ("Trip ideas", "Kiso Valley walk", {"region": "Japan", "season": "Spring", "nights": 5},
+    ("Trip ideas", "Kiso Valley walk", {"region": "Japan", "season": "Spring", "nights": 5, "place": {"label": "Tsumago-juku", "address": "Tsumago-juku, Nagiso, Kiso District, Nagano, Japan", "lat": 35.576991, "lng": 137.595421}},
      "Magome to Tsumago on the old post road, staying in ryokan along the way. The easy version\n"
      "of a walking trip — bags get forwarded.", "kiso"),
-    ("Trip ideas", "Olympic peninsula loop", {"region": "Pacific NW", "season": "Summer", "nights": 4},
+    ("Trip ideas", "Olympic peninsula loop", {"region": "Pacific NW", "season": "Summer", "nights": 4, "place": {"label": "Rialto Beach", "address": "Rialto Beach, La Push, Clallam County, Washington", "lat": 47.92891, "lng": -124.641079}},
      "Hoh rainforest, Rialto Beach, hot springs. Rent something with a real roof.", "olympic"),
-    ("Trip ideas", "Marfa", {"region": "Southwest", "season": "Spring", "nights": 3},
+    ("Trip ideas", "Marfa", {"region": "Southwest", "season": "Spring", "nights": 3, "place": {"label": "Marfa", "address": "Marfa, Presidio County, Texas 79843", "lat": 30.311762, "lng": -104.023146}},
      "Chinati, the lights, and not much else, which is the point.", "marfa"),
+    # No `place`: the map names what it can't plot rather than quietly dropping it.
     ("Trip ideas", "Puglia in the shoulder season", {"region": "Europe", "nights": 8},
      "Masseria, orecchiette, nobody there in October. Season left blank because May works too.", "puglia"),
 
@@ -545,7 +554,11 @@ server.set_collection_display("Recipes", view="cards", image_size="medium",
                               sort_by="title", sort_dir="asc", show_body=True)
 server.set_collection_display("Reading", view="table", group_by="status",
                               sort_by="title", sort_dir="asc", image_size="small")
-server.set_collection_display("Trip ideas", view="list", group_by="region",
+# Trip ideas opens on the MAP — the one collection carrying a location field,
+# and the only way to see that view without touching a popover. Its grouping
+# and sort are still set, so switching back to list in the popover shows the
+# grouped stack (the map ignores both, by design).
+server.set_collection_display("Trip ideas", view="map", group_by="region",
                               image_size="medium", show_body=True, sort_by="title")
 server.set_collection_display("Sayings", view="list", image_size="off", show_body=True)
 print("display prefs set.")

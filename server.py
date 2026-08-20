@@ -23,9 +23,13 @@ import json
 import os
 import re
 import sqlite3
+import ssl
+import time
+import urllib.error
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 import icons as icon_set   # generated Lucide subset; see scripts/build_icon_set.py
@@ -79,9 +83,12 @@ ALLOWED_EMAILS = {
 # assume the worst (destructiveHint defaults to TRUE), so `get_briefing` and
 # `delete_record` would look equally dangerous.
 #
-# openWorldHint is False everywhere: this server touches one local SQLite file and
-# nothing else — no network, no external service. That's the architectural no-LLM
-# rule showing up in the protocol.
+# openWorldHint is False everywhere but ONE tool: this server touches one local
+# SQLite file and nothing else — no network, no external service. That's the
+# architectural no-LLM rule showing up in the protocol. The exception is
+# `notes_geocode` (READ_EXTERNAL below), which asks OpenStreetMap what an address
+# is at; it's flagged honestly rather than hidden, because a client can't tell a
+# local lookup from a remote one by reading prose.
 #
 # NOTE: hints are advisory metadata, NOT enforcement. The real guard is
 # AllowlistMiddleware; nothing here restricts what a tool can do.
@@ -94,6 +101,11 @@ WRITE = {"destructiveHint": False, "idempotentHint": False, "openWorldHint": Fal
 WRITE_IDEMPOTENT = {"destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 # Removes or overwrites data that can't be recovered from the call itself.
 DESTRUCTIVE = {"destructiveHint": True, "idempotentHint": True, "openWorldHint": False}
+# The one tool that leaves the machine: a read whose answer comes from someone
+# else's server (see notes_geocode). Still a candidate generator — the MODEL picks
+# which candidate is the place meant — so it keeps the architectural split; it just
+# doesn't get to claim a closed world.
+READ_EXTERNAL = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True}
 
 
 class MentionLink(TypedDict):
@@ -162,10 +174,10 @@ class CollectionField(TypedDict):
     have to be stated here in prose:
       - multiselect → a non-empty list of strings, each one of the field's own
         `options` (["vegetarian", "quick"]).
-      - location → {"label"?: str, "address"?: str, "lat"?: number,
-        "lng"?: number}, carrying at least an address or BOTH lat and lng. The
-        server can't geocode, so the coordinates are yours to supply from what
-        you know; an address alone is a complete value when you don't.
+      - location → {"label"?: str, "address"?: str, "lat": number,
+        "lng": number}. lat/lng are REQUIRED — the app plots these on a map, and
+        an address alone has nowhere to go. Supply the coordinates from what you
+        know, or call notes_geocode with the address and pick a candidate.
     The rest are what they sound like: url is a full http(s) URL, bool a real
     JSON true/false, rating a number 0-5 in halves."""
     key: str
@@ -3483,7 +3495,10 @@ SORTABLE_TYPES = ("text", "number", "date", "select", "rating", "bool")
 RATING_MAX = 5
 # How the webapp lays a collection out. Webapp-only: it lives in the `display`
 # JSON and the model never sets it (see set_collection_display).
-COLLECTION_VIEWS = ("list", "table", "cards")
+# `map` is the one view a collection can be INELIGIBLE for: it needs somewhere to
+# put the pins, so it's offered (and accepted) only when the collection declares a
+# location field. The other three work on anything.
+COLLECTION_VIEWS = ("list", "table", "cards", "map")
 # Below-exact-but-close on a collection name: block creation and surface the
 # near-match instead (the create_collection "did you mean?" — same idea as
 # EX_CONFIDENT: a wrong-but-confident auto-create is worse than one question).
@@ -3556,36 +3571,40 @@ def _is_http_url(v) -> bool:
 
 
 def _bad_location(k: str, v) -> Optional[str]:
-    """Check one `location` value. A place is {label?, address?, lat?, lng?} and
-    must carry AT LEAST an address or a lat/lng pair: the server can't geocode
-    (no LLM, no network — see the architectural rule), so the coordinates come
-    from the MODEL's own knowledge, and an address on its own is a complete
-    answer when it hasn't got them."""
+    """Check one `location` value. A place is {label?, address?, lat, lng} and
+    the COORDINATES ARE REQUIRED: the webapp plots a collection of places on a
+    map (the `map` view), and a value with only an address is a place the page
+    can't put anywhere — it silently drops off the map it was the whole point of.
+    An address is still worth carrying (the item page shows it, and it's what a
+    human reads), but it isn't a location on its own.
+
+    The server can't geocode inside this check (that would put a network call on
+    the write path, and capture must never block on someone else's server), so
+    the coordinates come from the MODEL — from its own knowledge, or from
+    `notes_geocode`, which asks OpenStreetMap for candidates and lets the model
+    pick. Same split as everywhere: the lookup generates candidates, the model
+    decides which one is the place the user meant."""
     if not isinstance(v, dict):
         return (f"data[{k!r}] must be a location object like "
-                '{"label": "Zuni Café", "address": "1658 Market St, San Francisco", '
-                '"lat": 37.7734, "lng": -122.4222}, got ' + repr(v))
+                '{"label": "Zuni Caf\u00e9", "address": "1658 Market St, San Francisco", '
+                '"lat": 37.7734, "lng": -122.4216}, got ' + repr(v))
     if bad := [j for j in v if j not in ("label", "address", "lat", "lng")]:
         return (f"data[{k!r}]: unknown location keys {sorted(bad)}; a location "
                 "carries only label, address, lat, lng")
     for j in ("label", "address"):
         if j in v and not isinstance(v[j], str):
             return f"data[{k!r}].{j} must be a string, got {v[j]!r}"
-    has_ll = "lat" in v or "lng" in v
-    if has_ll:
-        # lat/lng are a PAIR — half a coordinate points at nothing.
-        if not ("lat" in v and "lng" in v):
-            return f"data[{k!r}] has only one of lat/lng — send both or neither"
-        for j, lim in (("lat", 90), ("lng", 180)):
-            x = v[j]
-            if isinstance(x, bool) or not isinstance(x, (int, float)):
-                return f"data[{k!r}].{j} must be a number, got {x!r}"
-            if not -lim <= x <= lim:
-                return f"data[{k!r}].{j} must be between {-lim} and {lim}, got {x!r}"
-    if not (v.get("address") or has_ll):
-        return (f"data[{k!r}] needs an `address` or a lat/lng pair — a label alone "
-                "isn't a place the app can point at; supply the coordinates you "
-                "know, or just the address if you don't")
+    for j, lim in (("lat", 90), ("lng", 180)):
+        if j not in v:
+            return (f"data[{k!r}] needs both lat and lng — the app plots these on "
+                    "a map, and an address alone has nowhere to go. Supply the "
+                    "coordinates if you know them, or call notes_geocode with the "
+                    "address and pick the right candidate.")
+        x = v[j]
+        if isinstance(x, bool) or not isinstance(x, (int, float)):
+            return f"data[{k!r}].{j} must be a number, got {x!r}"
+        if not -lim <= x <= lim:
+            return f"data[{k!r}].{j} must be between {-lim} and {lim}, got {x!r}"
     return None
 
 
@@ -3720,7 +3739,9 @@ def set_collection_display(name: str, view: Optional[str] = None,
     never surfaces in tool returns.
 
     All of it lives in the webapp-only `display` JSON: `view` (list|table|cards
-    — this used to be a model-written `display_hint` column, but its guess was
+    — plus `map`, which plots the items' location field and is refused on a
+    collection that hasn't got one; this used to be a model-written
+    `display_hint` column, but its guess was
     overwritten the first time the popover was opened, so presentation is now
     the browser's alone), hidden_fields (declared field keys to leave off the
     table columns / list badges / card text),
@@ -3751,9 +3772,16 @@ def set_collection_display(name: str, view: Optional[str] = None,
         if not row:
             return {"error": f"no collection named {name!r}", "candidates": cands}
         disp = _coll_display(row)
-        if view is not None:
-            disp["view"] = view
         coll_fields = _coll_fields(row)
+        if view is not None:
+            # The map view needs pins. A collection with no location field would
+            # render an empty world map and look broken, so it's refused here
+            # rather than left to the template to shrug at.
+            if view == "map" and not any(g.get("type") == "location"
+                                         for g in coll_fields):
+                return {"error": f"can't use the map view on {row['name']!r}: it "
+                                 "has no location field to plot"}
+            disp["view"] = view
         keys = {f["key"] for f in coll_fields}
         ftypes = {f["key"]: f.get("type", "text") for f in coll_fields}
         if hidden_fields is not None:
@@ -3972,10 +4000,11 @@ def save_collection(name: str, description: Optional[str] = None,
     source, the restaurant's site); `bool` is a real JSON true/false and reads as
     a checked label ("✓ Cooked"), the one field whose value can't speak without
     its name; `rating` is 0-5 in halves and draws stars; `location` is a place —
-    {label?, address?, lat?, lng?} — that becomes a pin linking out to a map, so
-    a saved restaurant is one tap from directions. YOU supply the coordinates
-    from what you know (the server can't geocode); an address with no lat/lng is
-    a perfectly good value, a label with neither is not.
+    {label?, address?, lat, lng} — that becomes a pin linking out to a map, and
+    a collection whose items carry one can be laid out as a MAP of every pin.
+    lat/lng are required (an address alone can't be plotted): supply the
+    coordinates from what you know, or call notes_geocode with the address and
+    pick the candidate that's the place the user meant.
     Grouping and sorting follow the type too: url and location can be neither,
     and a multiselect groups but doesn't sort.
 
@@ -4264,6 +4293,116 @@ def list_items(collection: Optional[str] = None, limit: int = 50,
     return {"collection": name or "inbox",
             "items": [_item_brief(r, name, max_chars) for r in rows],
             "count": len(rows)}
+
+
+# --------------------------------------------------------------------------- #
+# Geocoding — the one outward-facing lookup.
+#
+# A `location` field's value REQUIRES coordinates (see _bad_location), because the
+# collection page can lay a collection out as a MAP and an address alone is a place
+# with nowhere to go. The model usually knows the coordinates of a named place; when
+# it doesn't, this asks OpenStreetMap's Nominatim and hands back CANDIDATES — it
+# does NOT pick one and it does NOT write anything. That's the same shape as
+# find_candidates for people and _match_exercises for lifts: the server produces the
+# shortlist, the model decides which one the user meant, so the no-LLM rule holds.
+#
+# Nominatim is free and keyless. Its usage policy asks for an identifying
+# User-Agent and at most one request a second, which is why _geocode_wait throttles
+# and GEOCODE_UA is settable — a single user typing addresses is nowhere near it,
+# but a loop over an imported list would be.
+#
+# Deliberately NOT on the write path: geocoding inside _bad_location would put
+# somebody else's server between the user and a saved note, and capture must never
+# block on that. A failed lookup here is a returned {"error": ...} the model can
+# work around by supplying the coordinates itself.
+# --------------------------------------------------------------------------- #
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+GEOCODE_UA = os.environ.get(
+    "GEOCODE_USER_AGENT", "personal-journal-app/1.0 (self-hosted single-user journal)")
+GEOCODE_TIMEOUT = 8
+_geocode_last = 0.0
+
+
+def _geocode_ssl():
+    """TLS trust for the one outbound call. A stock macOS python has no system
+    CA bundle wired into ssl, so a dev run fails CERTIFICATE_VERIFY_FAILED while
+    the Docker image (which does) works — a difference that would only ever show
+    up on the machine the code is written on. certifi rides in with fastmcp's
+    httpx; if it's somehow absent, fall back to the platform default rather than
+    disabling verification."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _geocode_wait() -> None:
+    """Hold the caller to Nominatim's one-request-a-second policy."""
+    global _geocode_last
+    gap = time.monotonic() - _geocode_last
+    if gap < 1.0:
+        time.sleep(1.0 - gap)
+    _geocode_last = time.monotonic()
+
+
+@mcp.tool(name="notes_geocode", annotations=READ_EXTERNAL)
+def geocode_place(query: str, limit: int = 5) -> dict:
+    """Look up the coordinates of an address or place name, for a `location`
+    field's lat/lng. THE ONE TOOL HERE THAT LEAVES THE MACHINE: it asks
+    OpenStreetMap, so it's slower than everything else and can fail.
+
+    Use it when you're SAVING a place and don't already know where it is. If you
+    do know the coordinates — most famous places, most cities — just use them;
+    this is the fallback for a street address you can't place, not a required
+    step. It never writes anything: pass the numbers you pick to notes_save /
+    notes_file / notes_update yourself.
+
+    It returns CANDIDATES, plural, and choosing is your job — "Union Station" is a
+    dozen cities and the first result is not automatically the right one. Give it
+    everything you know ("1658 Market St, San Francisco" beats "Market St"), read
+    each candidate's `address` back against what the user said, and if none of
+    them is clearly the place they meant, ASK rather than pinning the item to a
+    plausible wrong city.
+
+    If the lookup fails or comes back empty you get an `error`/empty list, not an
+    exception — fall back to coordinates you know, or save the note without the
+    location field and add it later. Never invent coordinates to get a save
+    through: a made-up pin is worse than a missing one, because the map shows it
+    with the same confidence as a real one."""
+    q = (query or "").strip()
+    if not q:
+        return {"error": "geocode needs an address or place name"}
+    url = f"{NOMINATIM_URL}?" + urlencode(
+        {"q": q, "format": "jsonv2", "limit": max(1, min(int(limit or 5), 10)),
+         "addressdetails": 0})
+    req = urllib.request.Request(url, headers={"User-Agent": GEOCODE_UA,
+                                               "Accept": "application/json"})
+    try:
+        _geocode_wait()
+        with urllib.request.urlopen(req, timeout=GEOCODE_TIMEOUT,
+                                    context=_geocode_ssl()) as r:
+            raw = json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        return {"error": f"geocode lookup failed ({type(e).__name__}: {e}). Use "
+                         "coordinates you know, or save without the location.",
+                "query": q}
+    out = []
+    for h in raw if isinstance(raw, list) else []:
+        try:
+            lat, lng = float(h["lat"]), float(h["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append({"name": h.get("name") or "", "address": h.get("display_name") or "",
+                    "kind": h.get("type") or "", "lat": round(lat, 6),
+                    "lng": round(lng, 6)})
+    if not out:
+        return {"query": q, "candidates": [], "count": 0,
+                "note": "nothing found — try a fuller address, or a nearby "
+                        "landmark, or supply coordinates you know"}
+    return {"query": q, "candidates": out, "count": len(out),
+            "attribution": "\u00a9 OpenStreetMap contributors"}
 
 
 @mcp.tool(name="notes_search", annotations=READ_ONLY)

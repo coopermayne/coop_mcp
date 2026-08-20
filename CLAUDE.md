@@ -52,6 +52,25 @@ the split rather than breaking it: the model still does the judgment, `server.py
 the deterministic data layer with no LLM inside it. So `anthropic` in
 `webapp/requirements.txt` is expected — it lives on the client side of the line.
 
+**One tool leaves the machine, and it's still the same split.** `notes_geocode`
+asks OpenStreetMap's Nominatim what an address is at, because a `location` field
+now REQUIRES coordinates (the map view can't plot an address) and the model
+doesn't always know them. It fits the rule rather than bending it: it returns
+CANDIDATES and never picks — exactly `find_candidates` for people and
+`_match_exercises` for lifts — and it never writes, so the model passes the
+numbers it chose to `notes_save`/`notes_file` itself. Two deliberate limits.
+It is NOT on the write path: geocoding inside `_bad_location` would put someone
+else's server between the user and a saved note, and capture must never block on
+that; a failed lookup is a returned `{"error": …}` the model works around with
+coordinates it knows. And it's the ONE tool with `openWorldHint: True`
+(`READ_EXTERNAL`) — flagged honestly, because a client can't tell a local lookup
+from a remote one by reading prose. Nominatim is free and keyless; the policy
+(identifying User-Agent, ≤1 req/sec) is why `_geocode_wait` throttles and
+`GEOCODE_USER_AGENT` is settable. TLS trust goes through `certifi` when it's
+importable — a stock macOS python has no CA bundle wired into `ssl`, so without
+it dev fails `CERTIFICATE_VERIFY_FAILED` while the Docker image works, a
+difference that only ever shows up on the machine the code is written on.
+
 The same split governs the **trainer** and **drinking** features: the server stores
 workouts/drinks and computes deterministic aggregates (muscle recency, drink streaks),
 but deciding the next weight, what to rest, which exercises to program, and how to coach
@@ -146,8 +165,10 @@ There is no exercise-selection or progression logic in the server either.
   annotation sets — `READ_ONLY`, `WRITE`, `WRITE_IDEMPOTENT`, `DESTRUCTIVE` — so a client
   can tell `get_briefing` from `delete_record` without reading prose. This matters because
   the MCP default for `destructiveHint` is TRUE: an unannotated tool looks dangerous.
-  `openWorldHint` is False everywhere (one local SQLite file, no network — the no-LLM rule
-  showing up in the protocol). They're advisory metadata; the real guard is
+  `openWorldHint` is False everywhere but one (one local SQLite file, no network — the
+  no-LLM rule showing up in the protocol); the exception is `notes_geocode`, which wears
+  a fifth set, `READ_EXTERNAL`, because it asks OpenStreetMap (see the architectural-rule
+  section). They're advisory metadata; the real guard is
   `AllowlistMiddleware`.
 - **Connector tool names are `domain_verb`, and the domain prefix is load-bearing.**
   The journal connector carries two unrelated domains at once — the eating log and
@@ -220,7 +241,9 @@ There is no exercise-selection or progression logic in the server either.
   only by the authenticated user, never by the journal/trainer connectors. Off unless
   `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
-  `chat.js`, manifest); the app is an installable PWA. Styles are COMPILED
+  `chat.js`, manifest); the app is an installable PWA. `static/vendor/`
+  holds the third-party JS/CSS, self-hosted rather than CDN'd: `marked`, uPlot,
+  and `leaflet.min.js`/`.css` (loaded ONLY on a collection's map view). Styles are COMPILED
   Tailwind (`static/tailwind.css`, checked in — no CDN, the app styles itself
   offline); after adding/removing classes in templates or static JS, rebuild:
   `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
@@ -273,7 +296,9 @@ only). Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, if the trainer ho
 set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
-(show the logout control in the UI), and `BACKUP_TOKEN` (strong random token that unlocks
+(show the logout control in the UI), `GEOCODE_USER_AGENT` (the User-Agent
+`notes_geocode` sends to Nominatim; a generic default, override to identify your
+deploy), and `BACKUP_TOKEN` (strong random token that unlocks
 the headless backup download at `GET /export/journal.db` for a cron `curl` — bearer /
 `X-Backup-Token` / `?token=`; unset = browser-session-only; see README "Backup &
 restore"), and `WIDGET_TOKEN` (unlocks `GET /api/today.json` — today's nutrient sums
@@ -623,12 +648,17 @@ working.
   the original four extend the SHAPE axis the model already owns rather than
   adding a collection-level "kind": a kind would fight both existing axes and
   make a collection state its shape twice — this is the same move `unit` on a
-  number already made. There is deliberately NO MAP LIBRARY: a location renders
-  as a labelled chip linking out. Its coordinates are STORED all the same
-  (`{label?, address?, lat?, lng?}`, needing at least an address or a lat/lng
-  pair), so a real map view later is a pure webapp change — and the model
-  supplies the coordinates from its own knowledge, since the server can't
-  geocode (no LLM, no network) and an address alone is a complete value.
+  number already made. A location is `{label?, address?, lat, lng}` and the
+  COORDINATES ARE REQUIRED (`_bad_location`), because a collection of places
+  renders as a MAP (the fourth `display.view` — see the map-view row below) and
+  an address alone is a place with nowhere to go. The model supplies them from
+  its own knowledge, or from `notes_geocode` (below). Values written before that
+  rule keep an address and no numbers: they render everywhere else, the map
+  names them under itself as unplottable (`data._item_pins` returns them rather
+  than dropping them silently), and they re-validate — i.e. start failing with
+  an actionable error — the next time their item is written. There is no
+  back-fill UPDATE and no boot-time geocode: fixing one is a model call, not a
+  migration.
   Which types can be arranged by lives in `GROUPABLE_TYPES`/`SORTABLE_TYPES`,
   once, read by both the `set_collection_display` gate and the Display popover's
   two selects (`data.groupable_fields`/`sortable_fields`) so the UI can't offer
@@ -749,7 +779,7 @@ working.
   only `item.html`, whose rows aren't links, passes True, and it's the only page
   where a url or a location is clickable.
   The one thing the browser writes is PRESENTATION: each collection page has a
-  **Display** popover (`view` = list|table|cards, webapp-only: it was a model-written
+  **Display** popover (`view` = list|table|cards|map, webapp-only: it was a model-written
   `display_hint` column until that guess proved worthless — the first popover
   visit overwrote it, so one concern had two homes and only the browser's ever
   won. `init_db` folds the old column into the JSON once and it's dormant after,
@@ -804,6 +834,26 @@ working.
   the right edge while content remains past it — so it doubles as the "that's the
   end" signal — and any page can opt in by wrapping a scroller and dropping the
   span in.
+  The fourth view, `map`, is the only one a collection can be INELIGIBLE for:
+  it needs a `location` field to have anything to plot, so the popover offers it
+  only when `data.can_map` (and `set_collection_display` refuses it otherwise —
+  the same one-rule-two-users pairing as `groupable_fields`/`sortable_fields`,
+  with a third `and c.can_map` in the template so a collection whose location
+  field is later dropped falls back to the list rather than rendering an empty
+  world). It's the app's ONE network dependency: **Leaflet** is vendored into
+  `static/vendor/` like `marked` and uPlot, but the TILES come from
+  OpenStreetMap over the wire — free, keyless, and the one thing on any page
+  that won't draw offline (the rest of the page still does). Loaded only on the
+  map view, since it's 145KB no other view has a use for. Pins are
+  `L.circleMarker`s, not Leaflet's default teardrop: the default is a PNG pair
+  that would have to be vendored and recolored, an SVG circle is styled like
+  everything else, and dark mode is the standard `invert + hue-rotate` on the
+  raster tiles. GROUPING IS IGNORED here and that's structural, not a gap — a
+  band is a horizontal rule with a stack under it, and a map has no stacks; the
+  popover still shows the arrangement controls because they're what the other
+  three views will use when you switch back. Pins are built from the FLAT item
+  list, never the groups, since a multiselect grouping fans one item into
+  several buckets and the same restaurant twice on a map is just a thicker dot.
   A `checklist` hint
   was dropped (it rendered exactly like `list`, and an item has no done-state to
   check), migrated to `list` in `init_db`; `cards` earns its place the way that

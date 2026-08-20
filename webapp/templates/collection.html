@@ -2,6 +2,43 @@
 {% import "macros.html" as m with context %}
 {% block title %}{{ c.name }} · Journal{% endblock %}
 
+{# Leaflet loads ONLY on the map view — it's 145KB of JS and a stylesheet, and
+   every other collection page has no use for it. Vendored (static/vendor) like
+   marked and uPlot: nothing here is fetched from a CDN. The TILES are the one
+   exception in the whole app, and a deliberate one — they come from
+   OpenStreetMap over the network, so the map pane is the only thing on any page
+   that needs the internet to draw. Everything else on this page still renders
+   offline; the pane just sits empty. #}
+{% block head %}
+{% if c.display.view == 'map' and c.can_map %}
+<link rel="stylesheet" href="{{ base }}/static/vendor/leaflet.min.css">
+<style>
+  /* Leaflet ships its own look; these pull it back to the app's — square-ish
+     corners, the gray-200 border, Inter in the popups. */
+  .leaflet-container { font: inherit; background: #f5f5f5; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+    border-radius: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.15); }
+  .leaflet-popup-content { margin: 0.75rem 0.9rem; line-height: 1.4; }
+  /* Leaflet colors every link inside the map its own blue (.leaflet-container a).
+     The popup's link is an item link like any other on the page, so it goes back
+     to inheriting; the attribution keeps a muted tone of its own below. */
+  .leaflet-popup-content a { color: inherit; }
+  .leaflet-control-attribution { font-size: 10px; background: rgba(255,255,255,.8); }
+  /* Dark theme: OSM has no dark tiles at this price, so the raster is inverted
+     and hue-rotated back — the standard trick. Land goes dark, water stays
+     blue-ish, labels stay readable. */
+  html[data-theme="dark"] .leaflet-container { background: #171717; }
+  html[data-theme="dark"] .leaflet-tile {
+    filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9); }
+  html[data-theme="dark"] .leaflet-popup-content-wrapper,
+  html[data-theme="dark"] .leaflet-popup-tip { background: #171717; color: #fafafa; }
+  html[data-theme="dark"] .leaflet-control-attribution {
+    background: rgba(10,10,10,.8); color: #737373; }
+  html[data-theme="dark"] .leaflet-control-attribution a { color: #a3a3a3; }
+</style>
+{% endif %}
+{% endblock %}
+
 {# A group band is a TOGGLE. Grouping turns a long collection into a few named
    stacks, and the point of naming them is being able to put the ones you're not
    looking at away — a 40-recipe collection grouped by cuisine still scrolls like
@@ -45,8 +82,11 @@
       {# No icon picker here: the glyph is the MODEL's (collections_save's `icon`),
          not a display pref — this popover is layout only. #}
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">View</p>
+      {# `map` is offered only when there's something to plot (c.can_map — the
+         collection declares a location field), the same "don't offer what the
+         save will refuse" rule the Group by / Sort by selects follow. #}
       <div class="space-y-1.5 mb-4">
-        {% for h in ['list', 'table', 'cards'] %}
+        {% for h in (['list', 'table', 'cards', 'map'] if c.can_map else ['list', 'table', 'cards']) %}
         <label class="flex items-center gap-2 cursor-pointer capitalize">
           <input type="radio" name="disp-view" value="{{ h }}" class="accent-black"
                  {% if c.display.view == h %}checked{% endif %}>
@@ -207,6 +247,110 @@
 </div>
 <span class="hscroll-cue"></span>
 </div>
+
+{% elif c.display.view == 'map' and c.can_map %}
+{# 'map' — the collection AS its geography. The other three views arrange items
+   into rows; this one puts them where they are, which is the only arrangement
+   that answers "what's near where I'll be". Requires a location field (the
+   Display popover only offers it then, and set_collection_display refuses it
+   otherwise) — and the `and c.can_map` here is the third guard, so a collection
+   whose location field is later dropped falls back to the list instead of
+   rendering an empty world.
+
+   GROUPING IS IGNORED here, deliberately: a group band is a horizontal rule with
+   a stack under it, and a map has no stacks. Sorting is moot too. The Display
+   popover still shows both — they're what the other three views will use when
+   you switch back — they just don't apply to this one.
+
+   Pins are CIRCLES, not Leaflet's default teardrop: the default is a PNG pair
+   that would have to be vendored and recolored, while a circleMarker is an SVG
+   the page can style like everything else. #}
+<div id="map" class="border border-gray-200 rounded-[4px] overflow-hidden"
+     style="height:min(70vh,560px)"></div>
+{# Items the map can't place. Coordinates are required on a location field now,
+   so these are values written before that rule (or an item with no place at
+   all). Named rather than counted — "3 items aren't shown" tells you there's a
+   problem without telling you which one to fix. #}
+{% if c.unplottable %}
+<p class="mt-3 text-xs text-gray-400">
+  Not on the map (no coordinates):
+  {% for t in c.unplottable %}{{ t }}{% if not loop.last %} · {% endif %}{% endfor %}
+</p>
+{% endif %}
+<script id="map-pins" type="application/json">{{ c.pins | tojson }}</script>
+<script src="{{ base }}/static/vendor/leaflet.min.js"></script>
+<script>
+(function () {
+  var pins = JSON.parse(document.getElementById('map-pins').textContent || '[]');
+  {# minZoom 2 rather than Leaflet's 0: at zoom 1 the whole world is 512px tall
+     and the pane is up to 560, so the map ends before its container does and
+     the page shows a bald strip above the north pole. At 2 the world is 1024px
+     — taller than the pane can ever be. #}
+  var map = L.map('map', { scrollWheelZoom: false, minZoom: 2 });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+  }).addTo(map);
+
+  var esc = function (t) {
+    var d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML;
+  };
+
+  {# Longitudes go the SHORT way around before anything is fitted. A collection
+     with a pin in California and one in Japan is a third of the globe across
+     the Pacific and two thirds the other way, but a bounds built from raw
+     longitudes only knows the second: it zooms out to the entire world and
+     centers on the Atlantic nobody is flying over. So find the widest EMPTY arc
+     of longitude, treat the data as running the other way around from its far
+     edge, and push the pins that fall before that edge a lap east. Leaflet is
+     happy with a longitude past 180 — the tile layer wraps — and both the fit
+     and the markers use the shifted numbers, so the pins land in the copy of
+     the world the map is actually showing. Single-pin and single-hemisphere
+     collections come out unchanged; this only bites when the dateline is the
+     shorter route. #}
+  var cut = -180;
+  if (pins.length > 1) {
+    var lngs = pins.map(function (p) { return p.lng; }).sort(function (a, b) { return a - b; });
+    var gap = -1;
+    lngs.forEach(function (lng, i) {
+      var next = (i + 1 < lngs.length) ? lngs[i + 1] : lngs[0] + 360;
+      if (next - lng > gap) { gap = next - lng; cut = next; }
+    });
+  }
+  var shift = function (lng) { return lng < cut ? lng + 360 : lng; };
+  {# ...then slide the whole set back to the nearest normal lap, so the numbers
+     Leaflet gets stay near [-180, 180) instead of drifting a lap or two east
+     (two pins at 17 and 137 must not become 377 and 497 just because the empty
+     arc happened to start behind them). A uniform offset changes nothing about
+     the shape of the fit. #}
+  var laps = pins.length > 1
+    ? Math.floor((Math.min.apply(null, pins.map(function (p) { return shift(p.lng); })) + 180) / 360)
+    : 0;
+
+  var latlngs = [];
+  pins.forEach(function (p) {
+    p.lng = shift(p.lng) - laps * 360;
+    latlngs.push([p.lat, p.lng]);
+    var html = '<a class="font-medium underline underline-offset-2" href="'
+      + "{{ base }}/item/" + p.item_id + '">' + esc(p.title) + '</a>';
+    if (p.field) html += '<div class="mt-1 text-[10px] uppercase tracking-widest text-gray-400">' + esc(p.field) + '</div>';
+    if (p.address || p.place) html += '<div class="mt-1 text-xs text-gray-500">' + esc(p.address || p.place) + '</div>';
+    L.circleMarker([p.lat, p.lng], {
+      radius: 7, weight: 2, color: '#0a0a0a', fillColor: '#fafafa', fillOpacity: 1
+    }).addTo(map).bindPopup(html);
+  });
+
+  {# One pin has no bounds to fit — Leaflet would zoom to street level and show
+     a single dot in a featureless block, so it gets a neighbourhood zoom
+     instead. No pins at all still needs a view or Leaflet throws. #}
+  if (latlngs.length > 1) map.fitBounds(latlngs, { padding: [40, 40] });
+  else if (latlngs.length === 1) map.setView(latlngs[0], 14);
+  else map.setView([20, 0], 2);
+  {# Scroll-wheel zoom is off so the page still scrolls past the map on a
+     laptop; clicking in turns it on, which is the usual bargain. #}
+  map.on('click', function () { map.scrollWheelZoom.enable(); });
+})();
+</script>
 
 {% elif c.display.view == 'cards' %}
 {# 'cards' — the classic grid: picture on top, text under it. The one view where

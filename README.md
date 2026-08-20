@@ -564,6 +564,37 @@ Note `WEB_BASE_URL` (not `PUBLIC_URL`) — the webapp uses standard browser OAut
 from the MCP server's OAuth-provider flow, so its env vars don't collide if you run both
 in one Coolify project.
 
+## Places on a map
+
+A collection whose items carry a `location` field can be laid out as a **map** — a
+fourth option in the collection page's Display popover, next to list / table / cards.
+It's offered only when there's a location field to plot, and refused server-side
+otherwise. Pins are the items; clicking one opens its title, address and a link to the
+item page. Grouping and sorting don't apply to it (a map has no rows to band).
+
+Two things worth knowing:
+
+- **This is the only part of the app that needs the internet to draw.** Everything
+  else — fonts, styles, `marked`, uPlot — is self-hosted on purpose. The map's
+  [Leaflet](https://leafletjs.com) is vendored into `webapp/static/vendor/` like the
+  rest, but its **tiles** come from OpenStreetMap over the network. Free, no key, no
+  account; offline the pane just sits empty while the rest of the page renders.
+- **A `location` value requires coordinates.** `{label, address}` alone can't be put
+  anywhere, so `lat`/`lng` are now mandatory on the field. The model usually knows
+  them; when it doesn't, **`notes_geocode`** asks OpenStreetMap's Nominatim and returns
+  *candidates* for the model to choose from — the same "server shortlists, model
+  decides" split as person matching. It's the one tool with `openWorldHint: true`, and
+  it never writes: the model passes the numbers it picked to `notes_save`/`notes_file`.
+
+Values saved before this rule keep their address and no coordinates. They still
+render everywhere else; the map lists them under itself as "Not on the map", and
+they re-validate (i.e. start failing with an actionable error) the next time their
+item is written — which is the prompt to geocode them.
+
+Nominatim is keyless but asks for an identifying User-Agent and at most one request a
+second; the server throttles itself and sends a generic one you can override with
+`GEOCODE_USER_AGENT`. Nothing here costs money.
+
 ## Tools
 
 Split across two connectors and the app's own chat. The **journal** server

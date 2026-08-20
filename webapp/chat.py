@@ -507,6 +507,8 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
         summary = "Deleted a note"
     elif name in ("notes_get", "notes_list", "notes_search"):
         summary = "Looked up notes"
+    elif name == "notes_geocode":
+        summary = f"Located {g('query')}" if g("query") else "Looked up a place"
     elif name == "collections_save":
         href = "/collections"
         nm = g("name")

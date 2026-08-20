@@ -1018,6 +1018,54 @@ def collections_overview() -> dict:
     return {"collections": colls, "notes": notes}
 
 
+def _coords(v) -> tuple[float, float] | None:
+    """A location value's lat/lng, or None if it hasn't got a usable pair.
+
+    Coordinates are REQUIRED on a location field now (server._bad_location), but
+    values written before that rule are still in the DB with an address and no
+    numbers — and they only re-validate when their item is next written. So the
+    map treats a coordinate-less place as unplottable rather than assuming one:
+    it names those items under the map instead of dropping them silently, which
+    is how you find out there's something to fix."""
+    if not isinstance(v, dict):
+        return None
+    lat, lng = v.get("lat"), v.get("lng")
+    if any(isinstance(x, bool) or not isinstance(x, (int, float))
+           for x in (lat, lng)):
+        return None
+    return (float(lat), float(lng))
+
+
+def _item_pins(items: list[dict], loc_fields: list[dict]) -> tuple[list[dict], list[str]]:
+    """(pins, unplottable titles) for the map view.
+
+    Built from the FLAT item list, not the groups: a multiselect grouping fans one
+    item into several buckets, and the same restaurant twice on a map is just a
+    thicker dot. An item with two location fields is two pins — they're two
+    different places, and the pin says which field it came from.
+
+    Grouping is ignored by the map for the same reason it can't be honoured: the
+    bands are a vertical arrangement of a list, and a map has no rows to put
+    them in."""
+    pins, unplottable = [], []
+    for it in items:
+        placed = False
+        for f in loc_fields:
+            v = it["data_map"].get(f["key"])
+            ll = _coords(v)
+            if not ll:
+                continue
+            placed = True
+            pins.append({"item_id": it["item_id"], "title": it["title"],
+                         "lat": ll[0], "lng": ll[1],
+                         "place": (v.get("label") or v.get("address") or ""),
+                         "address": v.get("address") or "",
+                         "field": f["label"] if len(loc_fields) > 1 else ""})
+        if not placed:
+            unplottable.append(it["title"])
+    return pins, unplottable
+
+
 def collection_page(name: str) -> dict | None:
     """One collection with its items, newest-updated first, or None.
 
@@ -1068,8 +1116,15 @@ def collection_page(name: str) -> dict | None:
     for g in groups:
         g["rows"] = _sorted_items(g["rows"], display["sort_by"],
                                   display["sort_dir"] == "desc", ftypes)
+    loc_fields = [f for f in fields if f.get("type") == "location"]
+    pins, unplottable = _item_pins(items, loc_fields) if loc_fields else ([], [])
     return {"name": c["name"], "description": c["description"] or "",
             "fields": visible,
+            # The map view's data, and whether the Display popover may offer it
+            # at all: a collection with no location field has nothing to plot,
+            # which server.set_collection_display also refuses (one rule, two
+            # users — the same pairing as groupable_fields/sortable_fields).
+            "can_map": bool(loc_fields), "pins": pins, "unplottable": unplottable,
             "icon": c["icon"] or server.icon_set.DEFAULT_ICON,
             "all_fields": fields, "display": display,
             # What the Display popover may OFFER, so its two selects can't
