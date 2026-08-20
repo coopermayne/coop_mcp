@@ -841,14 +841,47 @@ working.
   with a third `and c.can_map` in the template so a collection whose location
   field is later dropped falls back to the list rather than rendering an empty
   world). It's the app's ONE network dependency: **Leaflet** is vendored into
-  `static/vendor/` like `marked` and uPlot, but the TILES come from
-  OpenStreetMap over the wire — free, keyless, and the one thing on any page
-  that won't draw offline (the rest of the page still does). Loaded only on the
-  map view, since it's 145KB no other view has a use for. Pins are
-  `L.circleMarker`s, not Leaflet's default teardrop: the default is a PNG pair
-  that would have to be vendored and recolored, an SVG circle is styled like
-  everything else, and dark mode is the standard `invert + hue-rotate` on the
-  raster tiles. GROUPING IS IGNORED here and that's structural, not a gap — a
+  `static/vendor/` like `marked` and uPlot, but the TILES come over the wire —
+  free, keyless, and the one thing on any page that won't draw offline (the
+  rest of the page still does). Loaded only on the map view, since it's 145KB
+  no other view has a use for. Pins are `L.circleMarker`s, not Leaflet's
+  default teardrop: the default is a PNG pair that would have to be vendored
+  and recolored, while an SVG circle is styled like everything else.
+
+  The basemap is **CARTO Positron** (OSM data, CARTO's style) rather than OSM's
+  own standard tiles, and all three reasons came out of looking at the same
+  view in both. It's already the page's palette — near-white land, gray line
+  work — where the standard style is beige-and-blue and only goes gray under a
+  filter that muddies it. Its labels are ENGLISH worldwide (CHINA, JAPAN,
+  GERMANY) where the standard style prints each country's own name (中国, 日本,
+  Deutschland), which is right for a world map and wrong for one person's list
+  of places. And it draws country borders at all. Dark mode swaps to the same
+  map's DARK build, not an `invert()` of the light one — inverting turns the
+  water muddy brown and the labels grey-on-grey. A `grayscale(1)` takes the
+  last blue out of the water; it must NOT be paired with a contrast boost,
+  since the borders are LIGHT gray and more contrast pushes them to white,
+  erasing the very thing the zoomed-out view is short of.
+
+  Two layers, not one: the LABELS are a separate tile layer that switches on at
+  zoom 5. Zoomed out, Positron's text is neither ours nor English — continents
+  come through in mixed scripts (亚洲, AMÉRICA, "AMÉRICA DO SUL;AMÉRICA DEL
+  SUR" as a single label) — and none of it is what this map is for. So the wide
+  view is pure line drawing and the words arrive at the zoom where they start
+  being country and street names.
+
+  Country borders are OUR line drawing on top, not the basemap's, because the
+  basemap's fade as you zoom OUT — exactly the view where an outline is the
+  only thing saying what you're looking at. Natural Earth's 110m LAND
+  boundaries (public domain), stripped of every property and rounded to 3
+  decimals: 77KB, 20KB over the wire, vendored like everything else. Land
+  borders only — coastlines are the basemap's job, and drawing our own over
+  them would double every shoreline. Fetched (so it caches across collections)
+  and added before the pins so markers sit on top; a failed fetch is silent on
+  purpose, since the map is usable without the outlines and a missing
+  decoration must not take the pins down with it. The theme is watched with a
+  MutationObserver rather than read once at load: the nav's toggle flips
+  `data-theme` live, and a map that read it at startup would sit white on a
+  dark page until reload. GROUPING IS IGNORED here and that's structural, not a gap — a
   band is a horizontal rule with a stack under it, and a map has no stacks; the
   popover still shows the arrangement controls because they're what the other
   three views will use when you switch back. Pins are built from the FLAT item

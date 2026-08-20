@@ -577,8 +577,17 @@ Two things worth knowing:
 - **This is the only part of the app that needs the internet to draw.** Everything
   else — fonts, styles, `marked`, uPlot — is self-hosted on purpose. The map's
   [Leaflet](https://leafletjs.com) is vendored into `webapp/static/vendor/` like the
-  rest, but its **tiles** come from OpenStreetMap over the network. Free, no key, no
-  account; offline the pane just sits empty while the rest of the page renders.
+  rest, but its **tiles** come over the network. Free, no key, no account; offline
+  the pane just sits empty while the rest of the page renders.
+- **The style is deliberately plain.** The basemap is CARTO Positron (OpenStreetMap
+  data) rather than OSM's own tiles: near-white land and gray line work instead of
+  beige-and-blue, English labels worldwide instead of each country's own name, and
+  country borders that actually render. A `grayscale(1)` takes the last blue out of
+  the water, dark mode swaps to the same map's dark build, and labels are a separate
+  layer that only switches on at zoom 5 — so the wide view is pure line drawing and
+  the words arrive when they're street names. Country outlines are drawn on top from
+  a vendored Natural Earth boundary file (77KB, public domain), because the
+  basemap's own fade out exactly where you need them.
 - **A `location` value requires coordinates.** `{label, address}` alone can't be put
   anywhere, so `lat`/`lng` are now mandatory on the field. The model usually knows
   them; when it doesn't, **`notes_geocode`** asks OpenStreetMap's Nominatim and returns

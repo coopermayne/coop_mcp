@@ -16,6 +16,14 @@
   /* Leaflet ships its own look; these pull it back to the app's — square-ish
      corners, the gray-200 border, Inter in the popups. */
   .leaflet-container { font: inherit; background: #f5f5f5; }
+  /* The basemap is CARTO Positron, which is already near-white with gray line
+     work; grayscale() takes the last of the blue out of the water so the pane
+     is the same black-white-gray the rest of the page is. Note it must NOT be
+     paired with a contrast boost — the borders and coastlines are LIGHT gray,
+     so more contrast pushes them toward white and erases the very thing the
+     zoomed-out view is short of (measured: at contrast 1.9 the US/Mexico line
+     is gone). Grayscale only. */
+  .leaflet-tile { filter: grayscale(1); }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip {
     border-radius: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.15); }
   .leaflet-popup-content { margin: 0.75rem 0.9rem; line-height: 1.4; }
@@ -24,12 +32,10 @@
      to inheriting; the attribution keeps a muted tone of its own below. */
   .leaflet-popup-content a { color: inherit; }
   .leaflet-control-attribution { font-size: 10px; background: rgba(255,255,255,.8); }
-  /* Dark theme: OSM has no dark tiles at this price, so the raster is inverted
-     and hue-rotated back — the standard trick. Land goes dark, water stays
-     blue-ish, labels stay readable. */
+  /* Dark theme swaps to CARTO's real dark basemap (see the tile URLs below)
+     rather than inverting the light one — an inverted raster turns the water
+     a muddy brown and the labels go grey-on-grey. Same grayscale treatment. */
   html[data-theme="dark"] .leaflet-container { background: #171717; }
-  html[data-theme="dark"] .leaflet-tile {
-    filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9); }
   html[data-theme="dark"] .leaflet-popup-content-wrapper,
   html[data-theme="dark"] .leaflet-popup-tip { background: #171717; color: #fafafa; }
   html[data-theme="dark"] .leaflet-control-attribution {
@@ -287,10 +293,77 @@
      the page shows a bald strip above the north pole. At 2 the world is 1024px
      — taller than the pane can ever be. #}
   var map = L.map('map', { scrollWheelZoom: false, minZoom: 2 });
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+
+  {# CARTO Positron rather than OSM's standard style, for three reasons that all
+     came out of looking at the same view in both. It's already the page's
+     palette — near-white land, gray line work — where the standard style is
+     beige-and-blue and only turns gray under a filter that muddies it. Its
+     labels are ENGLISH worldwide (CHINA, JAPAN, GERMANY) where the standard
+     style prints each country's own name (中国, 日本, Deutschland), which is
+     right for a map of the world and wrong for one person's list of places.
+     And it draws country borders at all, which the standard style barely does.
+     Free and keyless like OSM's own tiles; attribution is required and given.
+     Dark mode swaps to the same map's dark build — see themeTiles below. #}
+  {# The basemap and its LABELS are two layers, and the labels only switch on at
+     zoom 5. Zoomed out, Positron's text is neither ours nor English — it prints
+     continents in mixed scripts (亚洲, AMÉRICA, "AMÉRICA DO SUL;AMÉRICA DEL
+     SUR" in one label) — and none of it is information this map is for: the
+     pins say where the places are, and the outlines say what they're near. So
+     the wide view is pure line drawing, and the words arrive at the zoom where
+     they start being country and street names, in English, which is the zoom
+     you're actually reading them at. #}
+  var LABEL_ZOOM = 5;
+  var TILES = {
+    light: 'https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png',
+    dark:  'https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png'
+  };
+  var LABELS = {
+    light: 'https://a.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png',
+    dark:  'https://a.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png'
+  };
+  var theme = function () {
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  };
+  var tiles = L.tileLayer(TILES[theme()], {
     maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>'
   }).addTo(map);
+  var labels = L.tileLayer(LABELS[theme()], { maxZoom: 19, minZoom: LABEL_ZOOM }).addTo(map);
+
+  {# Country borders as our own line drawing on top, because the basemap's are
+     drawn for reading a country's interior: they fade out as you zoom OUT,
+     which is exactly the view where an outline is the only thing telling you
+     what you're looking at. Natural Earth's 110m land boundaries (public
+     domain), stripped of every property and rounded to 3 decimals — 77KB, 20KB
+     over the wire, and vendored like everything else rather than fetched from
+     anyone. Land borders only: the coastlines are the basemap's job, and
+     drawing our own over them would double every shoreline.
+
+     Fetched rather than inlined so it stays cacheable across collections, and
+     added BEFORE the pins so the markers sit on top of the lines. A failure
+     here is silent on purpose — the map is perfectly usable without the
+     outlines, and a missing decoration must not take the pins down with it. #}
+  var BORDER = { light: '#6b7280', dark: '#737373' };
+  fetch("{{ base }}/static/vendor/borders.geo.json")
+    .then(function (r) { return r.json(); })
+    .then(function (geo) {
+      var lines = L.geoJSON(geo, {
+        style: { color: BORDER[theme()], weight: 1, opacity: 0.85, fill: false,
+                 interactive: false }
+      }).addTo(map);
+      map.__borders = lines;
+    })
+    .catch(function () {});
+
+  {# The theme toggle in the nav flips data-theme on <html> live, and the OS can
+     flip it too on an un-pinned app, so the map watches the attribute rather
+     than reading it once at load — otherwise a dark page keeps a white map
+     until reload. #}
+  new MutationObserver(function () {
+    tiles.setUrl(TILES[theme()]);
+    labels.setUrl(LABELS[theme()]);
+    if (map.__borders) map.__borders.setStyle({ color: BORDER[theme()] });
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   var esc = function (t) {
     var d = document.createElement('div'); d.textContent = t || ''; return d.innerHTML;
