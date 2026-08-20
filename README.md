@@ -587,10 +587,7 @@ Two things worth knowing:
   layer that only switches on at zoom 5 — so the wide view is pure line drawing and
   the words arrive when they're street names. Country outlines are drawn on top from
   a vendored Natural Earth boundary file (77KB, public domain), because the
-  basemap's own fade out exactly where you need them — and so are the country
-  names at those zooms (5KB more), which makes them English by construction and
-  lets Natural Earth's own per-country `MIN_LABEL` decide what's legible at
-  which zoom.
+  basemap's own fade out exactly where you need them.
 - **A `location` value requires coordinates.** `{label, address}` alone can't be put
   anywhere, so `lat`/`lng` are now mandatory on the field. The model usually knows
   them; when it doesn't, **`notes_geocode`** asks OpenStreetMap's Nominatim and returns

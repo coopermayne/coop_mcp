@@ -866,16 +866,15 @@ working.
   zoom 5. Zoomed out, Positron's text is neither ours nor English — continents
   come through in mixed scripts (亚洲, AMÉRICA, "AMÉRICA DO SUL;AMÉRICA DEL
   SUR" as a single label) — and none of it is what this map is for. So the wide
-  view is pure line drawing and the COUNTRY names are ours, drawn from Natural
-  Earth's own label points — its `NAME` is the short English cartographic form
-  ("China", "Dem. Rep. Congo", not the formal "People's Republic of China"),
-  and `LABEL_X`/`LABEL_Y` is a point a cartographer picked rather than a
-  centroid, so the name lands on the country instead of in the bay it wraps
-  around. WHICH names show at which zoom is NE's own `MIN_LABEL` (31 countries
-  at z2, 104 at z3, 151 at z4) — that IS the collision strategy, and it beats
-  anything we'd invent short of measuring label boxes on every pan. 5KB. They
-  stop exactly where the basemap's labels start, so the two sets are never both
-  on screen.
+  view is pure line drawing and the words arrive at the zoom where they start
+  being country and street names. Drawing country names OURSELVES at the wide
+  zooms was tried and removed: Natural Earth ships label points and its own
+  per-country `MIN_LABEL`, so the names were English and progressively
+  disclosed for free — but a point that doesn't know what else is on the map
+  collides with the thing the map is FOR, and the labels landed on top of pins
+  and half off the edge of the pane. Real label placement means measuring boxes
+  and resolving overlaps against the pins on every pan, which is a lot of
+  machinery for names the reader already knows.
 
   Country borders are OUR line drawing on top, not the basemap's, because the
   basemap's fade as you zoom OUT — exactly the view where an outline is the
@@ -888,17 +887,15 @@ working.
   purpose, since the map is usable without the outlines and a missing
   decoration must not take the pins down with it.
 
-  Both overlays have to answer the dateline normalization above, and they
-  answer it differently. A raster layer wraps ITSELF, so the tiles never
-  noticed; a vector layer is drawn once, exactly where you put it — so with
+  The borders have to answer the dateline normalization above. A raster layer
+  wraps ITSELF, so the tiles never noticed; a vector layer is drawn once,
+  exactly where you put it — so with
   the view centered past 180 for a Pacific-spanning collection, the Americas
-  lost their outlines and their names while Asia kept both. The BORDERS are
-  therefore built as three copies of the world (a lap west, home, a lap east —
-  enough for any view a minZoom-2 map can show), on a CANVAS renderer, since
-  331 features times three is a thousand paths: a lot of SVG nodes for a
-  decoration and nothing at all for a canvas. A LABEL is a single point, so it
-  needs no copies — just the right one: each is placed in the lap nearest the
-  current centre, recomputed on move. The theme is watched with a
+  lost their outlines while Asia kept its. So the borders are built as three
+  copies of the world (a lap west, home, a lap east — enough for any view a
+  minZoom-2 map can show), on a CANVAS renderer, since 331 features times three
+  is a thousand paths: a lot of SVG nodes for a decoration and nothing at all
+  for a canvas. The theme is watched with a
   MutationObserver rather than read once at load: the nav's toggle flips
   `data-theme` live, and a map that read it at startup would sit white on a
   dark page until reload. GROUPING IS IGNORED here and that's structural, not a gap — a
