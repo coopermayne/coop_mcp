@@ -4,7 +4,16 @@
 {% block content %}
 
 <div class="flex items-center justify-between mb-8">
-  <h1 class="text-2xl font-bold tracking-tight">Trainer</h1>
+  {# A page is ONE session now (a whole week can be planned at once), so the header
+     says which one: the day it's for above the title, and a way back to the list. #}
+  <div>
+    <a href="{{ base }}/workouts"
+       class="text-[10px] uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Training</a>
+    <h1 class="text-2xl font-bold tracking-tight mt-1">{{ plan.focus or "Trainer" }}</h1>
+    <p class="text-[10px] uppercase tracking-widest text-gray-400 mt-1">
+      {{ plan.planned_date | long_date if plan.planned_date else "Unscheduled" }}
+    </p>
+  </div>
   <div class="relative flex items-center gap-4">
     {# The Coaching popover — the standing instructions the trainer reads at the top
        of every session. It saves via POST /trainer/profile
@@ -42,7 +51,7 @@
 
 {# Plan card — rendered entirely by static/trainer.js from the bootstrapped JSON,
    so tap-driven and chat-driven changes share one render path. #}
-<div id="plan-root" data-base="{{ base }}" class="min-h-[8rem]"></div>
+<div id="plan-root" data-base="{{ base }}" data-workout-id="{{ plan.workout_id }}" class="min-h-[8rem]"></div>
 <script type="application/json" id="plan-data">{{ plan | tojson }}</script>
 
 {% if chat_enabled %}

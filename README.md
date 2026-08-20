@@ -182,6 +182,15 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   split, goals), per-muscle recency (days since trained + last-7-day set volume), and
   recent sessions *with their notes* — enough to program the day and respect recovery,
   and to carry a "left shoulder twinge" logged last time into this session's plan.
+- **Plan a day or a week.** `start_workout_plan` lays out a session as pending sets with
+  targets, which you then tap done on the web app. Pass a `planned_date` and call it once
+  per day to lay out a whole week (or just the rest of one) — several plans sit waiting at
+  a time, listed as *Upcoming* above your history on the Training page, each tapping
+  through to its own logging card. A `planned_date` is only intent: a session is recorded
+  under the day it's actually finished, so one done a day late lands on the day you did
+  it. `update_workout(planned_date=…)` moves a plan (`""` unschedules it), and
+  `get_fitness_briefing`'s `upcoming` is how the trainer avoids programming Tuesday's
+  chest work again on Thursday — per-muscle recency counts *completed* work only.
 - **Session notes as durable context.** A session's `notes` (set on `log_workout`, or
   added later with `update_workout`'s `append_note`, which adds a line without
   clobbering earlier ones) resurface in `get_fitness_briefing`, so observations made
@@ -648,11 +657,11 @@ newer than this table; see CLAUDE.md's `collections` section for the full contra
 | `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |
 | `find_exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`/`hearted_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
 | `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; names resolve against the closed catalog, unmatched ones come back under `unmatched`/`candidates` (never auto-created) |
-| `update_workout` | Edit session metadata (move date, focus, feeling, notes); `append_note` adds a line without clobbering earlier notes |
+| `update_workout` | Edit session metadata (move date, focus, feeling, notes); `planned_date` moves a *planned* session to another day (`""` unschedules); `append_note` adds a line without clobbering earlier notes |
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
 | `log_bodyweight` | Record a weigh-in (lbs); returns the change vs the prior reading |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
-| `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight |
+| `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight + `upcoming` (sessions already planned, not yet done) |
 | `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set`/`weight` — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `intake_delete`, `notes_delete`, `collections_delete`) |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 

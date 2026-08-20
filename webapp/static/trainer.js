@@ -13,6 +13,11 @@
   var root = document.getElementById('plan-root');
   if (!root) return;
   var base = root.dataset.base || '';
+  // Which session this page is: a whole week can be planned at once, so every write
+  // names its workout instead of letting the server pick "the active one". Seeded from
+  // the page's data-workout-id and re-read from each plan payload we render.
+  var wid = root.dataset.workoutId || '';
+  function url(path) { return base + '/trainer/' + wid + path; }
   var editingSetId = null; // only one inline set editor open at a time
   var openPanel = null;    // {eid, kind:'info'|'menu'} — at most one info/menu panel open
   var currentPlan = null;  // last rendered plan (Finish reads its bodyweight/progress)
@@ -108,6 +113,7 @@
     editingSetId = null;
     openPanel = null;
     currentPlan = plan;
+    if (plan && plan.workout_id) wid = String(plan.workout_id);
     if (!plan || !plan.active) { reordering = false; reorderList = null; renderEmpty(plan); return; }
 
     var pr = plan.progress || { done: 0, total: 0 };
@@ -116,8 +122,8 @@
     // Header: focus + progress, with a reorder toggle on the right (Done while reordering).
     var head = el('div', 'flex items-end justify-between mb-4');
     var left = el('div');
-    left.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400 mb-1',
-      'Next Plan' + (plan.focus ? ' · ' + plan.focus : '')));
+    // Just "Plan" — the page header above already carries this session's focus and day.
+    left.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400 mb-1', 'Plan'));
     left.appendChild(el('p', 'text-lg font-semibold tracking-tight',
       pr.done + ' / ' + pr.total + ' sets'));
     head.appendChild(left);
@@ -252,7 +258,7 @@
   }
 
   async function discardPlan() {
-    var r = await postJSON(base + '/trainer/plan/discard', {});
+    var r = await postJSON(url('/discard'), {});
     if (r.ok && r.data && !r.data.error) render(r.data);
     else refresh();
   }
@@ -292,7 +298,7 @@
     var order = (reorderList || []).map(function (ex) { return ex.exercise_id; });
     reordering = false;
     reorderList = null;
-    var r = await postJSON(base + '/trainer/reorder', { order: order });
+    var r = await postJSON(url('/reorder'), { order: order });
     if (r.ok && r.data && !r.data.error) render(r.data);
     else refresh();
   }
@@ -783,7 +789,7 @@
   async function doDelete(ex) {
     if (!window.confirm('Remove ' + ex.name + ' from your plan? Any sets you logged for it will be deleted.')) return;
     closePanels();
-    var r = await postJSON(base + '/trainer/exercise/' + ex.exercise_id + '/remove', {});
+    var r = await postJSON(url('/exercise/' + ex.exercise_id + '/remove'), {});
     if (r.ok && r.data && !r.data.error) render(r.data);
   }
 
@@ -811,11 +817,15 @@
     }
     // Save the typed weight before finishing (the only place it's submitted).
     if (hasWeight) {
-      await postJSON(base + '/trainer/bodyweight', { weight_lbs: bw });
+      await postJSON(url('/bodyweight'), { weight_lbs: bw });
     }
     pendingBodyweight = '';
-    var r = await postJSON(base + '/trainer/finish', {});
+    var r = await postJSON(url('/finish'), {});
     render({ active: false, justFinished: !(r.data && r.data.deleted_empty) && r.ok });
+    // This page belonged to one session and that session is over — head back to
+    // Training, where it's now at the top of the history and the rest of the week is
+    // still upcoming. The finished state shows for a beat first so the tap lands.
+    setTimeout(function () { window.location.href = base + '/workouts'; }, 1200);
   }
 
   function renderEmpty(plan) {
@@ -834,12 +844,18 @@
       document.dispatchEvent(new CustomEvent('trainer:open-chat'));
     });
     box.appendChild(cta);
+    var back = el('p', 'mt-4');
+    var link = el('a', 'text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors',
+      'Back to training');
+    link.href = base + '/workouts';
+    back.appendChild(link);
+    box.appendChild(back);
     root.appendChild(box);
   }
 
   async function refresh() {
     try {
-      var res = await fetch(base + '/trainer/plan.json', { headers: { 'Accept': 'application/json' } });
+      var res = await fetch(url('/plan.json'), { headers: { 'Accept': 'application/json' } });
       if (!res.ok) return;
       render(await res.json());
     } catch (e) {}

@@ -1047,18 +1047,35 @@ async def workouts(request: Request):
     months = data.calendar_months([s["date"] for s in sessions], today=server.today())
     return page(request, "workouts.html", active="workouts",
                 sessions=sessions,
+                upcoming=data.upcoming_plans(),
                 profile=brief.get("profile", {}),
                 months=months)
 
 
 @app.get("/trainer")
-async def trainer(request: Request):
-    """The trainer surface: the active workout plan (today's routine, tap-to-complete)
-    plus the AI chat panel that builds and adjusts it. The plan card is rendered
-    client-side from the bootstrapped JSON so chat-driven and tap-driven changes share
-    one render path (static/trainer.js)."""
+async def trainer_current(request: Request):
+    """Bare /trainer — the keyboard shortcut and any old link. Sends you to the session
+    you'd actually be doing (the next-due plan), or to the Training page when nothing is
+    planned, since that's where a session gets planned now."""
+    from fastapi.responses import RedirectResponse
+    plan = data.active_plan()
+    dest = f"/trainer/{plan['workout_id']}" if plan.get("active") else "/workouts"
+    return RedirectResponse(request.scope.get("root_path", "") + dest, status_code=307)
+
+
+@app.get("/trainer/{workout_id:int}")
+async def trainer(request: Request, workout_id: int):
+    """One planned session: the tap-to-complete plan card plus the AI chat panel that
+    adjusts it. The card is rendered client-side from the bootstrapped JSON so chat-driven
+    and tap-driven changes share one render path (static/trainer.js). The id is in the URL
+    because a whole week can be planned at once — the Training page lists the upcoming
+    sessions and each links here."""
+    plan = data.active_plan(workout_id)
+    if not plan.get("active"):
+        return page(request, "notfound.html", active="workouts",
+                    status_code=404, what="workout plan")
     return page(request, "trainer.html", active="trainer",
-                plan=_with_bodyweight(data.active_plan()),
+                plan=_with_bodyweight(plan),
                 # The Coaching popover wants the two apart: what the user actually
                 # WROTE goes in the textarea, the default is only a placeholder.
                 coaching=data.stored_coaching(),
@@ -1153,20 +1170,21 @@ def _with_bodyweight(plan: dict) -> dict:
     enrichment — deliberately kept OFF server.get_workout_plan / _plan_payload so the
     model-facing tool returns stay lean (the box is a pure UI concern). An in-progress
     plan carries no date yet (it's dated only at finish), so fall back to today for the
-    lookup."""
+    lookup — deliberately NOT `planned_date`, which is only the day the session was meant
+    for; you weigh in on the day you actually train."""
     if isinstance(plan, dict) and plan.get("active"):
         plan["bodyweight"] = data.bodyweight_on(plan.get("workout_date") or server.today())
     return plan
 
 
-@app.get("/trainer/plan.json")
-async def trainer_plan(request: Request):
+@app.get("/trainer/{workout_id:int}/plan.json")
+async def trainer_plan(request: Request, workout_id: int):
     from fastapi.responses import JSONResponse
-    return JSONResponse(_with_bodyweight(data.active_plan()))
+    return JSONResponse(_with_bodyweight(data.active_plan(workout_id)))
 
 
-@app.post("/trainer/bodyweight")
-async def trainer_log_bodyweight(request: Request):
+@app.post("/trainer/{workout_id:int}/bodyweight")
+async def trainer_log_bodyweight(request: Request, workout_id: int):
     """Log today's bodyweight from the /trainer plan card's weigh-in box (the box under the
     sets — a standing nudge to weigh in while at the gym). Body: {weight_lbs}. Writes
     through server.log_bodyweight and returns the updated plan so the card re-renders with
@@ -1179,7 +1197,7 @@ async def trainer_log_bodyweight(request: Request):
     res = server.log_bodyweight(weight_lbs=w)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(_with_bodyweight(data.active_plan()))
+    return JSONResponse(_with_bodyweight(data.active_plan(workout_id)))
 
 
 @app.post("/trainer/set/{set_id}/complete")
@@ -1202,13 +1220,14 @@ async def trainer_complete_set(request: Request, set_id: int):
     return JSONResponse(_with_bodyweight(res))
 
 
-@app.post("/trainer/finish")
-async def trainer_finish(request: Request):
-    """Close out the active session. Body (optional): {feeling?, notes?}."""
+@app.post("/trainer/{workout_id:int}/finish")
+async def trainer_finish(request: Request, workout_id: int):
+    """Close out this session. Body (optional): {feeling?, notes?}."""
     from fastapi.responses import JSONResponse
     raw = await request.body()
     body = json.loads(raw) if raw else {}
     res = server.finish_workout(
+        workout_id=workout_id,
         feeling=(body.get("feeling") or "").strip() or None,
         notes=(body.get("notes") or "").strip() or None,
     )
@@ -1238,23 +1257,24 @@ async def trainer_update_set(request: Request, set_id: int):
     )
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(_with_bodyweight(server.get_workout_plan()))
+    return JSONResponse(_with_bodyweight(server.get_workout_plan(
+        workout_id=res.get("workout_id"))))
 
 
-@app.post("/trainer/exercise/{exercise_id}/remove")
-async def trainer_remove_exercise(request: Request, exercise_id: int):
-    """Delete one exercise from the active plan (the "..." menu's Delete option). All
-    its sets go. Returns the updated plan."""
+@app.post("/trainer/{workout_id:int}/exercise/{exercise_id}/remove")
+async def trainer_remove_exercise(request: Request, workout_id: int, exercise_id: int):
+    """Delete one exercise from this plan (the "..." menu's Delete option). All its sets
+    go. Returns the updated plan."""
     from fastapi.responses import JSONResponse
-    res = server.remove_plan_exercise(exercise_id)
+    res = server.remove_plan_exercise(exercise_id, workout_id=workout_id)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(_with_bodyweight(res))
 
 
-@app.post("/trainer/reorder")
-async def trainer_reorder(request: Request):
-    """Set the exercise order of the active plan from the /trainer card's reorder UX (the
+@app.post("/trainer/{workout_id:int}/reorder")
+async def trainer_reorder(request: Request, workout_id: int):
+    """Set the exercise order of this plan from the /trainer card's reorder UX (the
     ↑/↓ arrows). Body: {"order": [exercise_id, ...]} in the desired sequence. Writes
     through server.reorder_plan_exercises and returns the updated plan so the card
     re-renders off one render path."""
@@ -1265,19 +1285,19 @@ async def trainer_reorder(request: Request):
         ids = [int(x) for x in order]
     except (TypeError, ValueError):
         return JSONResponse({"error": "order must be a list of exercise ids"}, status_code=400)
-    res = server.reorder_plan_exercises(ids)
+    res = server.reorder_plan_exercises(ids, workout_id=workout_id)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(_with_bodyweight(res))
 
 
-@app.post("/trainer/plan/discard")
-async def trainer_discard_plan(request: Request):
-    """Delete the active plan outright (the /trainer card's plan-level "..." menu →
+@app.post("/trainer/{workout_id:int}/discard")
+async def trainer_discard_plan(request: Request, workout_id: int):
+    """Delete this plan outright (the /trainer card's plan-level "..." menu →
     Delete plan). Drops the session and all its sets through server.discard_plan and
     returns the empty-plan state so the card re-renders to its no-active-plan view."""
     from fastapi.responses import JSONResponse
-    res = server.discard_plan()
+    res = server.discard_plan(workout_id=workout_id)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(_with_bodyweight(res))

@@ -604,13 +604,53 @@ working.
   done, so it dates immediately. Active workouts are excluded from all history/briefing
   aggregates by `status`, so the empty date never leaks. (`log_workout` is the
   immediate-done path; the empty sentinel only ever exists on an in-progress plan.)
-  Because a plan is undated until finish, **planning ahead needs no extra date plumbing** —
-  "make tomorrow's session" is just `start_workout_plan` now, finished (and so dated)
-  tomorrow. The only thing that shifts by a day is recovery: `get_fitness_briefing(as_of=…)`
-  re-anchors `days_since` to the day you're planning FOR (default today; pass tomorrow's
-  date for a tomorrow plan), so what's "due" already reflects the extra rest. The server
-  just changes the reference date for the subtraction — the programming judgment is still
-  the model's.
+  **A WEEK can be planned at once — MANY rows are `active` simultaneously, one per
+  day.** The trainer lays out "Tue/Thu/Sat" (or "the rest of the week" after today's
+  session is done) as one `start_workout_plan` call per day, each carrying a
+  `planned_date`. That column is the day a plan is FOR, and it's deliberately a
+  SECOND date rather than an early write to `workout_date`: intent and history are
+  different facts, and conflating them would start counting unfinished plans in every
+  aggregate that keys off `workout_date`. So `planned_date` is only intent — a
+  session is still stamped with the day it was actually COMPLETED, and one done a day
+  late lands on the day it was done. NULL `planned_date` = an unscheduled "next
+  session" (the ad-hoc "build me something now"), which is also what a plan predating
+  the column reads as; there's no back-fill.
+  Two consequences of many-active. `_current_plan` is the ordering that decides which
+  plan a caller who named none gets: next-due first, with an unscheduled plan
+  competing as TODAY's (else an ad-hoc session would queue behind Friday) and ties on
+  the oldest id. Every plan tool keeps an optional `workout_id` and falls back to it;
+  the WEBAPP always passes one (see `/trainer/{id}` below), because "the active plan"
+  is no longer a thing that exists. And recovery gets a gap the server refuses to
+  paper over: `muscle_recency` counts COMPLETED work only, so the days already
+  programmed this week are invisible to it. Rather than fold plans into recency —
+  which would make a factual "days since last trained" partly hypothetical —
+  `get_fitness_briefing` returns them as a separate `upcoming` list (workout_id,
+  planned_date, focus, exercise names, set count) and the model reads the two
+  together. Same split as everywhere: the server states both facts, the model judges.
+  The other thing that shifts per day is `get_fitness_briefing(as_of=…)`, which
+  re-anchors `days_since` to the day you're planning FOR, so what's "due" reflects the
+  extra rest; planning a week is that, one day at a time.
+  **The UI is a hub and per-session pages.** `/workouts` ("Training") is the hub: the
+  upcoming plans (`data.upcoming_plans`) listed ABOVE the completed history
+  (`data.workouts_full`), and each row links into `/trainer/{workout_id}` — the
+  tap-to-log plan card for that day. There is no "Trainer" link any more, because a
+  singleton `/trainer` can't name which of five plans it means; a bare `/trainer`
+  redirects to `_current_plan` (or to the hub when nothing is planned), so the `6`
+  shortcut and any old link still land somewhere sensible. The upcoming rows are
+  DELIBERATELY condensed to day + focus + counts: nothing has been lifted yet, so
+  there are no set chips and no muscle diagram to draw, and a stack of full cards for
+  work that hasn't happened would outweigh the history under it. That makes `focus`
+  load-bearing — it's the only title a row has, which is why the trainer contract
+  insists on one. Every trainer write route carries the id in its PATH
+  (`/trainer/{id}/finish`, `/reorder`, `/discard`, `/bodyweight`, `/plan.json`,
+  `/exercise/{eid}/remove`) and `trainer.js` builds them from the plan payload's
+  `workout_id`; the two SET-scoped routes keep their flat URLs, since a `set_id`
+  already identifies its workout — but they must return THAT set's plan, which is why
+  `update_set` now returns a `workout_id` at all. The trainer chat panel is on BOTH
+  surfaces: the hub is where a week gets planned, a session page is where it gets
+  tweaked mid-workout. Its `onWrite` forks on that — the session page re-renders the
+  card in place, the hub has no card and reloads, because the upcoming list is
+  server-rendered and a chat that just added Thursday must not leave the page stale.
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
   `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the

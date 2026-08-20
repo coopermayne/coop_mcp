@@ -56,10 +56,20 @@ _JOURNAL_BLURB = (
     "mentions eating or drinking, log it."
 )
 _TRAINER_BLURB = (
-    "\n\nYou are running inside the trainer's own web app, on the /trainer page — the "
-    "user is talking to you on their phone, usually mid-workout. Beside this chat is a "
-    "live PLAN CARD that shows today's routine and lets them tap sets done; your job is "
-    "to fill and adjust that plan. Be concise — they're between sets.\n\n"
+    "\n\nYou are running inside the trainer's own web app — the user is talking to you "
+    "on their phone, often mid-workout. You're reachable from two screens. On a SESSION "
+    "page (/trainer/{id}) a live PLAN CARD sits beside this chat showing that session's "
+    "routine and letting them tap sets done; your job there is to fill and adjust that "
+    "plan. On the TRAINING page (/workouts) they see their upcoming sessions above their "
+    "history — that's where a week gets planned. Be concise; they're between sets.\n\n"
+    "Planning a WEEK: several sessions can be planned at once, one per day. Call "
+    "start_workout_plan once per day with that day's `planned_date`, deciding each from "
+    "a get_fitness_briefing whose `as_of` is that day. The briefing's `upcoming` shows "
+    "what you've already programmed — read it, because muscle_recency counts completed "
+    "work only and won't know Tuesday's chest work when you plan Thursday. Give every "
+    "plan a `focus`: it's the only title its row has on their Training page. If they've "
+    "already trained today and want 'the rest of the week', plan the remaining days "
+    "only.\n\n"
     "Building a routine: when they ask for a session ('give me a push day', 'what "
     "should I do today?'), FIRST call get_fitness_briefing (and get_exercise_history "
     "for the lifts you're picking weights for), THEN start_workout_plan with concrete "
@@ -74,7 +84,9 @@ _TRAINER_BLURB = (
     "you ('did 10 at 100, felt like an 8') use complete_set. If a machine is taken or "
     "broken, use swap_exercise for the same muscle group (pass the right target weight "
     "for the substitute). add_to_plan to tack on more; finish_workout when they're "
-    "done. Call get_workout_plan if you need to see the current state.\n\n"
+    "done — pass its `workout_id` when it isn't the session they're standing on. Call "
+    "get_workout_plan (with a `workout_id` from `upcoming` for a specific day) if you "
+    "need to see the current state.\n\n"
     "Technique questions: answer with a clear, specific walkthrough — setup, the "
     "movement, tempo, what it should feel like, and the common mistakes to avoid — "
     "drawing on the exercise's saved technique_notes/common_mistakes/cautions (via the "
@@ -550,25 +562,24 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
             summary = f"Added {nm}" if nm else "Added an exercise"
     elif name == "get_fitness_briefing":
         summary = "Loaded training context"
-    # Trainer plan tools (the /trainer page).
-    elif name == "start_workout_plan":
-        href = "/trainer"
-        summary = "Built today's routine"
-    elif name == "complete_set":
-        href = "/trainer"
-        summary = "Logged a set"
-    elif name == "swap_exercise":
-        href = "/trainer"
-        summary = "Swapped an exercise"
-    elif name == "add_to_plan":
-        href = "/trainer"
-        summary = "Added to the plan"
-    elif name == "finish_workout":
-        href = "/trainer"
-        summary = "Finished the workout"
-    elif name == "get_workout_plan":
-        href = "/trainer"
-        summary = "Loaded the plan"
+    # Trainer plan tools. Several sessions can be planned at once, so a chip links to
+    # the one this call actually touched (its payload carries the workout_id) rather
+    # than to a bare /trainer that would resolve to whichever is next due.
+    elif name in ("start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
+                  "finish_workout", "get_workout_plan"):
+        wid = r.get("workout_id")
+        href = f"/trainer/{wid}" if wid else "/workouts"
+        summary = {
+            "start_workout_plan": "Built a routine",
+            "complete_set": "Logged a set",
+            "swap_exercise": "Swapped an exercise",
+            "add_to_plan": "Added to the plan",
+            "finish_workout": "Finished the workout",
+            "get_workout_plan": "Loaded the plan",
+        }[name]
+        # A finished session isn't a plan page any more — it's history.
+        if name == "finish_workout":
+            href = "/workouts"
 
     return {"name": name, "summary": summary, "kind": kind, "href": href}
 

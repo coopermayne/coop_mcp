@@ -489,8 +489,8 @@ Two ways to record training:
     role (compound→compound, isolation→isolation), not just any exercise sharing a
     muscle — add_to_plan tacks on more, update_set
     retargets a pending set, and finish_workout closes it out (leftover pending sets are
-    skipped). get_workout_plan returns the current state. Only ONE plan is active at a
-    time. Design the routine yourself from the briefing, choosing movements from the
+    skipped). get_workout_plan returns the current state. Design the routine yourself
+    from the briefing, choosing movements from the
     user's `rotation` — progress what was easy (low RPE), hold/deload what was hard, and
     keep staple lifts so the tracked data stays comparable. How BIG a session should be,
     how much it should vary from the last one, and how the week's sessions divide the
@@ -501,6 +501,19 @@ Two ways to record training:
     did rather than working a plan live.
 Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
 yet-done set doesn't, so the briefing stays honest mid-session.
+
+PLANNING AHEAD: several sessions can be planned at once — a whole week, or the rest of
+one after today's is done — as ONE PLAN PER DAY, each carrying its `planned_date`. Lay a
+week out with a start_workout_plan call per day, deciding each from a get_fitness_briefing
+whose `as_of` is that day. Two things to hold onto while you do it. `muscle_recency` is
+COMPLETED work only, so the days you just programmed aren't in it — read the briefing's
+`upcoming` so Wednesday's chest work counts against Friday's. And a plan is INTENT, not
+history: `planned_date` is the day it's meant for, while the day it's recorded under is
+stamped by finish_workout, so a session done a day late lands on the day it was actually
+done. The user sees the week as a list of upcoming sessions on their Training page and
+taps one to work through it, so give every plan a `focus` — it's the only title a row
+has. To move one, update_workout(planned_date=…); to read a specific day,
+get_workout_plan(workout_id=…) from `upcoming`.
 
 A session's `focus` (whichever tool writes it) is a SHORT kind-of-day label — a couple
 of words like "Pull + Legs", "Push", "Upper", "Cardio". Never pack the lifts or muscle
@@ -802,11 +815,12 @@ CREATE INDEX IF NOT EXISTS idx_exercise_aliases_alias ON exercise_aliases(alias)
 
 CREATE TABLE IF NOT EXISTS workouts (
     id           INTEGER PRIMARY KEY,
-    workout_date TEXT NOT NULL,       -- YYYY-MM-DD
+    workout_date TEXT NOT NULL,       -- YYYY-MM-DD; '' while a plan is still active
+    planned_date TEXT,                -- YYYY-MM-DD the plan is FOR; NULL = unscheduled
     focus        TEXT,                -- "Legs", "Arms", "Cardio"
     feeling      TEXT,                -- overall how the session felt
     notes        TEXT,
-    status       TEXT NOT NULL DEFAULT 'done',  -- 'active' (plan in progress) | 'done'
+    status       TEXT NOT NULL DEFAULT 'done',  -- 'active' (planned/in progress) | 'done'
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date);
@@ -1161,6 +1175,13 @@ def init_db() -> None:
         wcols = [r["name"] for r in conn.execute("PRAGMA table_info(workouts)")]
         if "status" not in wcols:
             conn.execute("ALTER TABLE workouts ADD COLUMN status TEXT NOT NULL DEFAULT 'done'")
+        # The day a PLAN is intended for — several sessions can be planned at once (a
+        # week laid out in one conversation), so a plan needs a day of its own. Distinct
+        # from workout_date, which stays the day the session was actually COMPLETED and
+        # is stamped only by finish_workout. NULL = an unscheduled "next session"; no
+        # back-fill, so a plan that predates the column simply reads as unscheduled.
+        if "planned_date" not in wcols:
+            conn.execute("ALTER TABLE workouts ADD COLUMN planned_date TEXT")
         xcols = [r["name"] for r in conn.execute("PRAGMA table_info(exercises)")]
         if "image_link" not in xcols:
             conn.execute("ALTER TABLE exercises ADD COLUMN image_link TEXT")
@@ -5113,10 +5134,15 @@ def get_personal_records(exercise_id: Optional[int] = None,
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
                    notes: Optional[str] = None,
-                   append_note: Optional[str] = None) -> dict:
+                   append_note: Optional[str] = None,
+                   planned_date: Optional[str] = None) -> dict:
     """Edit a session's metadata. Only non-null args are written. Use `workout_date`
-    (YYYY-MM-DD, Pacific) to move a session to the right day, or set focus/feeling/
-    notes after the fact.
+    (YYYY-MM-DD, Pacific) to move a COMPLETED session to the right day, or set focus/
+    feeling/notes after the fact.
+
+    `planned_date` moves a PLANNED session to a different day ("push Thursday's to
+    Friday"); pass "" to unschedule it back to a plain next-session plan. It's intent
+    only — a plan is still recorded under the day it's actually finished.
 
     `notes` REPLACES the note; `append_note` ADDS a line to whatever's already there
     (newline-joined) — use it to jot observations as they come up mid- or post-session
@@ -5129,9 +5155,15 @@ def update_workout(workout_id: int, workout_date: Optional[str] = None,
     delete_record(kind="workout")."""
     if err := _bad_date(workout_date, "workout_date"):
         return err
+    if planned_date and (err := _bad_date(planned_date, "planned_date")):
+        return err
     fields = {"workout_date": workout_date, "focus": focus,
               "feeling": feeling, "notes": notes}
     sets = {k: v for k, v in fields.items() if v is not None}
+    # "" unschedules a plan (back to NULL), so it's read here rather than by the
+    # non-null filter above, which would drop it.
+    if planned_date is not None:
+        sets["planned_date"] = planned_date or None
     with db() as conn:
         exists = conn.execute("SELECT 1 FROM workouts WHERE id=?", (workout_id,)).fetchone()
         if not exists:
@@ -5183,12 +5215,14 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
     if not sets:
         return {"set_id": set_id, "updated": []}
     with db() as conn:
-        exists = conn.execute("SELECT 1 FROM sets WHERE id=?", (set_id,)).fetchone()
-        if not exists:
+        row = conn.execute("SELECT workout_id FROM sets WHERE id=?", (set_id,)).fetchone()
+        if not row:
             return {"error": f"no set with id {set_id}"}
         cols = ", ".join(f"{k}=?" for k in sets)
         conn.execute(f"UPDATE sets SET {cols} WHERE id=?", (*sets.values(), set_id))
-    return {"set_id": set_id, "updated": list(sets)}
+    # workout_id so a caller holding only a set_id can re-read the right session (the
+    # web app does: several plans can be open at once, so "the current plan" won't do).
+    return {"set_id": set_id, "workout_id": row["workout_id"], "updated": list(sets)}
 
 
 # --------------------------------------------------------------------------- #
@@ -5199,14 +5233,34 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
 # 'done', so the plan becomes the historical log as you work through it — one table,
 # no plan<->log reconciliation. The model designs the routine in conversation (from
 # get_fitness_briefing + get_exercise_history) and writes it here; the server just
-# stores/serves it. At most one active plan exists at a time.
+# stores/serves it.
+#
+# SEVERAL plans can be active at once — a week laid out in one conversation is one
+# active row per day, each carrying its `planned_date`. So a plan is addressed by id
+# wherever the caller knows which one it means (every web-app route does); the tools
+# keep an optional workout_id and fall back to _current_plan for the common "the one
+# I'm doing now" case.
 # --------------------------------------------------------------------------- #
 
-def _active_workout(conn: sqlite3.Connection):
-    """The single in-progress plan (status='active'), or None."""
+def _current_plan(conn: sqlite3.Connection):
+    """The plan to act on when the caller didn't name one: the NEXT DUE active session,
+    or None. An unscheduled plan (planned_date NULL/'') competes as today's — an ad-hoc
+    "build me something now" shouldn't queue behind Friday's plan — and ties break on the
+    oldest id. Callers that must address one exact session (the web app's per-session
+    pages) use _plan_row instead."""
     return conn.execute(
-        "SELECT * FROM workouts WHERE status='active' ORDER BY id DESC LIMIT 1"
+        """SELECT * FROM workouts WHERE status='active'
+           ORDER BY COALESCE(NULLIF(planned_date,''), ?) ASC, id ASC LIMIT 1""",
+        (today(),),
     ).fetchone()
+
+
+def _plan_row(conn: sqlite3.Connection, workout_id: Optional[int]):
+    """One workout by id, or _current_plan when no id was given — the resolution every
+    plan tool shares."""
+    if workout_id is None:
+        return _current_plan(conn)
+    return conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
 
 
 def _expand_planned_sets(ex: PlannedExercise) -> list[dict]:
@@ -5282,7 +5336,8 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
     its closest `candidates`) is surfaced so the model re-issues them under a name that
     exists instead of inventing one — the catalog is closed to the assistant."""
     w = conn.execute(
-        "SELECT id, workout_date, focus, feeling, notes, status FROM workouts WHERE id=?",
+        "SELECT id, workout_date, planned_date, focus, feeling, notes, status "
+        "FROM workouts WHERE id=?",
         (wid,),
     ).fetchone()
     if not w:
@@ -5324,7 +5379,8 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
             total += 1
     exercises.sort(key=lambda ex: sort_key[ex["exercise_id"]])
     payload = {"active": w["status"] == "active", "workout_id": w["id"],
-               "workout_date": w["workout_date"], "focus": w["focus"],
+               "workout_date": w["workout_date"], "planned_date": w["planned_date"],
+               "focus": w["focus"],
                "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
                "progress": {"done": done, "total": total}, "exercises": exercises}
     if unmatched:
@@ -5338,8 +5394,7 @@ def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> 
     model substitutes via swap_exercise instead, so this stays a plain helper, not an MCP
     tool. Returns the updated plan."""
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan"}
         conn.execute("DELETE FROM sets WHERE workout_id=? AND exercise_id=?",
@@ -5356,8 +5411,7 @@ def discard_plan(workout_id: Optional[int] = None) -> dict:
     start_workout_plan), so it stays a plain helper, not an MCP tool. Returns the
     empty-plan state."""
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan"}
         conn.execute("DELETE FROM workouts WHERE id=?", (w["id"],))
@@ -5370,8 +5424,7 @@ def reorder_plan_exercises(order: list[int], workout_id: Optional[int] = None) -
     keep ex_position NULL and fall in after (in insertion order). Backs the /trainer page's
     "reorder" UX (the ↑/↓ arrows) and the reorder_plan tool. Returns the updated plan."""
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan"}
         for pos, eid in enumerate(order):
@@ -5412,14 +5465,26 @@ def clear_plan_set(set_id: int) -> dict:
 
 @trainer_mcp.tool(annotations=DESTRUCTIVE)
 def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = None,
-                       notes: Optional[str] = None, replace: bool = False) -> dict:
-    """Lay out the next routine as a plan the user works through — usually today's, but
-    if they asked to plan TOMORROW's session, decide it from a get_fitness_briefing whose
-    `as_of` is tomorrow (so recovery is counted as of that day). Call this once you've
-    decided the session from the briefing (+ get_exercise_history for the lifts you're
-    choosing weights for). Each exercise becomes a row of PENDING sets with targets; the
-    user completes them with complete_set as they go. The plan stays undated until
-    finish_workout stamps the day it's actually completed, so planning ahead needs no date.
+                       notes: Optional[str] = None, replace: bool = False,
+                       planned_date: Optional[str] = None,
+                       workout_id: Optional[int] = None) -> dict:
+    """Lay out a routine the user works through — today's session, or any day ahead.
+    Call this once you've decided the session from a get_fitness_briefing (+
+    get_exercise_history for the lifts you're choosing weights for). Each exercise
+    becomes a row of PENDING sets with targets; the user completes them with complete_set
+    as they go.
+
+    `planned_date` (YYYY-MM-DD, Pacific) is the day the session is FOR — pass it whenever
+    you're planning past today, and call this once PER DAY to lay out a week. Plan each
+    day off a briefing whose `as_of` is that day, so recovery is counted as of when the
+    session will actually happen, and read the briefing's `upcoming` so you count the work
+    you've already programmed earlier in the week (it isn't in `muscle_recency`, which is
+    completed work only). Omit `planned_date` for an unscheduled "next session"; either
+    way the plan is DATED only when finish_workout stamps the day it was actually
+    completed, so a session done a day late records the day it was done.
+
+    ALWAYS set `focus` — it's the session's only title, and on a week of upcoming plans
+    it's the one thing distinguishing them on the user's Training page.
 
     Build a full session at the volume this server's instructions call for, across the
     muscle groups that are due.
@@ -5441,44 +5506,64 @@ def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = 
     user add the movement on the library page. Matched exercises are still planned, so the
     rest of the routine lands.
 
-    Only ONE plan is active at a time. If a plan is already active, this APPENDS the new
-    exercises to it (focus/notes ignored) — unless `replace=True`, which discards the
-    current plan and starts fresh. Returns the full plan (see get_workout_plan)."""
+    ONE plan per day. This APPENDS to the plan it lands on rather than creating a second
+    one for the same day (focus/notes ignored on an append) — that's the plan for
+    `planned_date` if you passed one, the plan named by `workout_id` if you passed that,
+    else the next-due plan. `replace=True` discards that plan and starts it fresh. To lay
+    out a week, call this once per day with each day's `planned_date`. Returns the full
+    plan (see get_workout_plan)."""
     if err := _bad_planned(exercises):
         return err
+    if err := _bad_date(planned_date, "planned_date"):
+        return err
     with db() as conn:
-        active = _active_workout(conn)
+        if workout_id is not None:
+            active = _plan_row(conn, workout_id)
+            if not active:
+                return {"error": f"no workout with id {workout_id}"}
+        elif planned_date:
+            # One plan per day: land on the session already planned for that day, if any.
+            active = conn.execute(
+                "SELECT * FROM workouts WHERE status='active' AND planned_date=? "
+                "ORDER BY id ASC LIMIT 1", (planned_date,),
+            ).fetchone()
+        else:
+            active = _current_plan(conn)
         if active and replace:
             conn.execute("DELETE FROM workouts WHERE id=?", (active["id"],))
             active = None
         if active:
             wid = active["id"]
         else:
-            # A plan in progress has NO date yet — it's just today's intended routine,
-            # not a thing that happened. The date is stamped only at finish_workout, when
-            # the session is actually done (so a plan started late and finished after
-            # midnight records the day it was completed). '' is the not-yet-done sentinel
+            # A plan has NO workout_date yet — it's an intended routine, not a thing that
+            # happened. `planned_date` says which day it's FOR; the date it's recorded
+            # under is stamped only at finish_workout, when the session is actually done
+            # (so a plan started late and finished after midnight, or done a day off its
+            # schedule, records the day it was completed). '' is the not-yet-done sentinel
             # (the column is NOT NULL); active workouts are excluded from all history /
             # briefing aggregates by status, so the empty date never leaks anywhere.
             wid = conn.execute(
-                """INSERT INTO workouts(workout_date, focus, notes, status, created_at)
-                   VALUES ('',?,?, 'active', ?)""",
-                (focus, notes, now()),
+                """INSERT INTO workouts(workout_date, planned_date, focus, notes,
+                                        status, created_at)
+                   VALUES ('',?,?,?, 'active', ?)""",
+                (planned_date, focus, notes, now()),
             ).lastrowid
         results, unmatched = _insert_planned(conn, wid, exercises)
         return _plan_payload(conn, wid, unmatched=unmatched)
 
 
 @trainer_mcp.tool(annotations=READ_ONLY)
-def get_workout_plan() -> dict:
-    """The active workout plan (today's routine in progress): each exercise in order
-    with its sets — `target_weight_lbs`/`target_reps` (the plan), `weight_lbs`/`reps`/
-    `rpe` (the actuals, NULL until done), `status` ('pending'|'done'|'skipped'), and
-    `set_id` (pass to complete_set/update_set) — plus a `progress` {done, total} count.
-    Returns {"active": false} when no plan is in progress. Read this to see what's left
+def get_workout_plan(workout_id: Optional[int] = None) -> dict:
+    """An active workout plan: each exercise in order with its sets —
+    `target_weight_lbs`/`target_reps` (the plan), `weight_lbs`/`reps`/`rpe` (the actuals,
+    NULL until done), `status` ('pending'|'done'|'skipped'), and `set_id` (pass to
+    complete_set/update_set) — plus a `progress` {done, total} count and the
+    `planned_date` it's for. Defaults to the NEXT DUE plan; pass `workout_id` (from
+    get_fitness_briefing's `upcoming`) to read a specific day of a planned week.
+    Returns {"active": false} when there's no such plan. Read this to see what's left
     and what's been done before logging the next set or adjusting the routine."""
     with db() as conn:
-        w = _active_workout(conn)
+        w = _plan_row(conn, workout_id)
         return _plan_payload(conn, w["id"]) if w else {"active": False}
 
 
@@ -5538,8 +5623,7 @@ def swap_exercise(from_exercise: str, to_exercise: str,
     skipped); pick one of those or have the user add it on the library page.
     Returns the updated plan."""
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan to swap in"}
         frm = _resolve_exercise(conn, from_exercise)
@@ -5587,8 +5671,7 @@ def add_to_plan(exercises: list[PlannedExercise], workout_id: Optional[int] = No
     if err := _bad_planned(exercises):
         return err
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan; start one with start_workout_plan"}
         results, unmatched = _insert_planned(conn, w["id"], exercises)
@@ -5604,8 +5687,7 @@ def reorder_plan(order: list[str], workout_id: Optional[int] = None) -> dict:
     move a lift earlier/later or to lay the session out in a particular order (warm-up
     compounds first, accessories last). Returns the updated plan in the new order."""
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan"}
         ids, seen = [], set()
@@ -5626,8 +5708,7 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
     record overall `feeling`/`notes`. If nothing was completed, the empty session is
     deleted instead. Returns a short summary."""
     with db() as conn:
-        w = (conn.execute("SELECT * FROM workouts WHERE id=?", (workout_id,)).fetchone()
-             if workout_id is not None else _active_workout(conn))
+        w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan to finish"}
         done = conn.execute(
@@ -5707,7 +5788,9 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
     in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
     logged last time is a caution this time), `bodyweight` (latest reading, days since,
-    and 30-day change; negative = down), and `rotation` — the curated pool of movements
+    and 30-day change; negative = down), `upcoming` (sessions already PLANNED and not yet
+    done — workout_id, planned_date, focus, exercise names, set count — next-due first),
+    and `rotation` — the curated pool of movements
     the user trains (id, name, category, equipment, primary muscles). Call this at the
     start of a training conversation to decide what to work and what to rest: muscles with
     the most days_since (and low recent volume) are recovered and due; ones trained in the
@@ -5721,8 +5804,11 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     user wants TOMORROW's session, pass tomorrow's date (today + 1; today is in `now`):
     `days_since` then counts recovery as of that day — a muscle trained today reads 0 in a
     today briefing but 1 in a tomorrow one — so what's "due" already reflects the extra
-    rest. Plan as normal off the re-anchored numbers; the plan itself stays undated until
-    finish_workout stamps the day it's actually done."""
+    rest. Planning a WHOLE WEEK is that one day at a time, re-briefing per day.
+
+    `muscle_recency` counts COMPLETED work only, so it can't see the days you've already
+    programmed this week — that's what `upcoming` is for. Read it alongside the recency
+    numbers: a muscle that reads "due" may already be booked for Wednesday."""
     ref = as_of or today()
     if err := _bad_date(as_of, "as_of"):
         return err
@@ -5789,6 +5875,27 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
             if w["notes"]:
                 row["notes"] = w["notes"]
             recent_out.append(row)
+        # Sessions already PLANNED but not yet done, next-due first (same ordering as
+        # _current_plan). They carry no completed sets, so they're invisible to
+        # muscle_recency above — read them before programming another day of the week,
+        # or you'll program the same muscles twice.
+        upcoming_out = []
+        for w in conn.execute(
+            """SELECT id, planned_date, focus FROM workouts WHERE status='active'
+               ORDER BY COALESCE(NULLIF(planned_date,''), ?) ASC, id ASC""",
+            (ref,),
+        ).fetchall():
+            names = [r["name"] for r in conn.execute(
+                """SELECT DISTINCT e.name FROM sets s JOIN exercises e ON e.id=s.exercise_id
+                   WHERE s.workout_id=? AND s.status!='skipped' ORDER BY e.name""",
+                (w["id"],),
+            )]
+            n = conn.execute(
+                "SELECT COUNT(*) AS s FROM sets WHERE workout_id=? AND status!='skipped'",
+                (w["id"],),
+            ).fetchone()
+            upcoming_out.append({"workout_id": w["id"], "planned_date": w["planned_date"],
+                                 "focus": w["focus"], "exercises": names, "sets": n["s"]})
         # latest bodyweight + 30-day trend (negative change = losing)
         bw_latest = conn.execute(
             "SELECT weigh_date, weight_lbs FROM body_weight ORDER BY weigh_date DESC, id DESC LIMIT 1"
@@ -5823,7 +5930,7 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     return {"now": current_clock(), "profile": profile,
             "muscle_recency": recency, "cardio_recency": cardio,
             "bodyweight": bodyweight, "recent_workouts": recent_out,
-            "rotation": rotation}
+            "upcoming": upcoming_out, "rotation": rotation}
 
 
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)

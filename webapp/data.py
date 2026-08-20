@@ -599,8 +599,8 @@ def person_detail(person_id: int, history_limit: int = 100_000):
 
 def workouts_full(limit: int = 20) -> list:
     """Recent COMPLETED sessions with their done sets grouped by exercise (first-seen
-    order). An in-progress plan (status='active') and its pending/skipped sets are
-    excluded — those live on the /trainer page, not the history browse."""
+    order). Planned sessions (status='active') and their pending/skipped sets are
+    excluded — those are upcoming_plans(), listed above this on the same page."""
     out = []
     with server.db() as conn:
         ws = conn.execute(
@@ -772,11 +772,48 @@ def exercise_library(muscle: str | None = None, q: str | None = None,
             "rotation": rotation, "hearted": hearted, "archived": archived}
 
 
-def active_plan() -> dict:
-    """The active workout plan for the /trainer page, straight from the server (see
+def active_plan(workout_id: int | None = None) -> dict:
+    """One workout plan for a /trainer session page, straight from the server (see
     server.get_workout_plan): {"active": False} or the full plan with exercises, sets
-    (target + actual + status), and a done/total progress count."""
-    return server.get_workout_plan()
+    (target + actual + status), and a done/total progress count. `workout_id` names the
+    session (every /trainer route carries it now that a week can be planned at once);
+    omitted, it's the next-due plan."""
+    return server.get_workout_plan(workout_id=workout_id)
+
+
+def upcoming_plans() -> list:
+    """Sessions PLANNED but not yet done, next-due first — the Training page's upcoming
+    list, above the completed history from workouts_full. Deliberately counts only: the
+    row says date, focus and how big the session is, and the sets themselves are one tap
+    away on the session's own page (nothing is logged yet, so there'd be nothing to show).
+    An unscheduled plan (planned_date NULL) sorts as today's, matching the server's
+    _current_plan. `done_count` is what's already been logged, so a part-finished session
+    can say so."""
+    with server.db() as conn:
+        ws = conn.execute(
+            """SELECT id, planned_date, focus FROM workouts WHERE status='active'
+               ORDER BY COALESCE(NULLIF(planned_date,''), ?) ASC, id ASC""",
+            (server.today(),),
+        ).fetchall()
+        out = []
+        for w in ws:
+            # Skipped sets are excluded the same way _plan_payload's progress count
+            # excludes them — a swapped-out movement isn't part of the session anymore.
+            n = conn.execute(
+                """SELECT COUNT(DISTINCT exercise_id) AS e, COUNT(*) AS s,
+                          SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS d
+                   FROM sets WHERE workout_id=? AND status!='skipped'""",
+                (w["id"],),
+            ).fetchone()
+            out.append({
+                "workout_id": w["id"],
+                "planned_date": w["planned_date"],
+                "focus": w["focus"],
+                "exercise_count": n["e"],
+                "set_count": n["s"],
+                "done_count": n["d"] or 0,
+            })
+    return out
 
 
 def bodyweight_on(d: str):

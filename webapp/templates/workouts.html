@@ -7,13 +7,10 @@
 
 <div class="flex items-center justify-between mb-12">
   <h1 class="text-2xl font-bold tracking-tight">Training</h1>
-  {# The trainer lives under Training, not on the nav strip — these two labeled
-     links are its front door. #}
+  {# No "Trainer" link any more: the upcoming sessions below ARE the front door —
+     each one links to its own /trainer/{id}. Only the library stays a header link,
+     since it isn't a session. #}
   <div class="flex items-center gap-5">
-    <a href="{{ base }}/trainer" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
-      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/><path d="m9 13 2 2 4-4"/></svg>
-      <span>Trainer</span>
-    </a>
     <a href="{{ base }}/trainer/library" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
       <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
       <span>Library</span>
@@ -64,6 +61,48 @@
    ramp the old 14-day heatmap used. A cardio-only day has no muscle rows, so
    the diagrams are simply omitted rather than drawn all-cold. #}
 {% set tier_color = {"primary": "#b04a1a", "secondary": "#d9855a", "tertiary": "#f2c8ac"} %}
+
+{# ── Upcoming ────────────────────────────────────────────────────────────────────
+   Sessions PLANNED and not yet done, next-due first — the trainer can lay out a
+   whole week, so this is a list, not a single card. Condensed on purpose: day,
+   focus and how big the session is. No set chips and no muscle diagram, because
+   nothing has been lifted yet — there'd be nothing to show, and a stack of full
+   cards for work that hasn't happened would outweigh the history under it. Each
+   row IS the link into that session's plan card. #}
+{% if upcoming %}
+<p class="text-[10px] uppercase tracking-widest text-gray-400 mb-3">Upcoming</p>
+<div class="mb-12">
+  {% for p in upcoming %}
+  <a href="{{ base }}/trainer/{{ p.workout_id }}"
+     class="block border border-dashed border-gray-300 rounded-[4px] px-5 sm:px-6 py-4 mb-3
+            hover:border-black transition-colors">
+    <div class="flex items-center justify-between gap-4">
+      <div class="min-w-0">
+        <p class="text-xs uppercase tracking-widest text-gray-400">
+          {{ p.planned_date | long_date if p.planned_date else "Unscheduled" }}
+        </p>
+        <h2 class="text-lg font-semibold tracking-tight mt-0.5">{{ p.focus or "Workout" }}</h2>
+        <p class="text-sm text-gray-500 mt-0.5">
+          {{ p.exercise_count }} exercise{{ "" if p.exercise_count == 1 else "s" }} ·
+          {{ p.set_count }} set{{ "" if p.set_count == 1 else "s" }}
+          {%- if p.done_count %} · <span class="text-gray-400">{{ p.done_count }} logged</span>{% endif %}
+        </p>
+      </div>
+      <svg class="w-4 h-4 shrink-0 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% elif chat_enabled %}
+{# Nothing planned: the one thing this page can offer is the way to plan something. #}
+<button type="button" id="plan-cta"
+        class="w-full border border-dashed border-gray-300 rounded-[4px] px-5 py-6 mb-12 text-sm
+               text-gray-400 hover:border-black hover:text-black transition-colors">
+  Nothing planned — ask the trainer for a session
+</button>
+{% endif %}
+
 {% if sessions %}
   {% for s in sessions %}
   <article id="day-{{ s.date }}" class="scroll-mt-20 border border-gray-200 rounded-[4px] mb-8">
@@ -71,7 +110,10 @@
       <div class="min-w-0">
         <p class="text-xs uppercase tracking-widest text-gray-400">{{ s.date | long_date }}</p>
         <h2 class="text-xl sm:text-2xl font-semibold tracking-tight mt-1">{{ s.focus or "Workout" }}</h2>
-        <p class="text-sm text-gray-500 mt-0.5">{{ s.exercise_count }} exercises · {{ s.set_count }} sets</p>
+        <p class="text-sm text-gray-500 mt-0.5">
+          {{ s.exercise_count }} exercise{{ "" if s.exercise_count == 1 else "s" }} ·
+          {{ s.set_count }} set{{ "" if s.set_count == 1 else "s" }}
+        </p>
       </div>
       {% if s.muscles %}
       {# Thumbnail pair, sized to the three-line header block beside it. No hover
@@ -270,8 +312,21 @@
   })();
 </script>
 
-{# Floating trainer chat — same panel as /trainer, just the opener + slide-in here.
-   TrainerPlan isn't bootstrapped on this page, so its refresh hook is a no-op (guarded). #}
-{% if chat_enabled %}{% include "_trainer_chat_panel.html" %}{% endif %}
+{# Floating trainer chat — same panel as a session page, just the opener + slide-in
+   here. This is where a WEEK gets planned ("lay out Tue/Thu/Sat"), so a write reloads
+   the page: TrainerPlan isn't bootstrapped here, and the upcoming list is server-
+   rendered (see the panel's onWrite). #}
+{% if chat_enabled %}
+  {% include "_trainer_chat_panel.html" %}
+  <script>
+    // The empty-state CTA is just another way to open that panel.
+    (function () {
+      var cta = document.getElementById('plan-cta');
+      if (cta) cta.addEventListener('click', function () {
+        document.dispatchEvent(new CustomEvent('trainer:open-chat'));
+      });
+    })();
+  </script>
+{% endif %}
 
 {% endblock %}

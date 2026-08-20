@@ -103,8 +103,14 @@
   var widget = ChatWidget.init({
     root: panel,
     endpoint: {{ base | tojson }} + '/chat/trainer',
-    // A trainer write (built/logged/swapped/finished) landed — refresh the plan card.
-    onWrite: function () { if (window.TrainerPlan) window.TrainerPlan.refresh(); },
+    // A trainer write (built/logged/swapped/finished) landed. On a session page the
+    // plan card re-renders in place; on the Training page there's no card — the write
+    // may have added a whole day to the upcoming list, which is server-rendered, so
+    // reload to pick it up rather than leaving the page silently stale.
+    onWrite: function () {
+      if (window.TrainerPlan) window.TrainerPlan.refresh();
+      else window.location.reload();
+    },
   });
 
   // Handle for the plan card: open the panel and (optionally) fire a prefilled
