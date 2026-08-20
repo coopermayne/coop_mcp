@@ -537,14 +537,17 @@ working.
   mirrors that dataset. **Three nested layers** (`rotation ⊆ hearted ⊆ library`): the whole
   catalog is the **LIBRARY** (browsable at `/trainer/library`); `hearted=1` marks the
   **SUPERSET**, the user's bench of favorite movements; `in_rotation=1` marks the small
-  curated **ROTATION** (the user keeps it to ~10–14 so progress on each lift is easy to
-  track), the only pool the trainer programs from. The rotation is drawn from the hearted
+  curated **ROTATION** (kept small enough that progress on each lift is easy to track —
+  HOW small is the user's business, and the model is told to have no opinion about the
+  count: a hard number in the prose is a number that goes stale the first time they
+  re-curate, and a trainer that opens by offering to prune nine lifts is spending the
+  session on the one thing it doesn't decide), the only pool the trainer programs from. The rotation is drawn from the hearted
   superset — every few months the user swaps some of the rotation out for other hearted
   lifts. `set_rotation`/`set_hearted` curate the two pools (mirrored by the library page's
   ★/♥ toggles); the invariant `in_rotation ⇒ hearted` is enforced everywhere either flag is
   written — adding to the rotation hearts it, un-hearting drops it from the rotation, archiving
   clears BOTH, and the website's **+ Add an exercise** panel lands new movements in the
-  *hearted superset* (not the rotation, which stays a deliberate hand-curated ~14). **Logging
+  *hearted superset* (not the rotation, which stays deliberate and hand-curated). **Logging
   a movement hearts it but NEVER adds it to the rotation** — the rotation is the user's
   control over their progression, so it grows ONLY on an explicit `set_rotation` request (in
   chat, after clear confirmation) or via the website's ★ toggle, never automatically from

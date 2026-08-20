@@ -492,9 +492,10 @@ Two ways to record training:
     skipped). get_workout_plan returns the current state. Only ONE plan is active at a
     time. Design the routine yourself from the briefing, choosing movements from the
     user's `rotation` — progress what was easy (low RPE), hold/deload what was hard, and
-    keep staple lifts so the tracked data stays comparable; vary exercises only modestly.
-    How BIG a session should be is the user's call, not a default of yours — it's in the
-    profile's `coaching` (see below).
+    keep staple lifts so the tracked data stays comparable. How BIG a session should be,
+    how much it should vary from the last one, and how the week's sessions divide the
+    rotation up are all the USER'S call, not defaults of yours — they're in the profile's
+    `coaching` (see below).
   - POST-HOC (log what already happened): log_workout records a finished session (or
     appends to one) in a single call — use it when the user just tells you what they
     did rather than working a plan live.
@@ -527,10 +528,12 @@ The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROT
     user swaps some of the rotation out for other hearted lifts. List it with
     find_exercises(hearted_only=True); add/remove with set_hearted. Heart a movement the user
     likes even when it's not currently programmed, so it's on the bench for the next swap.
-  - ROTATION: the small subset (in_rotation, the user keeps it to ~10-14) they're ACTIVELY
-    training, so progress on each lift is easy to track. The rotation is DELIBERATELY small and
-    hand-curated — keeping it tight is how the user controls their progression, so treat it as
-    fixed unless the user explicitly says to change it. get_fitness_briefing returns it as
+  - ROTATION: the subset (in_rotation) they're ACTIVELY training, kept small enough that
+    progress on each lift is easy to track. HOW small is the user's business and theirs
+    alone — read the size off `rotation` and program the pool you're given; never suggest
+    it's too big or too small, and never offer to prune it. It is hand-curated because
+    that's how the user controls their progression, so treat it as fixed unless they
+    explicitly say to change it. get_fitness_briefing returns it as
     `rotation`, and it is the ONLY pool you PROGRAM ROUTINES FROM. Build start_workout_plan /
     log_workout sessions out of rotation movements. NEVER add a movement to the rotation on
     your own initiative. If a session seems to call for something NOT in the rotation, don't
@@ -542,8 +545,7 @@ The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROT
     find_exercises(muscle=…)). Adding to the rotation hearts it too. Logging a movement the user
     actually did hearts it automatically (onto the favorites bench) but does NOT add it to the
     rotation — the rotation only ever grows on an explicit set_rotation request or via the
-    website, so it stays exactly the size the user chose; when it does drift past ~14 (e.g.
-    after a curation), help the user prune back.
+    website, so it stays exactly the size the user chose.
 
 The catalog is CLOSED to you: you NEVER invent an exercise — the ~870-movement library
 plus anything the user adds is the whole world, so program only names it already holds.
@@ -2773,18 +2775,26 @@ def _exercise_brief(conn: sqlite3.Connection, r) -> dict:
 
 
 # The trainer profile's `coaching` key when the user hasn't written their own — the
-# same defaults-plus-override shape data.nutrient_targets() uses for the rings. These
-# two sentences used to sit in trainer_mcp's `instructions`, which is the wrong home
-# for them: they're PREFERENCES (how long a session, what to nag about), the part of
-# the prompt the user wants to tune as they train, and `instructions` only reaches a
-# connector at its initialize handshake — an edit there needs a redeploy. Delivered
-# through get_fitness_briefing instead, a change lands on the next session, on both
-# the connector and the in-app chat, with nothing to restart. Written in the first
-# person because the user edits this text directly (/trainer's Coaching popover).
+# same defaults-plus-override shape data.nutrient_targets() uses for the rings. This
+# text used to sit in trainer_mcp's `instructions`, which is the wrong home for it:
+# it's PREFERENCE (how long a session, how the week divides up, what to nag about),
+# the part of the prompt the user wants to tune as they train, and `instructions`
+# only reaches a connector at its initialize handshake — an edit there needs a
+# redeploy. Delivered through get_fitness_briefing instead, a change lands on the
+# next session, on both the connector and the in-app chat, with nothing to restart.
+# Written in the first person because the user edits this text directly (/trainer's
+# Coaching popover), and deliberately light on NUMBERS: a default is what's left
+# when they clear the box, so it should hold a shape they can fill rather than
+# figures that quietly contradict the ones they'd just deleted.
 DEFAULT_COACHING = (
-    "Program a substantial session: aim for roughly 21-26 working sets total, built "
-    "from about 6-8 different exercises at 3-4 sets each, spread across the muscle "
-    "groups that are due.\n"
+    "Think in weeks, not single sessions: divide my rotation into a few routines so "
+    "each one works different muscle groups and every group gets rest before it "
+    "comes round again. The split is yours to propose — tell me what it is and why, "
+    "and save it to my profile's `split` once we agree, so the next conversation "
+    "knows which routine is due.\n"
+    "Each session should be substantial: 2-4 sets per exercise, more on compounds "
+    "and fewer on isolation. Say what you're aiming for before you build it.\n"
+    "Across any week, no muscle group should go untrained.\n"
     "After a session is logged, nudge me to weigh in and capture it with "
     "log_bodyweight — the trend is only useful if the readings are regular."
 )
@@ -4704,9 +4714,9 @@ def set_archived(exercise_id: int, archived: bool = True) -> dict:
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
                  in_rotation: bool = True) -> dict:
-    """Add an exercise to (or remove it from) the user's ROTATION — the small curated pool
-    (the user keeps it to ~10-14) of movements they're actively training so progress on each
-    is easy to track. The rotation is the ONLY set you program routines from. It's drawn from
+    """Add an exercise to (or remove it from) the user's ROTATION — the curated pool
+    of movements they're actively training, kept small enough that progress on each is easy
+    to track (how small is theirs to decide — don't have an opinion about the count). The rotation is the ONLY set you program routines from. It's drawn from
     the wider HEARTED superset (see set_hearted) — a bench of favorites the user pulls from
     when they swap the rotation every few months — which in turn sits inside the browsable
     ~870-movement library. Target by `exercise_id` or `name` (case-insensitive); an unknown
@@ -4718,7 +4728,7 @@ def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
     workout as approval to grow the pool. Logging a movement only hearts it (onto the favorites
     bench), never adds it to the rotation — this tool is the ONLY in-chat way the rotation
     grows, so reach for it on a clear request — e.g. "add Bulgarian split squats to my
-    rotation" — and to prune back toward ~14."""
+    rotation"."""
     in_rotation = int(bool(in_rotation))
     with db() as conn:
         if exercise_id is not None:
@@ -4746,8 +4756,8 @@ def set_hearted(name: Optional[str] = None, exercise_id: Optional[int] = None,
                 hearted: bool = True) -> dict:
     """Add an exercise to (or remove it from) the user's HEARTED superset — their bench of
     favorite movements. This is the wider pool the small ROTATION (see set_rotation) is
-    drawn from: the user keeps the rotation to ~10-14 they actively train, and every few
-    months swaps some out for others from this hearted bench, so it's worth hearting any
+    drawn from: the rotation is the smaller set they actively train, and every few
+    months they swap some out for others from this hearted bench, so it's worth hearting any
     movement they like even when it's not currently programmed. Target by `exercise_id` or
     `name` (case-insensitive); an unknown name is an error here (add it via the library
     first). Pass hearted=False to un-heart it — which also removes it from the rotation,
@@ -5820,7 +5830,7 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
 def update_profile(profile: dict) -> dict:
     """Merge fields into the stored trainer profile (JSON). Pass only the keys you
     want to change; existing keys are preserved. Use it to keep durable training
-    facts current — e.g. {"injury": "left shoulder, avoid overhead pressing"},
+    facts current — e.g. {"injuries": "left shoulder, avoid overhead pressing"},
     {"split": {"mon": "arms", "wed": "legs", "fri": "full body"}},
     {"goals": ["build strength", "lose weight"], "experience": "beginner"}.
     These are surfaced by get_fitness_briefing so you coach within them.
