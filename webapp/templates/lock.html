@@ -2,20 +2,27 @@
 {% block title %}Locked · Journal{% endblock %}
 {% block content %}
 
-{# The knock screen. No nav header (base only renders it when `active` is set), so
-   while locked the only way forward is the rhythm. `mode` is "unlock" (knock to
-   enter) or "setup" (record a new knock, confirmed twice). Tap timing is captured
-   client-side; the server compares tempo-independent ratios. #}
+{# The lock screen. No nav header (base only renders it when `active` is set), so
+   while locked the only way forward is one of the two gestures. `mode` is "unlock"
+   (get in) or "setup" (record a secret, confirmed twice).
+
+   TWO gestures, one door — see the config block in app.py. TAP a rhythm (the pad;
+   timing captured client-side, the server compares tempo-independent ratios), or
+   HOLD a few letter keys together anywhere on the page (the desktop answer: a
+   rhythm is a fine thing to tap on a phone and a tedious one to drum at a desk).
+   In setup either can be recorded, independently and in either order; in unlock
+   either opens. The unlock screen names NEITHER — the gesture is the secret. #}
 <div id="lock"
      data-base="{{ base }}"
      data-next="{{ next }}"
      data-mode="{{ mode }}"
      data-tolerance="{{ tolerance }}"
+     data-min-chord="{{ min_chord }}"
      class="max-w-sm mx-auto text-center py-16 select-none">
 
   <h1 class="text-2xl font-bold tracking-tight">Journal</h1>
   <p id="lock-prompt" class="text-sm text-gray-500 mt-2">
-    {% if mode == 'setup' %}Tap a secret knock to lock your journal.{% endif %}
+    {% if mode == 'setup' %}Tap a secret knock — or hold a few letter keys at once.{% endif %}
   </p>
 
   {# The tap pad. The whole circle is the surface; taps anywhere on it count.
@@ -31,6 +38,20 @@
   </button>
 
   <p id="lock-status" class="mt-6 text-sm h-5 text-gray-500"></p>
+
+  {% if mode == 'setup' %}
+  {# Setup only: what's on file already, so re-recording one gesture doesn't leave you
+     wondering whether the other survived (it does — the write merges). #}
+  <p class="mt-2 text-xs text-gray-400">
+    {% if has_knock or has_chord %}
+      On file:
+      {% if has_knock %}knock{% endif %}{% if has_knock and has_chord %} · {% endif %}{% if has_chord %}key combo{% endif %}.
+      Recording one leaves the other alone.
+    {% else %}
+      Nothing recorded yet.
+    {% endif %}
+  </p>
+  {% endif %}
 
   {% if pin_enabled %}
   <div class="mt-6 flex items-center justify-center gap-4 text-xs text-gray-400">
@@ -58,6 +79,7 @@
   var NEXT = root.dataset.next || '/journal';
   var MODE = root.dataset.mode;                 // 'unlock' | 'setup'
   var TOL = parseFloat(root.dataset.tolerance) || 0.15;
+  var MIN_CHORD = parseInt(root.dataset.minChord, 10) || 2;
   var FINISH_MS = 1100;                          // pause after the last tap = knock done
   var MIN_TAPS = 3;
 
@@ -67,7 +89,8 @@
 
   var taps = [];        // tap timestamps (ms) for the knock in progress
   var timer = null;     // fires FINISH_MS after the last tap
-  var firstNorm = null; // setup: the first capture, awaiting confirmation
+  var firstNorm = null; // setup: the first knock capture, awaiting confirmation
+  var firstChord = null;// setup: the first chord capture, awaiting confirmation
   var busy = false;     // a request is in flight
 
   function setStatus(msg, bad) {
@@ -99,15 +122,17 @@
     );
   }
 
+  function fail(msg) { setStatus(msg, true); shake(); }
+
   function finish() {
     timer = null;
     if (taps.length < MIN_TAPS) {
-      setStatus('Tap at least three times.', true);
-      shake();
+      fail('Tap at least three times.');
       clearTaps();
       return;
     }
     var raw = gaps();
+    clearTaps();
     if (MODE === 'setup') return finishSetup(raw);
     return finishUnlock(raw);
   }
@@ -119,46 +144,56 @@
     });
   }
 
-  function finishUnlock(raw) {
+  // Both gestures land here: send the attempt, go in or say try again.
+  function attempt(body) {
     busy = true;
     setStatus('Checking…');
-    post('/lock/verify', { gaps: raw })
+    post('/lock/verify', body)
       .then(function (r) { return r.json(); })
       .then(function (j) {
         busy = false;
         if (j && j.ok) { window.location.href = BASE + NEXT; }
-        else { setStatus('Not quite — try again.', true); shake(); clearTaps(); }
+        else { fail('Not quite — try again.'); }
       })
-      .catch(function () { busy = false; setStatus('Something went wrong.', true); clearTaps(); });
+      .catch(function () { busy = false; setStatus('Something went wrong.', true); });
+  }
+
+  function finishUnlock(raw) { attempt({ gaps: raw }); }
+
+  // Save a confirmed secret (either kind) and go in.
+  function save(body) {
+    busy = true;
+    setStatus('Saving…');
+    post('/lock/set', body)
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        busy = false;
+        if (j && j.ok) { window.location.href = BASE + NEXT; }
+        else { fail((j && j.error) || 'Could not save.'); firstNorm = null; firstChord = null; }
+      })
+      .catch(function () {
+        busy = false; setStatus('Something went wrong.', true);
+        firstNorm = null; firstChord = null;
+      });
+  }
+
+  function resetSetup(msg) {
+    firstNorm = null; firstChord = null; clearTaps();
+    prompt.textContent = 'Tap a secret knock — or hold a few letter keys at once.';
+    if (msg) fail(msg); else setStatus('');
   }
 
   function finishSetup(raw) {
     var norm = normalize(raw);
+    firstChord = null;                       // a knock in progress cancels a half-recorded chord
     if (!firstNorm) {
       firstNorm = norm;
-      clearTaps();
       prompt.textContent = 'Now tap the same knock again to confirm.';
       setStatus('');
       return;
     }
-    if (!matches(firstNorm, norm)) {
-      firstNorm = null;
-      clearTaps();
-      prompt.textContent = 'Tap a secret knock to lock your journal.';
-      setStatus("Those didn't match — start over.", true);
-      shake();
-      return;
-    }
-    busy = true;
-    setStatus('Saving…');
-    post('/lock/set', { gaps: raw })
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        busy = false;
-        if (j && j.ok) { window.location.href = BASE + NEXT; }
-        else { setStatus((j && j.error) || 'Could not save.', true); firstNorm = null; clearTaps(); }
-      })
-      .catch(function () { busy = false; setStatus('Something went wrong.', true); firstNorm = null; clearTaps(); });
+    if (!matches(firstNorm, norm)) return resetSetup("Those didn't match — start over.");
+    save({ gaps: raw });
   }
 
   function tap() {
@@ -169,10 +204,71 @@
   }
 
   pad.addEventListener('pointerdown', function (e) { e.preventDefault(); tap(); });
-  // Spacebar taps too, for a desktop keyboard.
+
+  // ------------------------------------------------------------------ //
+  // The key chord: letter/digit keys held down TOGETHER. The set stays open
+  // while ANY key is still down, so a staggered press (fingers never land at
+  // once) still reads as one chord; it closes when the last one comes up.
+  // Keys are read by physical position (e.code), matching the server's storage.
+  // ------------------------------------------------------------------ //
+  var held = {};        // keys currently down
+  var heldCount = 0;
+  var pressed = {};     // every key of the chord in progress, including released ones
+
+  function chordKey(e) {
+    var c = e.code || '';
+    if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
+    if (/^Digit[0-9]$/.test(c)) return c.slice(5);
+    return null;
+  }
+  function typing() {
+    var el = document.activeElement;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+  }
+  function chordReset() { held = {}; heldCount = 0; pressed = {}; }
+
+  function finishChord(keys) {
+    if (MODE !== 'setup') return attempt({ chord: keys });
+    firstNorm = null;                        // a chord cancels a half-recorded knock
+    clearTaps();
+    var joined = keys.slice().sort().join('');
+    if (!firstChord) {
+      firstChord = joined;
+      prompt.textContent = 'Now press the same keys again to confirm.';
+      setStatus('');
+      return;
+    }
+    if (firstChord !== joined) return resetSetup("Those didn't match — start over.");
+    save({ chord: keys });
+  }
+
   document.addEventListener('keydown', function (e) {
-    if (e.code === 'Space' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); tap(); }
+    if (typing() || e.metaKey || e.ctrlKey || e.altKey) return;
+    // Spacebar taps the pad too, for a desktop keyboard.
+    if (e.code === 'Space') { e.preventDefault(); tap(); return; }
+    var k = chordKey(e);
+    if (!k) return;
+    e.preventDefault();
+    if (busy || e.repeat || held[k]) return;
+    held[k] = 1; heldCount++; pressed[k] = 1;
   });
+
+  document.addEventListener('keyup', function (e) {
+    var k = chordKey(e);
+    if (!k || !held[k]) return;
+    delete held[k]; heldCount--;
+    if (heldCount > 0) return;               // still holding — the chord isn't over
+    var keys = Object.keys(pressed);
+    chordReset();
+    // A single key tapped alone is someone brushing the keyboard, not a chord:
+    // ignore it silently rather than burning an attempt.
+    if (busy || keys.length < MIN_CHORD) return;
+    finishChord(keys);
+  });
+
+  // A chord held while the window loses focus would leave keys "down" forever
+  // (no keyup ever arrives), so every subsequent press would join a stale set.
+  window.addEventListener('blur', chordReset);
 
   // PIN fallback (present only when configured).
   var pinForm = document.getElementById('lock-pin');

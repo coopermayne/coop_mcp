@@ -115,6 +115,18 @@ WIDGET_TOKEN = (os.environ.get("WIDGET_TOKEN") or "").strip()
 # pattern played fast or slow both pass. The reference pattern lives in the DB
 # `settings` table (key `journal_lock`), set once from the lock screen.
 #
+# A knock is the right gesture on a PHONE and the wrong one on a laptop: tapping
+# out a rhythm at a desk, several times a day, is the thing you stop wanting to
+# do. So the same row holds a SECOND, equal secret — a CHORD: two or more letter
+# (or digit) keys held down TOGETHER, like a piano chord. It's the same gate by a
+# different limb, not a fallback: either one unlocks, both are recorded from the
+# same setup screen, and neither is required (record a knock on the phone, a chord
+# on the laptop, or both). Order doesn't matter — the keys are stored sorted —
+# because "pressed together" has no order, and the browser reports one anyway
+# based on which finger landed first. Keys are identified by physical POSITION
+# (KeyboardEvent.code, "KeyQ" -> "q"), so a chord is where your fingers go, not
+# what the layout prints there.
+#
 # Enabled when JOURNAL_LOCK is truthy OR a knock has already been recorded (so
 # it stays on across restarts without re-setting the env). Unset + no knock =
 # the whole feature is dormant. LOCK_PIN is an optional digit-code fallback so a
@@ -128,6 +140,11 @@ LOCK_IDLE_SECONDS = int(os.environ.get("JOURNAL_LOCK_IDLE", "300") or "300")
 # 15% of the way off). Forgiving enough to reproduce by hand, tight enough that a
 # different rhythm fails.
 LOCK_TOLERANCE = float(os.environ.get("JOURNAL_LOCK_TOLERANCE", "0.15") or "0.15")
+# How many keys a chord must hold at once. Two is enough to never happen by
+# accident on a screen with nothing to type into, and every extra key is another
+# one a cheap keyboard can drop to ghosting — so this is a floor, not a target.
+LOCK_MIN_CHORD = 2
+LOCK_MAX_CHORD = 6
 
 # Journal-only paths the lock guards (relative to the mount prefix). Everything
 # else — trainer, library, auth, static, the lock screen itself — passes
@@ -330,8 +347,9 @@ def _is_lock_path(path: str) -> bool:
 
 
 def _get_lock() -> Optional[dict]:
-    """The stored knock reference ({"gaps": [...normalized...], "count": N}) or None
-    if no knock has been recorded. Reads the shared `settings` table directly — the
+    """The stored unlock reference, or None if nothing has been recorded. Holds either
+    secret or both: {"gaps": [...normalized...], "count": N} for the knock, {"chord":
+    ["a","s"]} for the key chord. Reads the shared `settings` table directly — the
     same generic JSON-KV the trainer profile lives in; no server.py tool needed for a
     pure webapp-config value."""
     try:
@@ -343,18 +361,32 @@ def _get_lock() -> Optional[dict]:
         return None
 
 
-def _set_lock(norm_gaps: list, count: int) -> None:
+def _set_lock(norm_gaps: Optional[list] = None, chord: Optional[list] = None) -> None:
+    """Record one of the two secrets, MERGING into whatever is already stored: the
+    knock and the chord are set from the same screen but on separate visits (phone
+    first, laptop later), so writing one must never quietly drop the other."""
+    ref = _get_lock() or {}
+    if norm_gaps is not None:
+        ref["gaps"], ref["count"] = norm_gaps, len(norm_gaps) + 1
+    if chord is not None:
+        ref["chord"] = chord
     with server.db() as conn:
         conn.execute(
             "INSERT INTO settings(key, value) VALUES ('journal_lock', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (json.dumps({"gaps": norm_gaps, "count": count}),),
+            (json.dumps(ref),),
         )
 
 
+def _has_secret(ref: Optional[dict]) -> bool:
+    """Whether a reference row actually carries something you can unlock WITH — a row
+    can exist holding only one of the two."""
+    return bool(ref and (ref.get("gaps") or ref.get("chord")))
+
+
 def _lock_active() -> bool:
-    """The lock guards the journal when explicitly enabled OR once a knock exists."""
-    return LOCK_ENABLED_ENV or (_get_lock() is not None)
+    """The lock guards the journal when explicitly enabled OR once a secret exists."""
+    return LOCK_ENABLED_ENV or _has_secret(_get_lock())
 
 
 def _normalize_gaps(gaps) -> Optional[list]:
@@ -376,6 +408,29 @@ def _knock_matches(ref: Optional[list], attempt: Optional[list]) -> bool:
     if not ref or not attempt or len(ref) != len(attempt):
         return False
     return all(abs(r - a) <= LOCK_TOLERANCE for r, a in zip(ref, attempt))
+
+
+def _normalize_chord(keys) -> Optional[list]:
+    """Turn the keys held down into a canonical chord: single alphanumerics, lowercased,
+    deduped and SORTED (a chord has no order — see the config block). None if it isn't a
+    plausible chord, so a stray keystroke can't be recorded as one."""
+    if not isinstance(keys, (list, tuple)):
+        return None
+    out = set()
+    for k in keys:
+        if not isinstance(k, str):
+            return None
+        k = k.strip().lower()
+        if len(k) != 1 or not k.isalnum():
+            return None
+        out.add(k)
+    if not (LOCK_MIN_CHORD <= len(out) <= LOCK_MAX_CHORD):
+        return None
+    return sorted(out)
+
+
+def _chord_matches(ref: Optional[list], attempt: Optional[list]) -> bool:
+    return bool(ref) and bool(attempt) and list(ref) == list(attempt)
 
 
 def _unlock_session(request: Request) -> None:
@@ -525,7 +580,8 @@ async def lock_page(request: Request):
     if not _lock_active():
         return RedirectResponse(base + "/journal")
     nxt = _safe_next(request.query_params.get("next"))
-    configured = _get_lock() is not None
+    ref = _get_lock()
+    configured = _has_secret(ref)
     change = bool(request.query_params.get("change"))
     if not configured:
         mode = "setup"            # no knock yet → must record one to proceed
@@ -538,23 +594,31 @@ async def lock_page(request: Request):
     # active="journal" so base.html renders the nav: the lock only covers the journal,
     # so the rest of the app (trainer, training, library) stays reachable
     # from the lock screen without unlocking.
+    # `has_knock`/`has_chord` only ever reach the SETUP screen (the template gates on
+    # mode), so the unlock screen still gives nothing away about which gestures work.
     return page(request, "lock.html", active="journal", next=nxt, mode=mode,
-                pin_enabled=bool(LOCK_PIN), tolerance=LOCK_TOLERANCE)
+                pin_enabled=bool(LOCK_PIN), tolerance=LOCK_TOLERANCE,
+                min_chord=LOCK_MIN_CHORD,
+                has_knock=bool(ref and ref.get("gaps")),
+                has_chord=bool(ref and ref.get("chord")))
 
 
 @app.post("/lock/verify")
 async def lock_verify(request: Request):
-    """Check a knock (or the optional PIN fallback) and unlock the session. Body:
-    {gaps: [ms,...]} for a knock, or {pin: "1234"} when JOURNAL_LOCK_PIN is set."""
+    """Check an unlock attempt and unlock the session. Body: {gaps: [ms,...]} for a
+    knock, {chord: ["a","s"]} for a key chord, or {pin: "1234"} when JOURNAL_LOCK_PIN
+    is set. Either recorded secret opens the same door."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     ok = False
     pin = body.get("pin")
+    ref = _get_lock() or {}
     if pin is not None and LOCK_PIN:
         ok = secrets.compare_digest(str(pin), LOCK_PIN)
+    elif body.get("chord") is not None:
+        ok = _chord_matches(ref.get("chord"), _normalize_chord(body.get("chord")))
     else:
-        ref = _get_lock()
-        ok = bool(ref) and _knock_matches(ref.get("gaps"), _normalize_gaps(body.get("gaps")))
+        ok = _knock_matches(ref.get("gaps"), _normalize_gaps(body.get("gaps")))
     if ok:
         _unlock_session(request)
     return JSONResponse({"ok": ok})
@@ -562,17 +626,27 @@ async def lock_verify(request: Request):
 
 @app.post("/lock/set")
 async def lock_set(request: Request):
-    """Record (or change) the secret knock. Allowed when no knock exists yet, or
-    from an already-unlocked session (so you can't reset the knock without first
-    being inside). Body: {gaps: [ms,...]}. Recording unlocks the session too."""
+    """Record (or change) one of the two secrets — the knock ({gaps: [ms,...]}) or the
+    key chord ({chord: ["a","s"]}). Allowed when nothing is recorded yet, or from an
+    already-unlocked session (so neither can be reset without first being inside).
+    Writes MERGE, so recording a chord on the laptop leaves the phone's knock alone.
+    Recording unlocks the session too."""
     from fastapi.responses import JSONResponse
-    if _get_lock() is not None and not _is_unlocked(request):
-        return JSONResponse({"error": "Unlock first to change the knock."}, status_code=403)
+    if _has_secret(_get_lock()) and not _is_unlocked(request):
+        return JSONResponse({"error": "Unlock first to change how you get in."}, status_code=403)
     body = await request.json()
-    norm = _normalize_gaps(body.get("gaps"))
-    if norm is None:
-        return JSONResponse({"error": "Tap at least three times."}, status_code=400)
-    _set_lock(norm, len(norm) + 1)
+    if body.get("chord") is not None:
+        chord = _normalize_chord(body.get("chord"))
+        if chord is None:
+            return JSONResponse(
+                {"error": f"Hold {LOCK_MIN_CHORD}-{LOCK_MAX_CHORD} letter keys at once."},
+                status_code=400)
+        _set_lock(chord=chord)
+    else:
+        norm = _normalize_gaps(body.get("gaps"))
+        if norm is None:
+            return JSONResponse({"error": "Tap at least three times."}, status_code=400)
+        _set_lock(norm_gaps=norm)
     _unlock_session(request)
     return JSONResponse({"ok": True})
 

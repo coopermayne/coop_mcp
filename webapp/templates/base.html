@@ -334,15 +334,16 @@
           {% if lock_in_journal %}
           {# Journal lock controls — only while you're actually inside the unlocked
              journal (never on the lock screen or the open trainer pages), so
-             the knock can't be changed without first proving you're in. Lock now, or
-             re-record the secret knock (the change screen also re-checks the session). #}
+             neither secret can be changed without first proving you're in. Lock now, or
+             re-record the knock / key combo (the change screen also re-checks the
+             session, and records one gesture without disturbing the other). #}
           <a href="{{ base }}/lock/relock" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-500 hover:text-black transition-colors">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             <span>Lock journal</span>
           </a>
           <a href="{{ base }}/lock?change=1" class="flex items-center gap-3 px-3 py-2 text-sm text-gray-500 hover:text-black transition-colors">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
-            <span>Change knock</span>
+            <span>Change unlock</span>
           </a>
           {% endif %}
           {% if show_logout %}
