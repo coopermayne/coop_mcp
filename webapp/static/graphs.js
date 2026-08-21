@@ -345,6 +345,191 @@
     goalToggle.addEventListener('click', function () { goalForm.hidden = !goalForm.hidden; });
   }
 
+  /* ---------- today's weigh-in -------------------------------------------
+     The page's one write. A successful log doesn't reload: it upserts today's
+     point into DATA.weight and re-renders, so the line extends under you — and
+     so an all-time-low burst isn't cut off by a navigation, which is the whole
+     reason the weigh-in moved off the /trainer card in the first place. */
+  (function () {
+    var box = root.querySelector('[data-weighin]');
+    if (!box) return;
+    var read  = box.querySelector('[data-weighin-read]');
+    var delta = box.querySelector('[data-weighin-delta]');
+    var edit  = box.querySelector('[data-weighin-edit]');
+    var form  = box.querySelector('[data-weighin-form]');
+    var input = box.querySelector('[data-weighin-input]');
+    var save  = box.querySelector('[data-weighin-save]');
+    var err   = box.querySelector('[data-weighin-err]');
+
+    function todayPoint() {
+      for (var i = DATA.weight.length - 1; i >= 0; i--) {
+        if (DATA.weight[i].date === DATA.today) return DATA.weight[i];
+      }
+      return null;
+    }
+    // Two faces: a logged day reads as text with a ✎, an unweighed one opens with
+    // the field ready. `keepOpen` holds the field after a correction is started.
+    function paint(keepOpen) {
+      var p = todayPoint();
+      var showRead = !!p && !keepOpen;
+      read.hidden = !p;
+      read.textContent = p ? fmt(p.lbs) + ' lbs' : '';
+      edit.hidden = !showRead;
+      form.hidden = showRead;
+      delta.hidden = !(p && delta.textContent);
+      save.disabled = !(parseFloat(input.value) > 0);
+    }
+    function fmt(n) { return String(Math.round(n * 10) / 10); }
+
+    // Typo guard, carried over from the old /trainer box: a value outside a plausible
+    // range turns the field yellow. It never BLOCKS — a real reading can be anything,
+    // and capture must not argue. It earns its place on dropped leading digits, which
+    // is the failure mode this log actually has a history of (a dropped leading digit);
+    // those readings are invisible on the chart, since the latest reading on a day wins,
+    // but they sink the all-time MIN and with it every "lowest ever" this page can spot.
+    var LO = 160, HI = 230;
+    function paintInput() {
+      var v = input.value.trim(), n = parseFloat(v);
+      var bad = v !== '' && !(n >= LO && n <= HI);
+      input.classList.toggle('border-yellow-400', bad);
+      input.classList.toggle('bg-yellow-50', bad);
+      input.classList.toggle('border-gray-200', !bad);
+    }
+
+    edit.addEventListener('click', function () {
+      var p = todayPoint();
+      input.value = p ? fmt(p.lbs) : '';
+      paint(true);
+      paintInput();
+      input.focus();
+      input.select();
+    });
+    input.addEventListener('input', function () {
+      err.hidden = true;
+      save.disabled = !(parseFloat(input.value) > 0);
+      paintInput();
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); save.click(); }
+    });
+
+    save.addEventListener('click', function () {
+      var v = parseFloat(input.value);
+      if (!(v > 0)) { input.focus(); return; }
+      save.disabled = true;
+      err.hidden = true;
+      fetch(root.dataset.weighinUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weight_lbs: v }),
+      }).then(function (r) {
+        return r.json().then(function (j) {
+          if (!r.ok || (j && j.error)) {
+            err.textContent = (j && j.error) || 'Could not save.';
+            err.hidden = false;
+            save.disabled = false;
+            return;
+          }
+          // Upsert today's point rather than refetching: one reading a day, latest
+          // wins, which is exactly what the chart's own series already assumes.
+          var p = todayPoint();
+          if (p) p.lbs = j.weight_lbs;
+          else DATA.weight.push({ date: j.weigh_date, lbs: j.weight_lbs });
+          HAS_DATA.weight = DATA.weight.length > 0;
+          delta.textContent = j.change_lbs != null
+            ? (j.change_lbs > 0 ? '+' : '−') + fmt(Math.abs(j.change_lbs)) + ' since last'
+            : '';
+          input.value = '';
+          paintInput();
+          paint();
+          render();
+          if (j.new_low && window.Confetti) window.Confetti.burst(box);
+        });
+      }).catch(function () {
+        err.textContent = 'Could not save.';
+        err.hidden = false;
+        save.disabled = false;
+      });
+    });
+
+    paint();
+  })();
+
+  /* ---------- weigh-in history (correct / delete a past reading) -----------
+     Fetch-then-reload, the /food Targets popover's shape. Deliberately NOT the
+     today-row's live patch: this list is server-rendered (it needs row ids the
+     chart series doesn't carry), it's a repair tool used rarely, and a reload is
+     the honest way to redraw both the list and every series that reading feeds. */
+  (function () {
+    var box = root.querySelector('[data-wlog]');
+    if (!box) return;
+    var toggle = box.querySelector('[data-wlog-toggle]');
+    var list = box.querySelector('[data-wlog-list]');
+    var err = box.querySelector('[data-wlog-err]');
+    var base = root.dataset.weighinUrl;   // .../graphs/weight
+
+    toggle.addEventListener('click', function () { list.hidden = !list.hidden; });
+
+    function fail(msg) { err.textContent = msg; err.hidden = false; }
+
+    function post(url, body) {
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      }).then(function (r) {
+        return r.json().then(function (j) {
+          if (!r.ok || (j && j.error)) throw new Error((j && j.error) || 'Could not save.');
+          return j;
+        });
+      });
+    }
+
+    list.addEventListener('click', function (e) {
+      var row = e.target.closest('[data-wrow]');
+      if (!row) return;
+      var id = row.dataset.wid;
+      var val = row.querySelector('[data-wval]');
+      var inp = row.querySelector('[data-winput]');
+
+      if (e.target.closest('[data-wedit]')) {
+        err.hidden = true;
+        if (inp.hidden) {            // open the field
+          val.hidden = true; inp.hidden = false; inp.focus(); inp.select();
+        } else {                     // second tap commits
+          var v = parseFloat(inp.value);
+          if (!(v > 0)) { inp.focus(); return; }
+          post(base + '/' + id, { weight_lbs: v })
+            .then(function () { location.reload(); })
+            .catch(function (ex) { fail(ex.message); });
+        }
+        return;
+      }
+
+      if (e.target.closest('[data-wdel]')) {
+        err.hidden = true;
+        var label = row.querySelector('[data-wval]').textContent.trim();
+        var when = row.querySelector('span').textContent.trim();
+        if (!window.confirm('Delete the ' + label + ' reading from ' + when + '?')) return;
+        post(base + '/' + id + '/delete')
+          .then(function () { location.reload(); })
+          .catch(function (ex) { fail(ex.message); });
+      }
+    });
+
+    // Enter commits an open field, Escape abandons it.
+    list.addEventListener('keydown', function (e) {
+      var row = e.target.closest('[data-wrow]');
+      if (!row || e.target.matches('[data-winput]') === false) return;
+      if (e.key === 'Enter') { e.preventDefault(); row.querySelector('[data-wedit]').click(); }
+      else if (e.key === 'Escape') {
+        e.preventDefault();
+        row.querySelector('[data-winput]').hidden = true;
+        row.querySelector('[data-wval]').hidden = false;
+      }
+    });
+  })();
+
   root.querySelector('[data-ex-metric]').value = state.metric;
   root.querySelector('[data-ex-metric]').addEventListener('change', function (e) {
     state.metric = e.target.value;

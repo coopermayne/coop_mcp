@@ -32,7 +32,68 @@
 
 <h1 class="text-2xl font-bold tracking-tight mb-8">Graphs</h1>
 
-<div data-graphs>
+{# The weigh-in POST target lives here rather than in graphs.js, which has no way
+   to know the mount path — same reason the goal form carries a Jinja `action`. #}
+<div data-graphs data-weighin-url="{{ base }}/graphs/weight">
+  {# Today's weigh-in. First thing on the page because it's the one thing here you
+     DO rather than read, and it belongs next to the line it moves — a bodyweight is
+     a morning reading, so it used to sit on the /trainer plan card and only be
+     reachable on days you trained. Deliberately outside the panel below: that
+     section hides when the Bodyweight chip is off or there's nothing plotted yet,
+     and the very first weigh-in has to be enterable on an empty page.
+     The row states what's in and offers what's missing — a reading shows as text
+     with a ✎ to correct it, an unweighed day opens with the field ready. #}
+  <div class="flex flex-wrap items-center gap-2 mb-4 border border-gray-200 rounded-[4px] px-3 py-2.5"
+       data-weighin>
+    <span class="text-[10px] uppercase tracking-widest text-gray-400 shrink-0">Today</span>
+    <span data-weighin-read hidden class="text-sm tabular-nums"></span>
+    <span data-weighin-delta hidden class="text-xs text-gray-400 tabular-nums"></span>
+    <button type="button" data-weighin-edit hidden
+            class="text-xs text-gray-400 hover:text-black transition-colors">✎</button>
+    <span data-weighin-form class="flex items-center gap-2">
+      <label class="sr-only" for="weighin-lbs">Bodyweight in pounds</label>
+      <input id="weighin-lbs" type="number" step="0.1" min="1" inputmode="decimal"
+             placeholder="lbs" data-weighin-input
+             class="w-24 border border-gray-200 rounded-[4px] px-2 py-1 text-sm" />
+      <button type="button" data-weighin-save
+              class="text-xs font-medium border border-black rounded-[4px] px-3 py-1.5 hover:bg-black hover:text-white transition-colors disabled:opacity-20">Log</button>
+    </span>
+    <p data-weighin-err hidden class="text-[11px] text-red-600 basis-full"></p>
+  </div>
+
+  {# The weigh-in HISTORY — every row, with its id, so a reading can be corrected or
+     removed. Deliberately every ROW and not the chart's one-point-per-day: a mistyped
+     reading that was re-logged the same day is invisible on the chart (latest wins) but
+     still sits in the table dragging MIN(weight_lbs) down, which silently disables
+     "lowest ever". Being able to see and delete it is the whole point.
+     Folded away by default — it's a repair tool, not something you read daily. #}
+  {% if weights %}
+  <div class="mb-6" data-wlog>
+    <button type="button" data-wlog-toggle
+            class="text-xs text-gray-400 hover:text-black transition-colors">
+      {{ weights | length }} weigh-in{{ '' if weights | length == 1 else 's' }} ▾
+    </button>
+    <div hidden data-wlog-list
+         class="mt-2 border border-gray-200 rounded-[4px] divide-y divide-gray-100 max-h-56 overflow-y-auto">
+      {% for w in weights %}
+      <div class="flex items-center gap-2 px-3 py-1.5 text-sm" data-wrow data-wid="{{ w.id }}">
+        <span class="text-xs text-gray-400 tabular-nums w-20 shrink-0">{{ w.date | short_date }}</span>
+        <span data-wval class="tabular-nums">{{ w.lbs | num }} lbs</span>
+        <input type="number" step="0.1" min="1" inputmode="decimal" hidden data-winput
+               value="{{ w.lbs }}"
+               class="w-20 border border-gray-200 rounded-[4px] px-2 py-0.5 text-sm tabular-nums" />
+        <span class="flex-1"></span>
+        <button type="button" data-wedit title="Correct this reading"
+                class="text-xs text-gray-300 hover:text-black transition-colors px-1">✎</button>
+        <button type="button" data-wdel title="Delete this reading"
+                class="text-xs text-gray-300 hover:text-red-500 transition-colors px-1">×</button>
+      </div>
+      {% endfor %}
+    </div>
+    <p data-wlog-err hidden class="text-[11px] text-red-600 mt-1"></p>
+  </div>
+  {% endif %}
+
   {# Range presets — one row of filters above every chart, shared by all panels. #}
   <div class="flex flex-wrap gap-1.5 mb-4" data-range-chips role="group" aria-label="Date range">
     <button type="button" class="gchip" data-range="30">30d</button>

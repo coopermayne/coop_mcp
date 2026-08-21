@@ -2816,8 +2816,9 @@ DEFAULT_COACHING = (
     "Each session should be substantial: 2-4 sets per exercise, more on compounds "
     "and fewer on isolation. Say what you're aiming for before you build it.\n"
     "Across any week, no muscle group should go untrained.\n"
-    "After a session is logged, nudge me to weigh in and capture it with "
-    "log_bodyweight — the trend is only useful if the readings are regular."
+    "Weigh-ins are a MORNING habit, entered on the graphs page — don't chase one "
+    "after a session. If I tell you a number, log it with log_bodyweight; if the "
+    "readings have gone quiet for a stretch, say so once and move on."
 )
 
 
@@ -5130,6 +5131,63 @@ def get_personal_records(exercise_id: Optional[int] = None,
     return out
 
 
+def pr_for_set(set_id: int) -> Optional[dict]:
+    """Is this just-logged set a personal best for its exercise? A plain helper, NOT an
+    MCP tool: the model already reads bests through get_personal_records, while this
+    answers the one question the /trainer card asks after a tap — so the page can throw
+    confetti at the chip. Website-only, like clear_plan_set and set_archived. Returns
+    {set_id, exercise_id, weight_lbs, reps} when it IS a best, else None.
+
+    The rule, stated once, here: a set is a best when its weight EXCEEDS the heaviest
+    ever logged for that movement, or TIES that weight and beats the most reps ever done
+    at it. No e1rm — a formula's estimate isn't a thing that happened. `weight_lbs` is
+    SIGNED, so plain `>` is right for assisted work too (a pull-up at -10 beats one at
+    -20). Cardio never counts: a set with a NULL weight or NULL reps can't be a best
+    here, and distance/duration bests live in get_personal_records. Neither does the
+    FIRST weighted set of a movement — there was nothing to beat.
+
+    `id<>?` is what makes this "was it a best BEFORE this set": the row is already
+    written by the time we ask. Every OTHER done set counts, including earlier sets of
+    the session in progress (matching get_personal_records, which doesn't filter on
+    workout status), so the third set at the day's top weight doesn't re-announce the
+    record the first one set. A set that isn't 'done' returns None, so the blank-reps
+    path (clear_plan_set) can never celebrate.
+
+    The caller dedupes: correcting a set re-asks this question and gets the same honest
+    answer, so the browser is what remembers it already celebrated (see trainer.js).
+    """
+    with db() as conn:
+        r = conn.execute(
+            "SELECT exercise_id, status, weight_lbs, reps FROM sets WHERE id=?",
+            (set_id,),
+        ).fetchone()
+        if not r or r["status"] != "done":
+            return None
+        w, reps, eid = r["weight_lbs"], r["reps"], r["exercise_id"]
+        if w is None or reps is None:
+            return None
+        hit = {"set_id": set_id, "exercise_id": eid, "weight_lbs": w, "reps": reps}
+        best = conn.execute(
+            """SELECT MAX(weight_lbs) AS w FROM sets
+               WHERE exercise_id=? AND status='done' AND id<>?
+                 AND weight_lbs IS NOT NULL AND reps IS NOT NULL""",
+            (eid, set_id),
+        ).fetchone()["w"]
+        if best is None:
+            return None
+        if w > best:
+            return hit
+        if w < best:
+            return None
+        best_reps = conn.execute(
+            """SELECT MAX(reps) AS r FROM sets
+               WHERE exercise_id=? AND status='done' AND id<>? AND weight_lbs=?
+                 AND reps IS NOT NULL""",
+            (eid, set_id, w),
+        ).fetchone()["r"]
+        return hit if (best_reps is not None and reps > best_reps) else None
+
+
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
@@ -5751,7 +5809,9 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
 
     One reading per occasion; the latest reading on a day is treated as that day's
     weight, and a day with no reading just wasn't weighed (nothing is stored for it).
-    Returns the reading plus `change_lbs` versus the previous weigh-in (negative = down).
+    Returns the reading plus `change_lbs` versus the previous weigh-in (negative = down),
+    and `new_low: true` when it's the lowest reading ever recorded — omitted otherwise,
+    and never on the very first reading, since there was nothing to beat.
 
     Args:
         weight_lbs: The scale reading in pounds.
@@ -5773,10 +5833,47 @@ def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
                WHERE weigh_date < ? ORDER BY weigh_date DESC, id DESC LIMIT 1""",
             (d,),
         ).fetchone()
+        # All-time low. Deliberately NOT date-scoped like `prev` above — that query
+        # excludes the whole of today because it answers a day-over-day delta, whereas
+        # an all-time low is all-time, earlier readings today included. Excluding by
+        # `id` is what keeps the row we just inserted out of its own comparison.
+        low = conn.execute(
+            "SELECT MIN(weight_lbs) AS m FROM body_weight WHERE id<>?", (rid,),
+        ).fetchone()["m"]
     out = {"bodyweight_id": rid, "weigh_date": d, "weight_lbs": weight_lbs}
     if prev:
         out["change_lbs"] = round(weight_lbs - prev["weight_lbs"], 1)
+    # Strictly less than: re-logging the same number isn't a new low. `low is None` is
+    # the first reading ever, which isn't one either.
+    if low is not None and weight_lbs < low:
+        out["new_low"] = True
     return out
+
+
+def set_bodyweight(bodyweight_id: int, weight_lbs: float) -> dict:
+    """Correct one already-recorded weigh-in, by row id. A plain helper, NOT an MCP
+    tool — website-only, like set_nutrient_targets and set_trainer_profile: it backs the
+    /graphs weigh-in history's ✎, where the user is looking at the list and can see WHICH
+    row is wrong. The model has no business picking a row id out of the air; when it's
+    told "Tuesday was 204, not 104" it re-logs, and the latest reading on a day wins.
+
+    This exists because re-logging ISN'T always enough. A dropped leading digit (a
+    reading entered with its first digit missing) is invisible afterwards — the day
+    already shows the corrected
+    reading — but the bad row still sits in the table dragging MIN(weight_lbs) down,
+    which silently disables every "lowest ever" the app can spot. Correcting the row,
+    or deleting it, is the only thing that clears it."""
+    if weight_lbs is None or weight_lbs <= 0:
+        return {"error": f"weight_lbs must be positive, got {weight_lbs}"}
+    with db() as conn:
+        cur = conn.execute("UPDATE body_weight SET weight_lbs=? WHERE id=?",
+                           (weight_lbs, bodyweight_id))
+        if cur.rowcount == 0:
+            return {"error": f"no weigh-in with id {bodyweight_id}"}
+        r = conn.execute("SELECT id, weigh_date, weight_lbs FROM body_weight WHERE id=?",
+                         (bodyweight_id,)).fetchone()
+    return {"bodyweight_id": r["id"], "weigh_date": r["weigh_date"],
+            "weight_lbs": r["weight_lbs"]}
 
 
 @trainer_mcp.tool(annotations=READ_ONLY)

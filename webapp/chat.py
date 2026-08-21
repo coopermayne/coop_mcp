@@ -544,7 +544,9 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
         href = "/workouts"
         summary = "Updated the workout"
     elif name == "log_bodyweight":
-        href = "/workouts"
+        # /graphs, not /workouts: the weigh-in is a morning reading now, and the
+        # trend chart is where it's read (and entered).
+        href = "/graphs"
         summary = "Logged bodyweight"
     elif name == "save_exercise":
         summary = "Saved an exercise"

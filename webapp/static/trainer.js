@@ -20,9 +20,7 @@
   function url(path) { return base + '/trainer/' + wid + path; }
   var editingSetId = null; // only one inline set editor open at a time
   var openPanel = null;    // {eid, kind:'info'|'menu'} — at most one info/menu panel open
-  var currentPlan = null;  // last rendered plan (Finish reads its bodyweight/progress)
-  var pendingBodyweight = ''; // weigh-in typed but not yet saved — submitted only on Finish,
-                              // kept here so set-by-set re-renders don't wipe what you typed
+  var currentPlan = null;  // last rendered plan (Finish reads its progress)
   var reordering = false;  // reorder mode: arrows to the left of each exercise, header "Done"
   var reorderList = null;  // working copy of the visible exercises while reordering
 
@@ -139,7 +137,7 @@
     }
     root.appendChild(head);
 
-    // Reorder mode: just the exercises with ↑/↓ arrows; weigh-in & Finish are hidden.
+    // Reorder mode: just the exercises with ↑/↓ arrows; Finish is hidden.
     if (reordering) {
       reorderList.forEach(function (ex, i) { root.appendChild(renderReorderRow(ex, i)); });
       root.appendChild(el('p', 'text-[11px] text-gray-400 mt-3 mb-1',
@@ -150,11 +148,9 @@
     // Exercises (fully swapped-out ones are hidden).
     visible.forEach(function (ex) { root.appendChild(renderExercise(ex)); });
 
-    // Weigh-in box — its own row under the sets, encouraging (not requiring) a
-    // bodyweight while you're at the gym.
-    root.appendChild(renderBodyweight(plan, pr));
-
-    // The big full-width Finish ("Done") button at the bottom.
+    // The big full-width Finish ("Done") button at the bottom. No weigh-in box: a
+    // bodyweight is a MORNING reading, not a gym artifact, so it's entered on /graphs
+    // next to the line it moves. This card is about sets.
     root.appendChild(renderFinish());
   }
 
@@ -353,50 +349,6 @@
     return b;
   }
 
-  // A full-width box mirroring the exercise cards: a label + a number entry for
-  // today's bodyweight. The entry starts EMPTY and is never submitted on its own —
-  // there's no log/update button; Finish reads it and saves it (so a weigh-in commits
-  // with the workout, not before). The input goes yellow as a typo guard whenever a
-  // value is entered that isn't a plausible reading (between 160 and 230 lbs).
-  function renderBodyweight(plan, pr) {
-    var box = el('div', 'border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-3');
-    box.dataset.weighIn = '1';
-    box.appendChild(el('p', 'text-sm font-medium mb-3', 'Bodyweight'));
-
-    var INPUT_BASE = 'w-full border rounded-[4px] px-3 py-2 text-base focus:outline-none transition-colors';
-    var inp = el('input', INPUT_BASE);
-    inp.type = 'number'; inp.inputMode = 'decimal'; inp.step = 'any'; inp.min = '0';
-    inp.placeholder = 'lbs';
-    inp.value = pendingBodyweight; // empty by default; restored across re-renders
-
-    // Yellow when a value is present but outside a plausible range — catches typos
-    // (a dropped/extra digit) without ever blocking the entry.
-    function paint() {
-      var v = inp.value.trim();
-      var n = parseFloat(v);
-      var bad = v !== '' && !(n >= 160 && n <= 230);
-      inp.className = INPUT_BASE + (bad
-        ? ' border-yellow-400 bg-yellow-50 focus:border-yellow-500'
-        : ' border-gray-200 focus:border-black');
-    }
-    inp.addEventListener('input', function () { pendingBodyweight = inp.value; paint(); });
-    inp.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
-    });
-    paint();
-    box.appendChild(inp);
-    return box;
-  }
-
-  // Scroll the weigh-in box into view and focus it — the post-last-set nudge.
-  function nudgeWeighIn() {
-    var box = root.querySelector('[data-weigh-in]');
-    if (!box) return;
-    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    var inp = box.querySelector('input');
-    if (inp) inp.focus({ preventScroll: true });
-  }
-
   // A small round icon button for the per-exercise controls.
   function iconBtn(kind, label) {
     var b = el('button', 'w-7 h-7 flex items-center justify-center rounded-full ' +
@@ -458,6 +410,7 @@
       path.setAttribute('d', 'M20 6 9 17l-5-5'); check.appendChild(path);
       done.appendChild(check);
       done.appendChild(document.createTextNode(setText(s, true)));
+      done.dataset.setId = String(s.set_id);  // where a PR burst aims after the re-render
       done.addEventListener('click', function () { openEditor(ex, s); });
       return done;
     }
@@ -467,6 +420,7 @@
     // pending → tappable
     var chip = el('button', 'set-pill hover:border-black hover:text-black transition-colors',
       setText(s, false));
+    chip.dataset.setId = String(s.set_id);
     chip.addEventListener('click', function () { openEditor(ex, s); });
     return chip;
   }
@@ -631,6 +585,25 @@
     maybeFocus(weight.input);
   }
 
+  // Confetti when the server says the set just logged is a personal best. The server
+  // states the fact (server.pr_for_set, relayed by the route as plan.celebrate); the page
+  // decides whether to throw anything — and only ONCE per set at a given weight x reps,
+  // so re-saving a corrected record doesn't fire over and over. Deduping belongs here
+  // rather than in the server, which should keep answering the question honestly: a
+  // corrected set that is still the heaviest ever IS still a best. Raising 135x8 to
+  // 145x8 fires again, which is right — it's a bigger record. A reload forgets, so a
+  // correction after one can fire a second time; two spare seconds, against a column.
+  var celebrated = {};
+  function celebratePR(plan) {
+    var c = plan && plan.celebrate;
+    if (!c || c.kind !== 'pr' || !window.Confetti) return;
+    var key = c.set_id + '@' + c.weight_lbs + 'x' + c.reps;
+    if (celebrated[key]) return;
+    celebrated[key] = 1;
+    // render() has already wiped root, so find the chip fresh rather than holding a node.
+    window.Confetti.burst(root.querySelector('[data-set-id="' + c.set_id + '"]') || root);
+  }
+
   async function completeSet(setId, weightInp, repsInp, diff, btn) {
     btn.disabled = true;
     var r = await postJSON(base + '/trainer/set/' + setId + '/complete', {
@@ -642,10 +615,7 @@
     }
     editingSetId = null;
     render(r.data); // response is the updated plan
-    // If that was the last set and there's no weight in yet, nudge a weigh-in.
-    var p = r.data, pr = p && p.progress;
-    if (pr && pr.total > 0 && pr.done === pr.total &&
-        p.bodyweight == null && pendingBodyweight.trim() === '') nudgeWeighIn();
+    celebratePR(r.data);
   }
 
   async function saveSet(setId, weightInp, repsInp, diff, btn) {
@@ -659,6 +629,7 @@
     }
     editingSetId = null;
     render(r.data); // response is the updated plan
+    celebratePR(r.data);
   }
 
   // ── Per-exercise info ("i") and menu ("...") panels ─────────────────────────
@@ -806,20 +777,9 @@
         (left === 1 ? '' : 's') + ' will be dropped.')) return;
     }
 
-    // The weigh-in is submitted only now — read what's typed into the box.
-    var bw = parseFloat(pendingBodyweight);
-    var hasWeight = pendingBodyweight.trim() !== '' && bw > 0;
-    var alreadyLogged = p && p.bodyweight != null;
-
-    // Warn if finishing with no bodyweight going in (and none logged earlier today).
-    if (!hasWeight && !alreadyLogged) {
-      if (!window.confirm('Finish without logging your bodyweight?')) return;
-    }
-    // Save the typed weight before finishing (the only place it's submitted).
-    if (hasWeight) {
-      await postJSON(url('/bodyweight'), { weight_lbs: bw });
-    }
-    pendingBodyweight = '';
+    // Nothing to ask about but the sets: finishing no longer prompts for a weigh-in,
+    // because weighing isn't part of training any more (it's a morning reading, entered
+    // on /graphs).
     var r = await postJSON(url('/finish'), {});
     render({ active: false, justFinished: !(r.data && r.data.deleted_empty) && r.ok });
     // This page belonged to one session and that session is over — head back to

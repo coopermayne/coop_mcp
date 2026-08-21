@@ -816,16 +816,21 @@ def upcoming_plans() -> list:
     return out
 
 
-def bodyweight_on(d: str):
-    """The latest bodyweight reading (lbs) logged on day `d`, or None if not weighed —
-    backs the /trainer card's weigh-in box (does today's weight need entering yet). The
-    latest reading on a day is "the" weight for that day, matching server.log_bodyweight."""
+def bodyweight_log() -> list[dict]:
+    """EVERY weigh-in row, newest first, with its id — the /graphs history list, where a
+    reading can be corrected or removed.
+
+    Deliberately NOT graph_data()'s `weight` series, which is one point per DAY (latest
+    reading wins). That collapse is right for a chart and wrong here: a mistyped reading
+    that was re-logged the same day VANISHES from the day view while still sitting in the
+    table, and the whole point of this list is to be able to see it and get rid of it."""
     with server.db() as conn:
-        r = conn.execute(
-            "SELECT weight_lbs FROM body_weight WHERE weigh_date=? ORDER BY id DESC LIMIT 1",
-            (d,),
-        ).fetchone()
-    return r["weight_lbs"] if r else None
+        rows = conn.execute(
+            """SELECT id, weigh_date, weight_lbs, note FROM body_weight
+               ORDER BY weigh_date DESC, id DESC"""
+        ).fetchall()
+    return [{"id": r["id"], "date": r["weigh_date"], "lbs": r["weight_lbs"],
+             "note": r["note"]} for r in rows]
 
 
 # --------------------------------------------------------------------------- #
@@ -837,7 +842,9 @@ def graph_data() -> dict:
     single user's history — small enough to ship whole and filter client-side).
 
     - weight: one point per weighed day (latest reading wins, matching
-      bodyweight_on / server.log_bodyweight).
+      server.log_bodyweight). The graphs page also WRITES here — today's point is
+      the weigh-in box's target, appended client-side after a successful log so
+      the line extends without a reload.
     - drinks: days with an alcohol figure on at least one intake item, summed
       (`SUM(intake_items.standard_drinks)`, including explicit 0s); the page
       gap-fills unlogged days to 0 so the line is honest about the calendar.

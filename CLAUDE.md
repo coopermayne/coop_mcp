@@ -225,7 +225,9 @@ There is no exercise-selection or progression logic in the server either.
   `/trainer/mcp` on the main origin (authless fallback).
 - `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
   read-only browse pages — including the `/trainer/library` exercise library — plus the
-  direct drinks-entry form and the `/chat` panel mount).
+  handful of website-only write carve-outs (`/food/targets`, `/graphs/weight` and its
+  `/{id}` edit + delete, `/graphs/goal`, `/trainer/profile`, a collection's `/display`)
+  and the `/chat` panel mount).
 - `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
   `app.py` thin). Read-only — writes go through `server.py`'s tools.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
@@ -241,7 +243,12 @@ There is no exercise-selection or progression logic in the server either.
   only by the authenticated user, never by the journal/trainer connectors. Off unless
   `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
-  `chat.js`, manifest); the app is an installable PWA. `static/vendor/`
+  `chat.js`, manifest); the app is an installable PWA. `static/confetti.js` is the
+  app's one celebratory flourish (`window.Confetti.burst(el)`, thrown at a lifting PR
+  or an all-time-low weigh-in — see the `sets` and `body_weight` rows): hand-written
+  rather than vendored, loaded on every page because it costs nothing until called, and
+  driven by requestAnimationFrame on a canvas rather than a CSS animation for the same
+  Low Power Mode reason as the rep-loop crossfade. `static/vendor/`
   holds the third-party JS/CSS, self-hosted rather than CDN'd: `marked`, uPlot,
   and `leaflet.min.js`/`.css` (loaded ONLY on a collection's map view). Styles are COMPILED
   Tailwind (`static/tailwind.css`, checked in — no CDN, the app styles itself
@@ -642,7 +649,7 @@ working.
   work that hasn't happened would outweigh the history under it. That makes `focus`
   load-bearing — it's the only title a row has, which is why the trainer contract
   insists on one. Every trainer write route carries the id in its PATH
-  (`/trainer/{id}/finish`, `/reorder`, `/discard`, `/bodyweight`, `/plan.json`,
+  (`/trainer/{id}/finish`, `/reorder`, `/discard`, `/plan.json`,
   `/exercise/{eid}/remove`) and `trainer.js` builds them from the plan payload's
   `workout_id`; the two SET-scoped routes keep their flat URLs, since a `set_id`
   already identifies its workout — but they must return THAT set's plan, which is why
@@ -651,6 +658,20 @@ working.
   tweaked mid-workout. Its `onWrite` forks on that — the session page re-renders the
   card in place, the hub has no card and reloads, because the upcoming list is
   server-rendered and a chat that just added Thursday must not leave the page stale.
+  **A personal best is a deterministic fact, computed by `pr_for_set` — a NON-tool,
+  website-only path like `set_archived` and `clear_plan_set`.** It answers one question
+  the /trainer card asks after a tap ("was the set just logged a best?") so the page can
+  throw confetti at the chip; the MODEL already has `get_personal_records`, which is why
+  this isn't a tool and why the rule sits beside it rather than in `webapp/data.py` — two
+  "heaviest ever" queries in one repo is exactly how they drift apart. The rule: weight
+  EXCEEDS the heaviest ever for that movement, or TIES it and beats the most reps done at
+  it. No e1rm (an estimate isn't a thing that happened); cardio never counts; the first
+  weighted set of a movement never counts. The flag reaches the browser as a webapp-only
+  `celebrate` key merged on by `webapp/app.py`'s `_with_pr` — `_plan_payload` is the
+  return of five MCP tools, so a key added THERE would ride along on every model-facing
+  plan return. DEDUPING is the
+  browser's (`trainer.js`), not the server's: a corrected set that is still the heaviest
+  ever IS still a best, and the data layer should keep saying so.
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
   `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the
@@ -664,11 +685,48 @@ working.
   (the drinks pattern, not a `workouts` column: weight is a daily metric you may log on
   rest days too, and the point is the trend). The latest reading on a day is "the"
   weight for that day; a day with no row simply wasn't weighed. `log_bodyweight` adds
-  one (returning `change_lbs` vs the prior weigh-in) and `get_fitness_briefing` surfaces
-  the latest reading + 30-day change; the longer trend lives in the webapp (which joins
-  the reading onto each session by date, shown inline, and as a header trend), not a
+  one (returning `change_lbs` vs the prior weigh-in, plus `new_low` when the reading is
+  the lowest EVER — omitted otherwise, and never on the first reading, since there was
+  nothing to beat) and `get_fitness_briefing` surfaces
+  the latest reading + 30-day change; the longer trend lives in the webapp, not a
   dedicated server tool. There is NO weight-goal/target logic in the server — the
   coaching is the model's, as everywhere else.
+  **A weigh-in is a MORNING reading, and the UI says so: it's entered on `/graphs`**
+  (`POST /graphs/weight`, a website-only path like the goal form beside it), at the top
+  of the page, above the line it moves. It used to live on the `/trainer` plan card —
+  a box under the sets, submitted only when you tapped Finish — which tied a DAILY
+  measurement to whether you happened to train that day, and put the reading behind a
+  redirect. That box, its Finish prompt, the post-last-set scroll-to-weigh-in,
+  `POST /trainer/{id}/bodyweight`, `_with_bodyweight` and `data.bodyweight_on` are all
+  DELETED rather than left dark; the plan card is about sets. `DEFAULT_COACHING` had to
+  move with them — it used to tell the trainer to nudge a weigh-in after each session,
+  which is the same tie stated in prose.
+  The graphs row states what's in and offers what's missing: a logged day reads as text
+  with a ✎ to correct it, an unweighed one opens with the field ready. It's deliberately
+  OUTSIDE the Bodyweight panel, which hides when that chip is off or nothing is plotted —
+  the first weigh-in has to be enterable on an empty page. A successful log does NOT
+  reload: it upserts today's point into the bootstrap `DATA.weight` and re-renders, so
+  the line extends under you and a burst isn't cut off by a navigation. Logging twice in
+  a day APPENDS (latest wins), so a correction is just logging again.
+  `new_low` is the one place this table earns a key on a WRITE return, and it's there
+  because the model can't derive it: `change_lbs` is a day-over-day delta and nothing
+  else on this path ever sees the all-time minimum. It's also the graphs row's confetti
+  cue.
+  **A weigh-in can be CORRECTED or DELETED from the page** — the folded history list
+  under the row (`data.bodyweight_log`, `POST /graphs/weight/{id}` →
+  `server.set_bodyweight`, `POST /graphs/weight/{id}/delete` → the shared
+  `_delete_record` on its existing `"weight"` kind, so there's one delete
+  implementation, not a website copy). That list is deliberately EVERY ROW, not
+  `graph_data`'s one-point-per-day: the failure mode this log actually has is a dropped
+  leading digit (a 2 typed as a 1) that gets re-logged correctly seconds later, so
+  the day view is already right — latest reading wins — while the bad row sits in the
+  table owning `MIN(weight_lbs)` and silently disabling every "lowest ever" the app can
+  spot. A collapsed day view can't show you a row you need to delete. The `160-230`
+  yellow typo guard on the input is the other half of that lesson; it warns and never
+  blocks, since a real reading can be anything. Correcting is website-only for the same
+  reason it's a list: you pick a row id while LOOKING at the rows. Told "Tuesday was 204,
+  not 104", the model just re-logs — which is why re-logging alone isn't enough. The per-session "Weight:" line on `/workouts` stays — it's a same-day join
+  (`data.workouts_full`), so it now reads as what you weighed that morning.
 - `collections` + `items` — the FLEXIBLE layer (design: `plan-2026-08-13-collections.md`):
   everything the user wants kept that doesn't need bespoke schema (recipes, trip
   ideas, …). An item with `collection_id` NULL is an **inbox note** — the capture
@@ -1011,8 +1069,8 @@ working.
   `set_nutrient_targets`). Defaults live in code (`DEFAULT_COACHING`) and are
   resolved on read by `_resolved_profile`, exactly as `nutrient_targets()` merges
   over `data.NUTRIENT_TARGETS`; a blank save DROPS the key, so the default can be
-  handed BACK rather than only overwritten. Its two sentences (session sizing, the
-  weigh-in nudge) used to sit in `trainer_mcp`'s `instructions` — the wrong home,
+  handed BACK rather than only overwritten. Two of its lines (session sizing, and what
+  to say about weigh-ins) used to sit in `trainer_mcp`'s `instructions` — the wrong home,
   for a reason worth keeping straight when the next knob comes along.
   `instructions` is CONTRACT: the rotation policy, the closed catalog, the signed-
   weight convention — rules that pair with tool code, belong in git, and must not

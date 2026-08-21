@@ -274,6 +274,17 @@
                 background: rgba(0,0,0,0.88); padding: 1.25rem; cursor: zoom-out; }
     #lightbox[data-open] { display: flex; }
     #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
+
+    /* Confetti overlay (static/confetti.js) — one fixed, pointer-transparent canvas
+       shared by every burst on any page. Above #lightbox (60) and the chat panels so a
+       celebration is never clipped, and pointer-events:none so it can never eat the tap
+       that earned it. The motion is requestAnimationFrame, not a CSS animation, for the
+       Low Power Mode reason in the .rep-loop note above. Hidden until a burst is
+       running; the JS honors prefers-reduced-motion by never starting one, and the rule
+       below makes that belt-and-braces. */
+    #confetti-canvas { position: fixed; inset: 0; z-index: 70; pointer-events: none; display: none; }
+    #confetti-canvas[data-on] { display: block; }
+    @media (prefers-reduced-motion: reduce) { #confetti-canvas { display: none !important; } }
   </style>
   {% block head %}{% endblock %}
 </head>
@@ -559,6 +570,11 @@
      render (quiet inline underline) and send any other link out in a new tab. Exposed
      as window.renderJournalMd so the chat panel can re-render the feed it swaps in
      after a write. Falls back to plain wrapped text if `marked` hasn't loaded. #}
+  {# Confetti for a personal best or an all-time-low weigh-in. Loaded on every page
+     rather than only /trainer: it's ~3KB, costs nothing until something calls
+     window.Confetti.burst(el), and the next thing worth celebrating won't be on the
+     trainer card. #}
+  <script src="{{ base }}/static/confetti.js"></script>
   <script src="{{ base }}/static/vendor/marked.min.js"></script>
   <script>
     window.renderJournalMd = function (scope) {
