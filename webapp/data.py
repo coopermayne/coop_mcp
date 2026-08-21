@@ -829,8 +829,14 @@ def bodyweight_log() -> list[dict]:
             """SELECT id, weigh_date, weight_lbs, note FROM body_weight
                ORDER BY weigh_date DESC, id DESC"""
         ).fetchall()
-    return [{"id": r["id"], "date": r["weigh_date"], "lbs": r["weight_lbs"],
-             "note": r["note"]} for r in rows]
+    out = [{"id": r["id"], "date": r["weigh_date"], "lbs": r["weight_lbs"],
+            "note": r["note"], "change": None} for r in rows]
+    # Each row's delta against the next-OLDER reading. Newest-first, so that's the row
+    # after it. Consecutive readings rather than day-over-day: two on one morning are two
+    # facts, and flattening them here would hide the re-weigh that a correction looks like.
+    for i in range(len(out) - 1):
+        out[i]["change"] = round(out[i]["lbs"] - out[i + 1]["lbs"], 1)
+    return out
 
 
 # --------------------------------------------------------------------------- #

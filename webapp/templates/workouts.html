@@ -11,6 +11,13 @@
      each one links to its own /trainer/{id}. Only the library stays a header link,
      since it isn't a session. #}
   <div class="flex items-center gap-5">
+    {# Weigh-ins aren't training — the box came OFF the plan card for exactly that
+       reason — but this is the header people look in for "the other thing I log",
+       and a daily habit shouldn't sit three taps deep. #}
+    <a href="{{ base }}/weight" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a4 4 0 0 0-3.87 3H6a3 3 0 0 0-3 2.6l-1 9A3 3 0 0 0 5 21h14a3 3 0 0 0 3-3.4l-1-9A3 3 0 0 0 18 6h-2.13A4 4 0 0 0 12 3z"/><path d="M12 10v4"/></svg>
+      <span>Weigh-ins</span>
+    </a>
     <a href="{{ base }}/trainer/library" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
       <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
       <span>Library</span>

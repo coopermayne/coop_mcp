@@ -225,9 +225,9 @@ There is no exercise-selection or progression logic in the server either.
   `/trainer/mcp` on the main origin (authless fallback).
 - `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
   read-only browse pages — including the `/trainer/library` exercise library — plus the
-  handful of website-only write carve-outs (`/food/targets`, `/graphs/weight` and its
-  `/{id}` edit + delete, `/graphs/goal`, `/trainer/profile`, a collection's `/display`)
-  and the `/chat` panel mount).
+  handful of website-only write carve-outs (`/food/targets`, `/weight` and its `/{id}`
+  edit + delete, `/graphs/goal`, `/trainer/profile`, a collection's `/display`) and the
+  `/chat` panel mount).
 - `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
   `app.py` thin). Read-only — writes go through `server.py`'s tools.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
@@ -691,9 +691,13 @@ working.
   the latest reading + 30-day change; the longer trend lives in the webapp, not a
   dedicated server tool. There is NO weight-goal/target logic in the server — the
   coaching is the model's, as everywhere else.
-  **A weigh-in is a MORNING reading, and the UI says so: it's entered on `/graphs`**
-  (`POST /graphs/weight`, a website-only path like the goal form beside it), at the top
-  of the page, above the line it moves. It used to live on the `/trainer` plan card —
+  **A weigh-in is a MORNING reading, and the UI says so: the log has its OWN PAGE,
+  `/weight`** — a form on top, every reading below. Its own page rather than a strip on
+  `/graphs` because a daily habit is a destination, not a widget above someone else's
+  chart, and because the reading is the RECORD while the trend is what's derived from
+  it; `/graphs` keeps the chart and the goal and links here (as does the `/workouts`
+  header, next to Library — not because weighing is training, but because that's the
+  header you look in for "the other thing I log"). It used to live on the `/trainer` plan card —
   a box under the sets, submitted only when you tapped Finish — which tied a DAILY
   measurement to whether you happened to train that day, and put the reading behind a
   redirect. That box, its Finish prompt, the post-last-set scroll-to-weigh-in,
@@ -701,20 +705,24 @@ working.
   DELETED rather than left dark; the plan card is about sets. `DEFAULT_COACHING` had to
   move with them — it used to tell the trainer to nudge a weigh-in after each session,
   which is the same tie stated in prose.
-  The graphs row states what's in and offers what's missing: a logged day reads as text
-  with a ✎ to correct it, an unweighed one opens with the field ready. It's deliberately
-  OUTSIDE the Bodyweight panel, which hides when that chip is off or nothing is plotted —
-  the first weigh-in has to be enterable on an empty page. A successful log does NOT
-  reload: it upserts today's point into the bootstrap `DATA.weight` and re-renders, so
-  the line extends under you and a burst isn't cut off by a navigation. Logging twice in
-  a day APPENDS (latest wins), so a correction is just logging again.
+  The form takes a DATE as well as a number (defaulting to today): a page listing every
+  reading is exactly where you notice you forgot Tuesday, which the old trainer box could
+  never offer since it only ever meant "the day you're training". Logging twice in a day
+  APPENDS (latest wins). The page is fetch-then-reload throughout (the `/food` Targets
+  shape) rather than patching rows in place — each row shows its delta against the
+  next-older reading, so a live patch would mean a second copy of that arithmetic in JS.
+  The ONE thing that must not be cut off by that reload is the confetti, so a new low
+  holds it ~2.4s — but only when a burst actually STARTED. `Confetti.burst()` returns
+  whether it threw anything, because it declines under `prefers-reduced-motion`, and
+  holding the page for an animation nobody will see is a dead wait inflicted on exactly
+  the person who asked for less motion.
   `new_low` is the one place this table earns a key on a WRITE return, and it's there
   because the model can't derive it: `change_lbs` is a day-over-day delta and nothing
   else on this path ever sees the all-time minimum. It's also the graphs row's confetti
   cue.
-  **A weigh-in can be CORRECTED or DELETED from the page** — the folded history list
-  under the row (`data.bodyweight_log`, `POST /graphs/weight/{id}` →
-  `server.set_bodyweight`, `POST /graphs/weight/{id}/delete` → the shared
+  **A weigh-in can be CORRECTED or DELETED from the page** — every row carries ✎ and ×
+  (`data.bodyweight_log`, `POST /weight/{id}` →
+  `server.set_bodyweight`, `POST /weight/{id}/delete` → the shared
   `_delete_record` on its existing `"weight"` kind, so there's one delete
   implementation, not a website copy). That list is deliberately EVERY ROW, not
   `graph_data`'s one-point-per-day: the failure mode this log actually has is a dropped

@@ -106,10 +106,14 @@
     raf = requestAnimationFrame(frame);
   }
 
+  // Returns whether anything was actually thrown, so a caller can tell the difference
+  // between "celebrating" and "declined to". Holding a page open for an animation that
+  // was never going to play is a dead wait for exactly the person who asked for less
+  // motion — the one caller who does that (weight.js's reload) reads this.
   function burst(el) {
     // The one opt-out, matching .cal-zoom and the rep-loop: someone who's asked for less
     // motion gets none, and the caller doesn't have to know that.
-    if (reduced() || document.hidden) return;
+    if (reduced() || document.hidden) return false;
     var c = ensureCanvas();
     var x = window.innerWidth / 2, y = window.innerHeight / 2;
     if (el && el.getBoundingClientRect) {
@@ -121,6 +125,7 @@
     c.setAttribute('data-on', '1');
     // A second burst mid-flight just adds to the same swarm — one loop runs throughout.
     if (!raf) { last = 0; raf = requestAnimationFrame(frame); }
+    return true;
   }
 
   window.Confetti = { burst: burst };

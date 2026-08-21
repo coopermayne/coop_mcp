@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Weigh-ins · Journal{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-10">
+  <h1 class="text-2xl font-bold tracking-tight">Weigh-ins</h1>
+  {# Back out to the trend this log feeds. The chart is DERIVED from these rows,
+     which is why the link points that way and not the other. #}
+  <a href="{{ base }}/graphs" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
+    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+    <span>Graphs</span>
+  </a>
+</div>
+
+{# ── Entry form ────────────────────────────────────────────────────────────────
+   Top of the page because it's the reason you came. The date defaults to today and
+   is usually left alone; it's here at all because a page listing every reading is
+   exactly where you notice you forgot Tuesday — the old /trainer box couldn't
+   offer that, since it only ever meant "the day you're training". #}
+<div class="border border-gray-200 rounded-[4px] px-4 py-4 mb-8" data-weighin>
+  <div class="flex flex-wrap items-end gap-3">
+    <label class="text-xs text-gray-500">
+      <span class="block mb-1">Weight (lbs)</span>
+      <input type="number" step="0.1" min="1" inputmode="decimal" autofocus
+             placeholder="lbs" data-weighin-input
+             class="w-28 border border-gray-200 rounded-[4px] px-2 py-1.5 text-base tabular-nums focus:outline-none focus:border-black transition-colors" />
+    </label>
+    <label class="text-xs text-gray-500">
+      <span class="block mb-1">Date</span>
+      <input type="date" value="{{ today }}" max="{{ today }}" data-weighin-date
+             class="border border-gray-200 rounded-[4px] px-2 py-1.5 text-sm focus:outline-none focus:border-black transition-colors" />
+    </label>
+    <button type="button" data-weighin-save
+            class="h-[38px] px-4 bg-black text-white rounded-[4px] text-sm hover:bg-gray-800 transition-colors disabled:opacity-20">Log</button>
+  </div>
+  <p data-weighin-err hidden class="text-[11px] text-red-600 mt-2"></p>
+</div>
+
+{# ── The log ───────────────────────────────────────────────────────────────────
+   EVERY row, not one per day. A mistyped reading re-logged correctly seconds later
+   is invisible on a day view — the day already shows the good number — while the bad
+   row sits in the table owning MIN(weight_lbs) and silently disabling every "lowest
+   ever" the app can spot. This page is where you see it and get rid of it. #}
+{% if weights %}
+<div data-wlog class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for w in weights %}
+  <div class="flex items-center gap-3 px-4 py-2.5 text-sm" data-wrow data-wid="{{ w.id }}">
+    <span class="text-xs text-gray-400 tabular-nums w-24 shrink-0">{{ w.date | short_date }}</span>
+    <span data-wval class="tabular-nums w-20">{{ w.lbs | num }} lbs</span>
+    <input type="number" step="0.1" min="1" inputmode="decimal" hidden data-winput
+           value="{{ w.lbs }}"
+           class="w-24 border border-gray-200 rounded-[4px] px-2 py-0.5 text-sm tabular-nums focus:outline-none focus:border-black" />
+    {# The delta against the next-older reading. Muted, because it's context for the
+       number beside it and not a figure in its own right. #}
+    {% if w.change is not none and w.change != 0 %}
+    <span class="text-xs text-gray-400 tabular-nums">{{ '+' if w.change > 0 else '−' }}{{ w.change | abs | num }}</span>
+    {% endif %}
+    <span class="flex-1"></span>
+    <button type="button" data-wedit title="Correct this reading"
+            class="text-xs text-gray-300 hover:text-black transition-colors px-1">✎</button>
+    <button type="button" data-wdel title="Delete this reading"
+            class="text-xs text-gray-300 hover:text-red-500 transition-colors px-1">×</button>
+  </div>
+  {% endfor %}
+</div>
+<p data-wlog-err hidden class="text-[11px] text-red-600 mt-2"></p>
+<p class="text-xs text-gray-400 mt-3">{{ weights | length }} reading{{ '' if weights | length == 1 else 's' }}</p>
+{% else %}
+<p class="text-sm text-gray-400">No weigh-ins yet.</p>
+{% endif %}
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ base }}/static/weight.js" defer></script>
+{% endblock %}

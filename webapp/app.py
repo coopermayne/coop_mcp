@@ -1305,53 +1305,46 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
 
 
 # --------------------------------------------------------------------------- #
-# Graphs — one page of line charts over the trends the app already stores
-# (bodyweight, drinks, per-exercise strength progress). The whole history is
-# bootstrapped into the page as JSON (single-user data is small) and
-# filtered/toggled client-side by static/graphs.js.
+# Weigh-ins — the bodyweight log's own page: a form at the top, every reading
+# below, each correctable and deletable.
 #
-# It writes two things, both about bodyweight, and both the goals-not-content
-# carve-out /food's Targets popover already makes: the weigh-in itself and the
-# goal it's read against. The weigh-in lives HERE because a weigh-in is a
-# morning habit, not a gym one — it used to sit on the /trainer plan card, which
-# tied a daily measurement to whether you happened to be training that day. This
-# is the page that draws the line it moves, so the number lands where you watch
-# it.
+# Its own PAGE rather than a strip on /graphs, because a weigh-in is a daily
+# habit and the thing you do with a habit is a first-class destination, not a
+# widget above someone else's chart. It's also the second move in the same
+# direction as taking the box off the /trainer plan card: the reading is neither
+# a gym artifact nor a footnote to the trend line — it's the record itself, and
+# the trend is what's DERIVED from it. /graphs keeps the chart and the goal.
 # --------------------------------------------------------------------------- #
 
-@app.get("/graphs")
-async def graphs(request: Request):
-    return page(request, "graphs.html", active="graphs", graph=data.graph_data(),
-                weights=data.bodyweight_log())
+@app.get("/weight")
+async def weight_page(request: Request):
+    """Every weigh-in, newest first, with the entry form on top."""
+    return page(request, "weight.html", active="weight",
+                weights=data.bodyweight_log(), today=server.today())
 
 
-@app.post("/graphs/weight")
-async def graphs_log_weight(request: Request):
-    """Log (or correct) today's bodyweight from the graphs page. Body: {weight_lbs}.
-    Writes through server.log_bodyweight and hands its return straight back — the page
-    needs `weight_lbs` to extend the chart in place, `change_lbs` to show the delta, and
-    `new_low` to throw confetti. Today only: back-dating a reading is a conversation
-    ("I forgot to log Tuesday"), not a form field, and the tool already takes a
-    weigh_date for that.
-
-    A second reading today is not an error — it OVERWRITES nothing, it appends, and the
-    latest reading on a day is that day's weight (see server.log_bodyweight). So
-    correcting a fat-fingered 1924 is just logging again."""
+@app.post("/weight")
+async def weight_log(request: Request):
+    """Record a weigh-in. Body: {weight_lbs, weigh_date?}. Writes through
+    server.log_bodyweight and hands its return straight back — the page needs
+    `weight_lbs` and `weigh_date` to place the new row, `change_lbs` for the delta, and
+    `new_low` to throw confetti. Unlike the old /trainer box this DOES take a date, since
+    a page listing every reading is exactly where you notice you forgot Tuesday."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     w = _num(body.get("weight_lbs"))
     if w is None or w <= 0:
         return JSONResponse({"error": "weight_lbs must be a positive number"}, status_code=400)
-    res = server.log_bodyweight(weight_lbs=w)
+    res = server.log_bodyweight(weight_lbs=w,
+                               weigh_date=(body.get("weigh_date") or "").strip() or None)
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 
 
-@app.post("/graphs/weight/{bodyweight_id:int}")
-async def graphs_edit_weight(request: Request, bodyweight_id: int):
-    """Correct one past weigh-in from the graphs history list. Body: {weight_lbs}.
-    Website-only (server.set_bodyweight), because picking a row id is something you do
-    while LOOKING at the list."""
+@app.post("/weight/{bodyweight_id:int}")
+async def weight_edit(request: Request, bodyweight_id: int):
+    """Correct one reading, by row id. Website-only (server.set_bodyweight), because
+    picking a row id is something you do while LOOKING at the list."""
     from fastapi.responses import JSONResponse
     body = await request.json()
     w = _num(body.get("weight_lbs"))
@@ -1362,15 +1355,30 @@ async def graphs_edit_weight(request: Request, bodyweight_id: int):
     return JSONResponse(res, status_code=code)
 
 
-@app.post("/graphs/weight/{bodyweight_id:int}/delete")
-async def graphs_delete_weight(request: Request, bodyweight_id: int):
-    """Remove one weigh-in. Straight through the shared server._delete_record helper on
-    its existing "weight" kind — the same code path the trainer's delete_record uses, so
-    there's one implementation, not a website copy of it."""
+@app.post("/weight/{bodyweight_id:int}/delete")
+async def weight_delete(request: Request, bodyweight_id: int):
+    """Remove one reading. Straight through the shared server._delete_record helper on
+    its existing "weight" kind, so there's one delete implementation."""
     from fastapi.responses import JSONResponse
     res = server._delete_record("weight", bodyweight_id)
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
+
+
+# --------------------------------------------------------------------------- #
+# Graphs — one page of line charts over the trends the app already stores
+# (bodyweight, drinks, per-exercise strength progress). The whole history is
+# bootstrapped into the page as JSON (single-user data is small) and
+# filtered/toggled client-side by static/graphs.js.
+#
+# It writes one thing, the goals-not-content carve-out /food's Targets popover
+# already makes: the bodyweight GOAL the chart is read against. Entering a
+# weigh-in lives on /weight — see that section.
+# --------------------------------------------------------------------------- #
+
+@app.get("/graphs")
+async def graphs(request: Request):
+    return page(request, "graphs.html", active="graphs", graph=data.graph_data())
 
 
 @app.post("/graphs/goal")
