@@ -195,8 +195,9 @@ There is no exercise-selection or progression logic in the server either.
   separate tools, hiding the journal delete is just its name in
   `CONNECTOR_HIDDEN_TOOLS`, like every other journal tool. They all still call the
   shared `_delete_record` helper, so the table mapping and the set-renumbering live in
-  one place. The TRAINER keeps its kind-scoped `delete_record` (`workout`/`set`/
-  `weight`): one domain, one connector, nothing to disambiguate.
+  one place. The TRAINER keeps its kind-scoped `delete_record` (`workout`/`set`):
+  one domain, one connector, nothing to disambiguate. Weigh-ins used to be a third
+  kind there and no longer are — they're import-only now (see `body_weight`).
 - **A write says where the thing now lives.** Capture happens in a Claude conversation;
   the data is READ in the web app — two different screens, which is the standing
   awkwardness of the whole setup. So the connector's write tools return a `url`
@@ -684,57 +685,86 @@ working.
 - `body_weight` — bodyweight readings, one row per weigh-in, keyed by `weigh_date`
   (the drinks pattern, not a `workouts` column: weight is a daily metric you may log on
   rest days too, and the point is the trend). The latest reading on a day is "the"
-  weight for that day; a day with no row simply wasn't weighed. `log_bodyweight` adds
-  one (returning `change_lbs` vs the prior weigh-in, plus `new_low` when the reading is
-  the lowest EVER — omitted otherwise, and never on the first reading, since there was
-  nothing to beat) and `get_fitness_briefing` surfaces
-  the latest reading + 30-day change; the longer trend lives in the webapp, not a
-  dedicated server tool. There is NO weight-goal/target logic in the server — the
+  weight for that day; a day with no row simply wasn't weighed. `get_fitness_briefing`
+  surfaces the latest reading + 30-day change; the longer trend lives in the webapp, not
+  a dedicated server tool. There is NO weight-goal/target logic in the server — the
   coaching is the model's, as everywhere else.
-  **A weigh-in is a MORNING reading, and the UI says so: the log has its OWN PAGE,
-  `/weight`** — a form on top, every reading below. Its own page rather than a strip on
-  `/graphs` because a daily habit is a destination, not a widget above someone else's
-  chart, and because the reading is the RECORD while the trend is what's derived from
-  it; `/graphs` keeps the chart and the goal and links here (as does the `/workouts`
-  header, next to Library — not because weighing is training, but because that's the
-  header you look in for "the other thing I log"). It used to live on the `/trainer` plan card —
-  a box under the sets, submitted only when you tapped Finish — which tied a DAILY
-  measurement to whether you happened to train that day, and put the reading behind a
-  redirect. That box, its Finish prompt, the post-last-set scroll-to-weigh-in,
-  `POST /trainer/{id}/bodyweight`, `_with_bodyweight` and `data.bodyweight_on` are all
-  DELETED rather than left dark; the plan card is about sets. `DEFAULT_COACHING` had to
-  move with them — it used to tell the trainer to nudge a weigh-in after each session,
-  which is the same tie stated in prose.
-  The form takes a DATE as well as a number (defaulting to today): a page listing every
-  reading is exactly where you notice you forgot Tuesday, which the old trainer box could
-  never offer since it only ever meant "the day you're training". Logging twice in a day
-  APPENDS (latest wins). The page is fetch-then-reload throughout (the `/food` Targets
-  shape) rather than patching rows in place — each row shows its delta against the
-  next-older reading, so a live patch would mean a second copy of that arithmetic in JS.
-  The ONE thing that must not be cut off by that reload is the confetti, so a new low
-  holds it ~2.4s — but only when a burst actually STARTED. `Confetti.burst()` returns
-  whether it threw anything, because it declines under `prefers-reduced-motion`, and
-  holding the page for an animation nobody will see is a dead wait inflicted on exactly
-  the person who asked for less motion.
-  `new_low` is the one place this table earns a key on a WRITE return, and it's there
-  because the model can't derive it: `change_lbs` is a day-over-day delta and nothing
-  else on this path ever sees the all-time minimum. It's also the graphs row's confetti
-  cue.
-  **A weigh-in can be CORRECTED or DELETED from the page** — every row carries ✎ and ×
-  (`data.bodyweight_log`, `POST /weight/{id}` →
-  `server.set_bodyweight`, `POST /weight/{id}/delete` → the shared
-  `_delete_record` on its existing `"weight"` kind, so there's one delete
-  implementation, not a website copy). That list is deliberately EVERY ROW, not
-  `graph_data`'s one-point-per-day: the failure mode this log actually has is a dropped
-  leading digit (a 2 typed as a 1) that gets re-logged correctly seconds later, so
-  the day view is already right — latest reading wins — while the bad row sits in the
-  table owning `MIN(weight_lbs)` and silently disabling every "lowest ever" the app can
-  spot. A collapsed day view can't show you a row you need to delete. The `160-230`
-  yellow typo guard on the input is the other half of that lesson; it warns and never
-  blocks, since a real reading can be anything. Correcting is website-only for the same
-  reason it's a list: you pick a row id while LOOKING at the rows. Told "Tuesday was 204,
-  not 104", the model just re-logs — which is why re-logging alone isn't enough. The per-session "Weight:" line on `/workouts` stays — it's a same-day join
-  (`data.workouts_full`), so it now reads as what you weighed that morning.
+  **A weigh-in is a MORNING reading taken by a CONNECTED SCALE, and there is exactly
+  ONE way one gets in: importing the scale app's export.** The user weighs in every
+  morning on a smart scale that writes to its vendor's app; every so often they upload
+  that app's `.xlsx` on `/weight` (**Import scale export** → `POST /weight/import` →
+  `server.import_bodyweight`, a NON-tool website-only path like `set_nutrient_targets`
+  and `set_archived`). Everything else is DELETED, not left dark: the entry form, the
+  per-row ✎ and ×, `log_bodyweight` (the trainer's one weigh-in WRITE tool),
+  `set_bodyweight`, `POST /weight`, `POST /weight/{id}`, `POST /weight/{id}/delete`, the
+  `"weight"` kind in `_delete_record` and in the trainer's `delete_record`, and the
+  `log_bodyweight` branch in `webapp/chat.py`'s tool chips. The reason is one rule: a
+  reading is a MEASUREMENT now, and a second door onto a measurement is a second version
+  of the truth — a hand-typed 186 that disagrees with the scale's 185.4 is not a
+  correction, it's a fork. A wrong reading is fixed AT THE SCALE'S APP and re-exported.
+  `DEFAULT_COACHING` moved with them: it used to say "if I tell you a number, log it",
+  which is the deleted door stated in prose; it now tells the trainer it cannot write
+  one and to read the trend instead.
+  The load-bearing consequence of import-only is IDEMPOTENCE, and it's why the table
+  grew a column. Exports OVERLAP — the scale app hands you "the last 30 days", not the
+  delta since your last upload — so re-importing must insert only what's new.
+  `source_key` is the reading's identity in its export (`"wyze:2026.08.22 06:39 AM"`,
+  the vendor plus the stamp), UNIQUE but NULLABLE so the hand-entered rows that predate
+  the scale (all NULL) don't collide — SQLite allows any number of NULLs in a unique
+  index. The index is created in `init_db`, NOT in `SCHEMA`, because the schema script
+  runs BEFORE the `ALTER TABLE` that adds the column and would fail on an existing DB.
+  A re-upload reports `imported: 0` calmly rather than erroring; it's the normal way
+  this is used, not a mistake.
+  The parser (`_xlsx_rows` + `_parse_scale_export`) is stdlib `zipfile` + `ElementTree`
+  rather than openpyxl — one small sheet of text doesn't earn a fourth pin — and reads
+  both ways a string reaches a cell (an inline `<is>`, which is what this scale writes,
+  and a `<v>` index into `sharedStrings`, which most other writers use). It is
+  header-DRIVEN, not positional: the export leads with a merged title row, and a vendor
+  adding a column would silently shift a positional read onto the wrong number, so the
+  header row is found by its date column and weight is taken from `Weight(lb)` — or
+  `Weight(kg)` converted, since a metric export is still a weigh-in. Values arrive as
+  strings WITH units (`"185.4lb"`), so the number is pulled out by regex. The stamp is
+  the scale app's LOCAL time, which is the user's own, so its calendar day IS the
+  Pacific day with no conversion to get wrong; a stamp no known format parses SKIPS its
+  row rather than guessing (a misread date is a reading on the wrong day, which is worse
+  than a reading that never arrives).
+  **Every other column is DROPPED.** The scale exports body fat, muscle mass, body
+  water, bone mass, BMR, metabolic age and a dozen more; `body_weight` is a weight log,
+  the graph plots weight, and a stored column nothing reads is the dormant-data trap
+  this repo already has a scar from (see `drinks`). Adding one later means a consumer
+  first.
+  The upload goes up as the RAW request body, not multipart — one upload in the whole
+  app doesn't justify adding `python-multipart` for a single route. The page is
+  upload-then-reload (the `/food` Targets shape) rather than patching rows in: each row
+  shows its delta against the next-older reading, so a live patch would mean a second
+  copy of that arithmetic in JS. The ONE thing that must not be cut off by that reload
+  is the confetti, so a new low holds it ~2.4s — but only when a burst actually STARTED.
+  `Confetti.burst()` returns whether it threw anything, because it declines under
+  `prefers-reduced-motion`, and holding the page for an animation nobody will see is a
+  dead wait inflicted on exactly the person who asked for less motion.
+  `new_low` on the import return is the one fact the browser cannot derive from the rows
+  it is about to re-render: nothing else on this path ever sees the all-time minimum.
+  It's true when any of the NEWLY imported readings beats every reading that was already
+  there, and never on a first-ever import (nothing to beat) — the same rule the deleted
+  hand-entry path applied one reading at a time. It's also the graphs row's confetti cue.
+  **The log has its OWN PAGE, `/weight`** — the import box on top, every reading below,
+  read-only. Its own page rather than a strip on `/graphs` because a daily habit is a
+  destination, not a widget above someone else's chart, and because the reading is the
+  RECORD while the trend is what's derived from it; `/graphs` keeps the chart and the
+  goal and links here (as does the `/workouts` header, next to Library — not because
+  weighing is training, but because that's the header you look in for "the other thing I
+  log"). It used to live on the `/trainer` plan card — a box under the sets, submitted
+  only when you tapped Finish — which tied a DAILY measurement to whether you happened to
+  train that day; that box, `POST /trainer/{id}/bodyweight`, `_with_bodyweight` and
+  `data.bodyweight_on` are all long deleted, and the plan card is about sets.
+  The list is deliberately EVERY ROW (`data.bodyweight_log`), not `graph_data`'s
+  one-point-per-day: a scale can record twice in a morning (a re-weigh, someone else
+  stepping on it), and the second reading vanishes from a day view — latest wins — while
+  still sitting in the table owning `MIN(weight_lbs)`, which is the figure every "lowest
+  ever" is measured against. Seeing it is now the only thing you can do about it from
+  here, which is the accepted cost of one door. The per-session "Weight:" line on
+  `/workouts` stays — it's a same-day join (`data.workouts_full`), so it reads as what
+  you weighed that morning.
 - `collections` + `items` — the FLEXIBLE layer (design: `plan-2026-08-13-collections.md`):
   everything the user wants kept that doesn't need bespoke schema (recipes, trip
   ideas, …). An item with `collection_id` NULL is an **inbox note** — the capture

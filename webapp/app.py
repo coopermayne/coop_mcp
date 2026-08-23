@@ -1379,8 +1379,8 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
 
 
 # --------------------------------------------------------------------------- #
-# Weigh-ins — the bodyweight log's own page: a form at the top, every reading
-# below, each correctable and deletable.
+# Weigh-ins — the bodyweight log's own page: an upload box at the top, every
+# reading below.
 #
 # Its own PAGE rather than a strip on /graphs, because a weigh-in is a daily
 # habit and the thing you do with a habit is a first-class destination, not a
@@ -1388,53 +1388,42 @@ async def trainer_exercise_info(request: Request, exercise_id: int):
 # direction as taking the box off the /trainer plan card: the reading is neither
 # a gym artifact nor a footnote to the trend line — it's the record itself, and
 # the trend is what's DERIVED from it. /graphs keeps the chart and the goal.
+#
+# The page is READ-ONLY apart from the import. A connected scale writes every
+# morning's reading to its vendor's app; the only thing the browser does is hand
+# that app's export to server.import_bodyweight. No form, no ✎, no × — the whole
+# hand-entry path is gone, on both this page and the trainer connector, because a
+# device-produced fact with a second way to state it has two versions of the truth.
 # --------------------------------------------------------------------------- #
 
 @app.get("/weight")
 async def weight_page(request: Request):
-    """Every weigh-in, newest first, with the entry form on top."""
+    """Every weigh-in, newest first, with the import box on top."""
     return page(request, "weight.html", active="weight",
-                weights=data.bodyweight_log(), today=server.today())
+                weights=data.bodyweight_log())
 
 
-@app.post("/weight")
-async def weight_log(request: Request):
-    """Record a weigh-in. Body: {weight_lbs, weigh_date?}. Writes through
-    server.log_bodyweight and hands its return straight back — the page needs
-    `weight_lbs` and `weigh_date` to place the new row, `change_lbs` for the delta, and
-    `new_low` to throw confetti. Unlike the old /trainer box this DOES take a date, since
-    a page listing every reading is exactly where you notice you forgot Tuesday."""
+@app.post("/weight/import")
+async def weight_import(request: Request):
+    """Load a connected-scale export (.xlsx) into the log. The file is the RAW request
+    body, not a multipart form — this is the app's one upload, and a `fetch(url, {body:
+    file})` costs nothing on the browser side while multipart would add python-multipart
+    to the deps for a single route.
+
+    Hands server.import_bodyweight's return straight back: the page needs `imported`/
+    `skipped` to say what landed and `new_low` to throw confetti. Re-uploading an
+    overlapping export is expected and reports 0 imported rather than erroring — the
+    user is not tracking which days they already uploaded."""
     from fastapi.responses import JSONResponse
-    body = await request.json()
-    w = _num(body.get("weight_lbs"))
-    if w is None or w <= 0:
-        return JSONResponse({"error": "weight_lbs must be a positive number"}, status_code=400)
-    res = server.log_bodyweight(weight_lbs=w,
-                               weigh_date=(body.get("weigh_date") or "").strip() or None)
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-@app.post("/weight/{bodyweight_id:int}")
-async def weight_edit(request: Request, bodyweight_id: int):
-    """Correct one reading, by row id. Website-only (server.set_bodyweight), because
-    picking a row id is something you do while LOOKING at the list."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    w = _num(body.get("weight_lbs"))
-    if w is None or w <= 0:
-        return JSONResponse({"error": "weight_lbs must be a positive number"}, status_code=400)
-    res = server.set_bodyweight(bodyweight_id, w)
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-@app.post("/weight/{bodyweight_id:int}/delete")
-async def weight_delete(request: Request, bodyweight_id: int):
-    """Remove one reading. Straight through the shared server._delete_record helper on
-    its existing "weight" kind, so there's one delete implementation."""
-    from fastapi.responses import JSONResponse
-    res = server._delete_record("weight", bodyweight_id)
+    blob = await request.body()
+    if not blob:
+        return JSONResponse({"error": "no file uploaded"}, status_code=400)
+    # A scale export is a few KB. The ceiling guards against a mis-picked file (a video,
+    # a DB backup) being read into memory; it is not a limit on how many readings fit.
+    if len(blob) > 5_000_000:
+        return JSONResponse({"error": "that file is too large to be a scale export"},
+                            status_code=400)
+    res = server.import_bodyweight(blob)
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 

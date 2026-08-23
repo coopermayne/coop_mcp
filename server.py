@@ -19,6 +19,7 @@ Design contract:
     recurring transcription error) auto-matches strongly next time.
 """
 
+import io
 import json
 import os
 import re
@@ -26,6 +27,7 @@ import sqlite3
 import ssl
 import time
 import urllib.error
+import zipfile
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -853,14 +855,24 @@ CREATE INDEX IF NOT EXISTS idx_sets_exercise ON sets(exercise_id);
 -- Bodyweight readings — a standalone daily health metric (like drinks), keyed by
 -- the day weighed, NOT tied to a workout row. Several readings on a day are allowed
 -- (the latest is "the" weight for that day); a day with no row simply wasn't weighed.
+--
+-- Readings arrive by IMPORT, not by hand: a connected scale writes them to its own
+-- app and the user uploads that app's export (see import_bodyweight). `source_key`
+-- is the reading's identity IN THAT EXPORT — its full local timestamp — and it's
+-- what makes re-uploading an overlapping export a no-op. UNIQUE, but nullable, so
+-- the hand-entered rows that predate the scale (all NULL) don't collide: SQLite
+-- lets a unique index hold any number of NULLs.
 CREATE TABLE IF NOT EXISTS body_weight (
     id          INTEGER PRIMARY KEY,
     weigh_date  TEXT NOT NULL,        -- YYYY-MM-DD (Pacific): the day weighed
     weight_lbs  REAL NOT NULL,
     note        TEXT,
+    source_key  TEXT,                 -- e.g. "wyze:2026.08.22 06:39 AM"; NULL = hand-entered
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bodyweight_date ON body_weight(weigh_date);
+-- NB: the UNIQUE index on source_key is created in init_db, not here — this script
+-- runs BEFORE the migration that adds the column, so an older DB would fail on it.
 
 -- Generic JSON settings (trainer profile: injury, split, goals, preferences).
 CREATE TABLE IF NOT EXISTS settings (
@@ -1064,6 +1076,15 @@ def init_db() -> None:
             # keeps its old id order at the top) and LAST in the newest-first lists; a
             # newly captured entry gets a real position and appends below the NULLs.
             conn.execute("ALTER TABLE entries ADD COLUMN day_position INTEGER")
+        bwcols = [r["name"] for r in conn.execute("PRAGMA table_info(body_weight)")]
+        if "source_key" not in bwcols:
+            # Identity of an imported reading within its source export, so re-uploading
+            # an overlapping file inserts only what's new. Rows predating the scale stay
+            # NULL, which the unique index permits any number of.
+            conn.execute("ALTER TABLE body_weight ADD COLUMN source_key TEXT")
+        # Created HERE rather than in SCHEMA because SCHEMA runs before that ALTER.
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+                     "idx_bodyweight_source ON body_weight(source_key)")
         ccols = [r["name"] for r in conn.execute("PRAGMA table_info(collections)")]
         if "display" not in ccols:
             # Per-collection VIEWER preferences — webapp-only JSON (hidden_fields,
@@ -2284,7 +2305,7 @@ def _delete_record(kind: str, id: int) -> dict:
     `kind` to its table, deletes the row, and (for sets) renumbers the remaining
     set_index so it stays contiguous."""
     tables = {"entry": "entries", "intake_item": "intake_items",
-              "workout": "workouts", "set": "sets", "weight": "body_weight",
+              "workout": "workouts", "set": "sets",
               "item": "items", "collection": "collections"}
     table = tables.get(kind)
     if not table:
@@ -2816,9 +2837,11 @@ DEFAULT_COACHING = (
     "Each session should be substantial: 2-4 sets per exercise, more on compounds "
     "and fewer on isolation. Say what you're aiming for before you build it.\n"
     "Across any week, no muscle group should go untrained.\n"
-    "Weigh-ins are a MORNING habit, entered on the graphs page — don't chase one "
-    "after a session. If I tell you a number, log it with log_bodyweight; if the "
-    "readings have gone quiet for a stretch, say so once and move on."
+    "Weigh-ins are a MORNING habit and they log THEMSELVES — a connected scale "
+    "records them and I upload its export on the weigh-in page. You cannot write "
+    "one and I am not typing one in, so never offer to log a number I mention; "
+    "read the trend, and if the readings have gone quiet for a stretch (the export "
+    "is overdue) say so once and move on."
 )
 
 
@@ -5798,82 +5821,216 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
 
 
 # --------------------------------------------------------------------------- #
-# Trainer: bodyweight
+# Bodyweight — imported from a connected scale's export (see below)
 # --------------------------------------------------------------------------- #
 
-@trainer_mcp.tool(annotations=WRITE)
-def log_bodyweight(weight_lbs: float, weigh_date: Optional[str] = None,
-                   note: Optional[str] = None) -> dict:
-    """Record a bodyweight reading, in POUNDS. The user weighs in around training (a
-    standing habit on their weight-loss journey) — log it whenever they report a number.
+# Bodyweight readings are IMPORTED, never typed. The user weighs in every morning on
+# a connected scale, which writes to the scale vendor's own app; every so often that app
+# exports a spreadsheet and the user uploads it on /weight. There is deliberately no
+# other door — no form, no MCP write tool, no correcting a row by id — because a reading
+# is now a fact produced by a device, and a second way to state it is a second version
+# of the truth. To fix a bad reading, fix it at the scale's app and re-export.
+#
+# The one thing that has to hold under that model is IDEMPOTENCE: exports overlap (the
+# user re-downloads the last 30 days, not the delta), so importing the same reading
+# twice must insert once. `source_key` — the reading's own timestamp in the export —
+# is what carries that, and it's why a re-upload reports `skipped` rather than doubling
+# the log and quietly halving every "lowest ever" it disagrees with.
 
-    One reading per occasion; the latest reading on a day is treated as that day's
-    weight, and a day with no reading just wasn't weighed (nothing is stored for it).
-    Returns the reading plus `change_lbs` versus the previous weigh-in (negative = down),
-    and `new_low: true` when it's the lowest reading ever recorded — omitted otherwise,
-    and never on the very first reading, since there was nothing to beat.
+SCALE_EXPORT_SOURCE = "wyze"
 
-    Args:
-        weight_lbs: The scale reading in pounds.
-        weigh_date: Day weighed, YYYY-MM-DD (Pacific). Defaults to today.
-        note: Optional context, e.g. "morning, before coffee".
+# Column headers the export may carry, matched case-insensitively by PREFIX so a
+# trailing unit ("Weight(lb)") or a vendor's spacing doesn't have to be guessed exactly.
+_SCALE_DATE_HEADERS = ("date and time", "date/time", "date")
+_SCALE_LB_HEADERS = ("weight(lb", "weight (lb")
+_SCALE_KG_HEADERS = ("weight(kg", "weight (kg")
+
+# "2026.08.22 06:39 AM" is what the export writes; the others are cheap insurance
+# against a locale or a vendor update, since a stamp we can't parse costs the row.
+_SCALE_TIME_FORMATS = (
+    "%Y.%m.%d %I:%M %p", "%Y.%m.%d %H:%M", "%Y.%m.%d %I:%M:%S %p",
+    "%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S",
+    "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M",
+)
+
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _xlsx_rows(blob: bytes) -> list[list[str]]:
+    """Every cell of an .xlsx's first worksheet, as strings, row by row.
+
+    Hand-rolled on zipfile + the stdlib XML parser rather than pulling in openpyxl: the
+    file is one small sheet of text, and this repo's whole shape is stdlib + three pins.
+    Handles the two ways a string reaches a cell (an inline `<is>`, which is what the
+    scale export writes, and a `<v>` index into sharedStrings, which most other writers
+    use) and pads short rows out to their column letter, so a blank cell doesn't shift
+    every value after it one column left.
     """
-    if err := _bad_date(weigh_date, "weigh_date"):
-        return err
-    if weight_lbs <= 0:
-        return {"error": f"weight_lbs must be positive, got {weight_lbs}"}
-    d = weigh_date or today()
-    with db() as conn:
-        rid = conn.execute(
-            "INSERT INTO body_weight(weigh_date, weight_lbs, note, created_at) VALUES (?,?,?,?)",
-            (d, weight_lbs, note, now()),
-        ).lastrowid
-        prev = conn.execute(
-            """SELECT weight_lbs FROM body_weight
-               WHERE weigh_date < ? ORDER BY weigh_date DESC, id DESC LIMIT 1""",
-            (d,),
-        ).fetchone()
-        # All-time low. Deliberately NOT date-scoped like `prev` above — that query
-        # excludes the whole of today because it answers a day-over-day delta, whereas
-        # an all-time low is all-time, earlier readings today included. Excluding by
-        # `id` is what keeps the row we just inserted out of its own comparison.
-        low = conn.execute(
-            "SELECT MIN(weight_lbs) AS m FROM body_weight WHERE id<>?", (rid,),
-        ).fetchone()["m"]
-    out = {"bodyweight_id": rid, "weigh_date": d, "weight_lbs": weight_lbs}
-    if prev:
-        out["change_lbs"] = round(weight_lbs - prev["weight_lbs"], 1)
-    # Strictly less than: re-logging the same number isn't a new low. `low is None` is
-    # the first reading ever, which isn't one either.
-    if low is not None and weight_lbs < low:
-        out["new_low"] = True
+    import xml.etree.ElementTree as ET
+
+    NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        names = z.namelist()
+        sheet = next((n for n in names if n.startswith("xl/worksheets/sheet")), None)
+        if sheet is None:
+            raise ValueError("no worksheet in this file")
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in names:
+            for si in ET.fromstring(z.read("xl/sharedStrings.xml")):
+                shared.append("".join(t.text or "" for t in si.iter(f"{NS}t")))
+        root = ET.fromstring(z.read(sheet))
+
+    def col_index(ref: str) -> int:
+        n = 0
+        for ch in ref:
+            if not ch.isalpha():
+                break
+            n = n * 26 + (ord(ch.upper()) - 64)
+        return n - 1
+
+    rows: list[list[str]] = []
+    for row in root.iter(f"{NS}row"):
+        cells: list[str] = []
+        for c in row.iter(f"{NS}c"):
+            i = col_index(c.get("r") or "")
+            if i < 0:
+                i = len(cells)
+            while len(cells) <= i:
+                cells.append("")
+            if c.get("t") == "s":                       # sharedStrings index
+                v = c.find(f"{NS}v")
+                idx = int(v.text) if v is not None and v.text else -1
+                cells[i] = shared[idx] if 0 <= idx < len(shared) else ""
+            else:                                        # inline string or plain value
+                cells[i] = "".join(t.text or "" for t in c.iter(f"{NS}t")) or \
+                           "".join(v.text or "" for v in c.iter(f"{NS}v"))
+        rows.append(cells)
+    return rows
+
+
+def _parse_scale_export(blob: bytes) -> list[dict] | dict:
+    """A connected-scale export → [{source_key, weigh_date, weight_lbs, at}], newest last.
+
+    Header-DRIVEN rather than positional: the export leads with a merged title row, and a
+    vendor that adds a body-composition column would silently shift a positional read onto
+    the wrong number. So the header row is located by the one label that must be there
+    (a date column), and weight is taken from whichever unit column exists — pounds when
+    offered, kilograms converted when not, since a metric export is still a weigh-in.
+
+    Everything past those two columns is DROPPED. The scale measures body fat, muscle
+    mass, BMR and a dozen more, and none of them have anywhere to live here: `body_weight`
+    is a weight log, the graph plots weight, and storing a column nothing reads is the
+    dormant-data trap this repo has been bitten by before (see the `drinks` table).
+    """
+    try:
+        rows = _xlsx_rows(blob)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception:
+        return {"error": "could not read that file — it doesn't look like an .xlsx export"}
+
+    head_i = date_i = lb_i = kg_i = None
+    for i, row in enumerate(rows[:20]):
+        cells = [(c or "").strip().lower() for c in row]
+        d = next((j for j, c in enumerate(cells) if c in _SCALE_DATE_HEADERS), None)
+        if d is None:
+            continue
+        head_i, date_i = i, d
+        lb_i = next((j for j, c in enumerate(cells)
+                     if c.startswith(_SCALE_LB_HEADERS)), None)
+        kg_i = next((j for j, c in enumerate(cells)
+                     if c.startswith(_SCALE_KG_HEADERS)), None)
+        break
+    if head_i is None:
+        return {"error": "no 'Date and Time' column found — is this a scale export?"}
+    if lb_i is None and kg_i is None:
+        return {"error": "no weight column found (expected 'Weight(lb)' or 'Weight(kg)')"}
+
+    out, seen = [], set()
+    for row in rows[head_i + 1:]:
+        stamp = (row[date_i] if date_i < len(row) else "").strip()
+        raw = ""
+        if lb_i is not None and lb_i < len(row):
+            raw = (row[lb_i] or "").strip()
+        to_lbs = 1.0
+        if not raw and kg_i is not None and kg_i < len(row):
+            raw, to_lbs = (row[kg_i] or "").strip(), 2.20462
+        if not stamp or not raw:
+            continue
+        m = _NUM_RE.search(raw)                      # "185.4lb" → 185.4
+        at = _parse_scale_stamp(stamp)
+        if m is None or at is None:
+            continue
+        lbs = round(float(m.group()) * to_lbs, 1)
+        if lbs <= 0:
+            continue
+        key = f"{SCALE_EXPORT_SOURCE}:{stamp}"
+        if key in seen:                              # a file that repeats a stamp
+            continue
+        seen.add(key)
+        # The stamp is the scale app's LOCAL time, which is the user's own — so its
+        # calendar day IS the Pacific day, with no conversion to do or to get wrong.
+        out.append({"source_key": key, "weigh_date": at.strftime("%Y-%m-%d"),
+                    "weight_lbs": lbs, "at": at})
+    out.sort(key=lambda r: r["at"])
     return out
 
 
-def set_bodyweight(bodyweight_id: int, weight_lbs: float) -> dict:
-    """Correct one already-recorded weigh-in, by row id. A plain helper, NOT an MCP
-    tool — website-only, like set_nutrient_targets and set_trainer_profile: it backs the
-    /graphs weigh-in history's ✎, where the user is looking at the list and can see WHICH
-    row is wrong. The model has no business picking a row id out of the air; when it's
-    told "Tuesday was 204, not 104" it re-logs, and the latest reading on a day wins.
+def _parse_scale_stamp(value: str) -> Optional[datetime]:
+    """The export's local timestamp → datetime, or None if no known format fits (that
+    row is skipped rather than guessed at — a misread date is a reading on the wrong
+    day, which is worse than a reading that never arrives)."""
+    for fmt in _SCALE_TIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
 
-    This exists because re-logging ISN'T always enough. A dropped leading digit (a
-    reading entered with its first digit missing) is invisible afterwards — the day
-    already shows the corrected
-    reading — but the bad row still sits in the table dragging MIN(weight_lbs) down,
-    which silently disables every "lowest ever" the app can spot. Correcting the row,
-    or deleting it, is the only thing that clears it."""
-    if weight_lbs is None or weight_lbs <= 0:
-        return {"error": f"weight_lbs must be positive, got {weight_lbs}"}
+
+def import_bodyweight(blob: bytes) -> dict:
+    """Load a connected-scale export into the weigh-in log. A plain helper, NOT an MCP
+    tool — website-only, like set_nutrient_targets and set_archived: the user uploads a
+    file on /weight, and the model has no file to hand and no business inventing one.
+
+    Idempotent by `source_key`, so overlapping exports are the expected case rather than
+    a hazard: re-uploading last month's file inserts nothing and says so. Returns
+    `imported`/`skipped` counts, the date span of what landed, the latest reading, and
+    `new_low` when one of the NEW readings beats every reading that was already there —
+    the page's confetti cue, and the one fact the browser cannot derive from the rows it
+    is about to re-render, since it never sees the all-time minimum.
+    """
+    parsed = _parse_scale_export(blob)
+    if isinstance(parsed, dict):
+        return parsed
+    if not parsed:
+        return {"error": "no readings found in that file"}
+
     with db() as conn:
-        cur = conn.execute("UPDATE body_weight SET weight_lbs=? WHERE id=?",
-                           (weight_lbs, bodyweight_id))
-        if cur.rowcount == 0:
-            return {"error": f"no weigh-in with id {bodyweight_id}"}
-        r = conn.execute("SELECT id, weigh_date, weight_lbs FROM body_weight WHERE id=?",
-                         (bodyweight_id,)).fetchone()
-    return {"bodyweight_id": r["id"], "weigh_date": r["weigh_date"],
-            "weight_lbs": r["weight_lbs"]}
+        before = conn.execute("SELECT MIN(weight_lbs) AS m FROM body_weight").fetchone()["m"]
+        stamp, imported = now(), []
+        for r in parsed:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO body_weight
+                       (weigh_date, weight_lbs, note, source_key, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (r["weigh_date"], r["weight_lbs"], None, r["source_key"], stamp),
+            )
+            if cur.rowcount:
+                imported.append(r)
+
+    out = {"imported": len(imported), "skipped": len(parsed) - len(imported),
+           "readings": len(parsed)}
+    if imported:
+        out["first_date"] = imported[0]["weigh_date"]
+        out["last_date"] = imported[-1]["weigh_date"]
+        out["latest_lbs"] = imported[-1]["weight_lbs"]
+        low = min(r["weight_lbs"] for r in imported)
+        # Strictly less than, and never on a first-ever import (nothing to beat) — the
+        # same rule the old hand-entry path applied one reading at a time.
+        if before is not None and low < before:
+            out["new_low"] = True
+    return out
 
 
 @trainer_mcp.tool(annotations=READ_ONLY)
@@ -6097,12 +6254,13 @@ def delete_training_record(kind: str, id: int) -> dict:
       - "workout" — a whole session (all its sets go too).
       - "set"     — one logged set (remaining sets for that exercise are renumbered
                     so set_index stays contiguous).
-      - "weight"  — one bodyweight reading (its `bodyweight_id` is returned by
-                    log_bodyweight; to fix a mistyped weigh-in, delete it and re-log).
-    Find workout/set ids with get_fitness_briefing or get_exercise_history."""
-    if kind not in ("workout", "set", "weight"):
+    Find workout/set ids with get_fitness_briefing or get_exercise_history.
+
+    Weigh-ins are NOT deletable here — they come from the scale's export and are
+    corrected at the scale's app, then re-exported."""
+    if kind not in ("workout", "set"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['set', 'weight', 'workout'] (use the journal server for entry/drink)"}
+                         "['set', 'workout'] (use the journal server for entries and notes)"}
     return _delete_record(kind, id)
 
 

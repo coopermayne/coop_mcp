@@ -368,7 +368,7 @@ _WRITE_TOOLS = {
     "notes_save", "notes_update", "notes_delete", "notes_file",
     "collections_save", "collections_delete",
     "log_workout", "update_workout", "update_set", "save_exercise",
-    "log_bodyweight", "update_profile",
+    "update_profile",
     "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
     "finish_workout", "create_exercise",
 }
@@ -543,11 +543,6 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     elif name in ("update_workout", "update_set"):
         href = "/workouts"
         summary = "Updated the workout"
-    elif name == "log_bodyweight":
-        # /graphs, not /workouts: the weigh-in is a morning reading now, and the
-        # trend chart is where it's read (and entered).
-        href = "/graphs"
-        summary = "Logged bodyweight"
     elif name == "save_exercise":
         summary = "Saved an exercise"
     # Exercise-add agent (the library page's AI add).

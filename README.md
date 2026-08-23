@@ -195,12 +195,17 @@ With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
   added later with `update_workout`'s `append_note`, which adds a line without
   clobbering earlier ones) resurface in `get_fitness_briefing`, so observations made
   mid-workout become cautions next time.
-- **Bodyweight + trend.** `log_bodyweight` records a weigh-in (returning the change vs
-  the prior reading), and the latest reading + 30-day change ride along in
-  `get_fitness_briefing`; the webapp's Training page shows the longer trend. Storage is
-  date-keyed (its own daily metric, not a column on a workout), so you can weigh on rest
-  days too. Fix a mistyped reading by deleting it (`delete_record(kind="weight")`, using
-  the `bodyweight_id` from the log return) and re-logging.
+- **Bodyweight is IMPORTED, not typed.** A connected scale records every morning to its
+  vendor's app; every so often you export that app's spreadsheet and upload it with
+  **Import scale export** on `/weight`. That is the only door — no form, no MCP write
+  tool, no per-row edit — because a reading is a measurement, and a second way to state
+  one is a second version of the truth. To fix a bad reading, fix it in the scale's app
+  and re-export. The import is idempotent (each reading is keyed by its timestamp in the
+  export), so re-uploading an overlapping file inserts only what's new and says so;
+  overlapping exports are the expected way to use it. Storage is date-keyed (its own
+  daily metric, not a column on a workout), so rest-day weigh-ins are just readings.
+  The latest reading + 30-day change ride along in `get_fitness_briefing`, and `/graphs`
+  plots the trend against the goal.
 
 Suggested posture for the **trainer project's** custom instructions (the drinking lines
 belong with the journaling project, since the eating tools are on the
@@ -221,8 +226,9 @@ journal connector):
 > `unmatched`/`candidates`, so use one of those or tell me to add the movement on the
 > library page. Keep existing entries coached with `save_exercise` (muscles in their three
 > emphasis tiers, equipment, technique, a form gif/video). Capture anything I mention about how it went in the session
-> notes (`append_note`) — it's context for next time. After we log a session, remind me
-> to weigh in and record it with `log_bodyweight`. Keep
+> notes (`append_note`) — it's context for next time. You cannot record a weigh-in and
+> I will not type one: my scale logs itself and I import its export, so read the trend
+> in the briefing and mention it only if the readings have gone quiet. Keep
 > durable facts (injuries, split, goals) in `update_profile`.
 
 ## Remote deployment — phone access via Coolify
@@ -659,10 +665,9 @@ newer than this table; see CLAUDE.md's `collections` section for the full contra
 | `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; names resolve against the closed catalog, unmatched ones come back under `unmatched`/`candidates` (never auto-created) |
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `planned_date` moves a *planned* session to another day (`""` unschedules); `append_note` adds a line without clobbering earlier notes |
 | `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
-| `log_bodyweight` | Record a weigh-in (lbs); returns the change vs the prior reading |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight + `upcoming` (sessions already planned, not yet done) |
-| `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set`/`weight` — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `intake_delete`, `notes_delete`, `collections_delete`) |
+| `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set` (weigh-ins are import-only and not deletable here) — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `intake_delete`, `notes_delete`, `collections_delete`) |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps

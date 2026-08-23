@@ -1,20 +1,20 @@
-/* /weight — the bodyweight log: a form on top, every reading below, each one
-   correctable and deletable.
+/* /weight — the bodyweight log: an import box on top, every reading below.
 
-   Fetch-then-reload throughout, the /food Targets popover's shape. The page is
-   server-rendered (the rows need ids, and each row's delta depends on its
-   neighbour), so patching one row in place would mean recomputing the deltas
-   around it in JS — two implementations of the same arithmetic. A reload is
-   honest and this is not a page you hammer.
+   The page has ONE action. A connected scale records each morning to its vendor's
+   app, the user exports that app's spreadsheet every so often, and this hands the
+   file to the server. Nothing else here writes — the rows are read-only, because a
+   reading is a measurement and correcting one belongs at the scale, not in a
+   text field that would disagree with it.
 
-   The one thing that must NOT be interrupted by that reload is the confetti: when
-   a new all-time low actually throws one, the reload waits for it. That hold is
-   the whole reason the weigh-in stopped living behind the /trainer card's Finish
-   redirect, so it would be a poor joke to reintroduce it here. */
+   Upload-then-reload, the shape the whole page used to use for saving: the rows are
+   server-rendered and each one's delta depends on its neighbour, so patching an
+   import's worth of new rows in place would mean a second copy of that arithmetic
+   in JS. The one thing that must NOT be cut off by the reload is the confetti when
+   the import brings in a new all-time low. */
 (function () {
   'use strict';
 
-  var box = document.querySelector('[data-weighin]');
+  var box = document.querySelector('[data-import]');
   if (!box) return;
 
   var BASE = (function () {
@@ -25,25 +25,10 @@
     return src.replace(/\/static\/weight\.js.*$/, '');
   })();
 
-  var input = box.querySelector('[data-weighin-input]');
-  var dateEl = box.querySelector('[data-weighin-date]');
-  var save = box.querySelector('[data-weighin-save]');
-  var err = box.querySelector('[data-weighin-err]');
-  var list = document.querySelector('[data-wlog]');
-  var listErr = document.querySelector('[data-wlog-err]');
-
-  function post(url, body) {
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-    }).then(function (r) {
-      return r.json().then(function (j) {
-        if (!r.ok || (j && j.error)) throw new Error((j && j.error) || 'Could not save.');
-        return j;
-      });
-    });
-  }
+  var pick = box.querySelector('[data-import-pick]');
+  var file = box.querySelector('[data-import-file]');
+  var msg = box.querySelector('[data-import-msg]');
+  var err = box.querySelector('[data-import-err]');
 
   // A burst has ~2s to play. Reloading under it would cut it off, so a new low holds
   // the reload — but only if a burst actually STARTED. burst() declines under reduced
@@ -54,90 +39,47 @@
     setTimeout(function () { location.reload(); }, thrown ? 2400 : 0);
   }
 
-  /* ---------- the entry form ---------------------------------------------- */
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
 
-  // Typo guard: a value outside a plausible range turns the field yellow. It never
-  // BLOCKS — a real reading can be anything, and capture must not argue. It earns its
-  // place on dropped leading digits, which is the failure mode this log has a history
-  // of: the day still reads correctly afterwards (latest reading wins) while the bad
-  // row quietly owns MIN(weight_lbs) and disables every "lowest ever".
-  var LO = 160, HI = 230;
-  function paint() {
-    var v = input.value.trim(), n = parseFloat(v);
-    var bad = v !== '' && !(n >= LO && n <= HI);
-    input.classList.toggle('border-yellow-400', bad);
-    input.classList.toggle('bg-yellow-50', bad);
-    input.classList.toggle('border-gray-200', !bad);
-    save.disabled = !(n > 0);
-  }
-  input.addEventListener('input', function () { err.hidden = true; paint(); });
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); save.click(); }
-  });
-  dateEl.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); save.click(); }
-  });
-  paint();
+  pick.addEventListener('click', function () { file.click(); });
 
-  save.addEventListener('click', function () {
-    var v = parseFloat(input.value);
-    if (!(v > 0)) { input.focus(); return; }
-    save.disabled = true;
+  file.addEventListener('change', function () {
+    var f = file.files && file.files[0];
+    if (!f) return;
     err.hidden = true;
-    post(BASE + '/weight', { weight_lbs: v, weigh_date: dateEl.value || null })
-      .then(function (j) { finish(j.new_low); })
+    msg.hidden = false;
+    msg.textContent = 'Reading ' + f.name + '…';
+    pick.disabled = true;
+
+    // The file goes up as the raw request body rather than as multipart — one upload
+    // in the whole app doesn't justify a form-parser dependency on the server.
+    fetch(BASE + '/weight/import', { method: 'POST', body: f })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          if (!r.ok || (j && j.error)) throw new Error((j && j.error) || 'Could not import that file.');
+          return j;
+        });
+      })
+      .then(function (j) {
+        if (!j.imported) {
+          // Not an error, and deliberately not styled as one: re-uploading an
+          // overlapping export is the normal way this gets used.
+          msg.textContent = 'Nothing new — all ' + plural(j.readings, 'reading') +
+                            ' in that file were already logged.';
+          pick.disabled = false;
+          file.value = '';
+          return;
+        }
+        msg.textContent = 'Imported ' + plural(j.imported, 'reading') +
+                          (j.skipped ? ' (' + j.skipped + ' already logged)' : '') + '…';
+        finish(j.new_low);
+      })
       .catch(function (ex) {
-        err.textContent = ex.message; err.hidden = false; save.disabled = false;
+        msg.hidden = true;
+        err.textContent = ex.message;
+        err.hidden = false;
+        pick.disabled = false;
+        file.value = '';
       });
-  });
-
-  /* ---------- correcting / deleting a row --------------------------------- */
-
-  if (!list) return;
-
-  function fail(msg) { listErr.textContent = msg; listErr.hidden = false; }
-
-  list.addEventListener('click', function (e) {
-    var row = e.target.closest('[data-wrow]');
-    if (!row) return;
-    var id = row.dataset.wid;
-    var val = row.querySelector('[data-wval]');
-    var inp = row.querySelector('[data-winput]');
-
-    if (e.target.closest('[data-wedit]')) {
-      listErr.hidden = true;
-      if (inp.hidden) {                 // first tap opens the field
-        val.hidden = true; inp.hidden = false; inp.focus(); inp.select();
-      } else {                          // second tap commits
-        var v = parseFloat(inp.value);
-        if (!(v > 0)) { inp.focus(); return; }
-        post(BASE + '/weight/' + id, { weight_lbs: v })
-          .then(function () { location.reload(); })
-          .catch(function (ex) { fail(ex.message); });
-      }
-      return;
-    }
-
-    if (e.target.closest('[data-wdel]')) {
-      listErr.hidden = true;
-      var label = val.textContent.trim();
-      var when = row.querySelector('span').textContent.trim();
-      if (!window.confirm('Delete the ' + label + ' reading from ' + when + '?')) return;
-      post(BASE + '/weight/' + id + '/delete')
-        .then(function () { location.reload(); })
-        .catch(function (ex) { fail(ex.message); });
-    }
-  });
-
-  // Enter commits an open field, Escape abandons it.
-  list.addEventListener('keydown', function (e) {
-    if (!e.target.matches('[data-winput]')) return;
-    var row = e.target.closest('[data-wrow]');
-    if (e.key === 'Enter') { e.preventDefault(); row.querySelector('[data-wedit]').click(); }
-    else if (e.key === 'Escape') {
-      e.preventDefault();
-      row.querySelector('[data-winput]').hidden = true;
-      row.querySelector('[data-wval]').hidden = false;
-    }
   });
 })();

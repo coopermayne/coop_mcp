@@ -361,8 +361,17 @@ WEIGHTS = [
     ("2026-04-12", 198.6), ("2026-04-26", 197.2), ("2026-05-10", 195.8),
     ("2026-05-18", 194.9), ("2026-05-28", 193.4), ("2026-05-31", 192.8),
 ]
-for wd, lbs in WEIGHTS:
-    server.log_bodyweight(weight_lbs=lbs, weigh_date=wd)
+# Inserted directly: there is no write TOOL for a weigh-in any more — readings come
+# from a connected scale's export (server.import_bodyweight), and faking an .xlsx here
+# to seed six numbers would be ceremony. Each gets a source_key in the shape the
+# importer writes, so a later real import can't collide with the seeds.
+with server.db() as _conn:
+    for wd, lbs in WEIGHTS:
+        _conn.execute(
+            """INSERT OR IGNORE INTO body_weight
+                   (weigh_date, weight_lbs, source_key, created_at) VALUES (?,?,?,?)""",
+            (wd, lbs, f"seed:{wd} 06:30 AM", server.now()),
+        )
 print(f"bodyweight readings logged: {len(WEIGHTS)}")
 
 

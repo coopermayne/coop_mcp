@@ -817,13 +817,13 @@ def upcoming_plans() -> list:
 
 
 def bodyweight_log() -> list[dict]:
-    """EVERY weigh-in row, newest first, with its id — the /graphs history list, where a
-    reading can be corrected or removed.
+    """EVERY weigh-in row, newest first — the /weight log under its import box.
 
     Deliberately NOT graph_data()'s `weight` series, which is one point per DAY (latest
-    reading wins). That collapse is right for a chart and wrong here: a mistyped reading
-    that was re-logged the same day VANISHES from the day view while still sitting in the
-    table, and the whole point of this list is to be able to see it and get rid of it."""
+    reading wins). That collapse is right for a chart and wrong here: a scale can record
+    twice in a morning (a re-weigh, someone else stepping on it), and the second reading
+    VANISHES from the day view while still sitting in the table owning MIN(weight_lbs) —
+    which is the figure every "lowest ever" is measured against."""
     with server.db() as conn:
         rows = conn.execute(
             """SELECT id, weigh_date, weight_lbs, note FROM body_weight
@@ -847,10 +847,9 @@ def graph_data() -> dict:
     """Everything the /graphs page plots, in one bootstrap payload (the data is a
     single user's history — small enough to ship whole and filter client-side).
 
-    - weight: one point per weighed day (latest reading wins, matching
-      server.log_bodyweight). The graphs page also WRITES here — today's point is
-      the weigh-in box's target, appended client-side after a successful log so
-      the line extends without a reload.
+    - weight: one point per weighed day (latest reading wins). Read-only — readings
+      arrive by importing the scale's export on /weight, and this page just plots
+      them against the goal.
     - drinks: days with an alcohol figure on at least one intake item, summed
       (`SUM(intake_items.standard_drinks)`, including explicit 0s); the page
       gap-fills unlogged days to 0 so the line is honest about the calendar.
