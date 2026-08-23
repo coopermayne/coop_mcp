@@ -90,12 +90,15 @@
   </div>
   <div class="space-y-3">
     {% for e in day.entries %}{{ entry_paragraph(e) }}{% endfor %}
-    {% if not day.entries and chat_enabled %}
-    {# Nothing written that day. Offer the way in: opens the chat panel with the
-       date prefilled (wired in _chat_panel.html) so the user can just start talking
-       about it. Only with chat on — otherwise there'd be nothing to open. #}
+    {% if chat_enabled %}
+    {# The way in, on EVERY day: opens the chat panel with the date prefilled
+       (wired in _chat_panel.html) so the user can just start talking about it.
+       A day that's already been written about says "Add more" — the same door,
+       since a day is rarely finished the first time you sit down with it. Only
+       with chat on — otherwise there'd be nothing to open. #}
     <button type="button" data-day-write data-date="{{ day.date }}"
-            class="text-sm text-gray-300 hover:text-black transition-colors">Nothing yet — write about this day ›</button>
+            class="block text-sm text-gray-300 hover:text-black transition-colors"
+            >{{ 'Add more ›' if day.entries else 'Nothing yet — write about this day ›' }}</button>
     {% endif %}
   </div>
 </section>
