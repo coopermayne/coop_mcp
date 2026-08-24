@@ -1,6 +1,8 @@
 # Plan: four Telegram bots
 
-Status: BUILT, 2026-08-24 (phases 1+2; voice notes still open — see §10).
+Status: BUILT and pushed 2026-08-24 (commit `fb1e9d0`). Phases 1+2 done, plus a
+rendering round that wasn't in this plan. **Deployed but the first production webhook
+delivery is UNVERIFIED** — see §11 for exactly where things stand.
 
 ## What this is
 
@@ -386,6 +388,7 @@ Manual, matching the repo's existing pattern (no test suite):
   smallest surface, most frequent use), typing indicator, `/new`.
 - **Phase 2** — the other three bots, sibling blocks, write-chip links,
   `setMyCommands`, reply TTL.
+- **Phase 2.5 (unplanned, done)** — rendering. See §11.
 - **Phase 3** — voice notes. The real prize for a journal on a phone, and the
   reason to keep the door open: Anthropic's API takes no audio, so this needs a
   transcription service (Whisper API most likely). That is a SECOND external
@@ -393,7 +396,8 @@ Manual, matching the repo's existing pattern (no test suite):
   it. Defensible, belongs in `webapp/`, never in `server.py`, and deserves its own
   decision.
 - **Not planned** — photos → `featured_image_url` (Telegram file URLs embed the
-  bot token and expire; needs a real blob-storage decision first); inline
+  bot token and expire; needs a real blob-storage decision first — note this is
+  only about STORING one; estimating a meal from a photo is done, §11); inline
   keyboards; group chats.
 
 ---
@@ -474,3 +478,115 @@ this in.
 *(Meta's pricing, verification requirements and Cloud API features change often
 and this reflects knowledge as of early 2026 — worth confirming against current
 docs before acting on the cost and typing-indicator rows.)*
+
+---
+
+## 11. Where this actually stands (2026-08-24)
+
+Written at the end of the session that built it, for whoever picks it up next.
+
+### Done and live in the code
+
+| | Notes |
+|---|---|
+| All four bots | `journal`, `intake`, `notes`, `trainer`; tool lists derived from the prefixes |
+| Webhook + polling | polling refuses to start if a webhook exists (see below) |
+| Fail-closed allowlist | numeric chat id; empty = talks to nobody |
+| Per-chat lock, update dedupe | the two correctness traps from §7 |
+| `/new` `/help` `/whoami` | registered via `setMyCommands` |
+| Typing indicator, reply TTL, write-chip links | §1.5, §1.6 |
+| Boot-time partition check | `chat.assert_tool_partition()` |
+| **Rich rendering** | markdown → native tables/lists/quotes/checkboxes/collapsibles |
+| **Photos** | plate → estimate; bytes dropped, nothing stored |
+| **Places** | tappable inline map block (replaced an earlier `sendVenue`) |
+| **Nudges** | `TELEGRAM_NUDGES=bot@HH:MM`, model may reply `SKIP` |
+
+### Verified live, against the real bots
+
+Polling delivery, agent turns, tool calls writing to the DB, markdown tables in a
+real reply, nudge firing, nudge declining with `SKIP`, map rendering and tapping
+through to Google/Apple/Bing/OSM, collapsibles rendering.
+
+### NOT verified
+
+- **Production webhook delivery.** Everything above was exercised in POLLING mode
+  against `journal_dev.db`. The route is unit-tested (403 on bad secret/header,
+  200 on good) and `setWebhook` registers correctly, but no real Telegram → prod
+  delivery has happened. First message after deploy is the test. If it's silent:
+  check `PUBLIC_URL` is exact and slash-free, then the container log for
+  `webhook mode, bots: …`, then `getWebhookInfo` for the real domain.
+- **Voice** (phase 3) — untouched, still needs a transcription decision.
+- **Streaming** — `sendRichMessageDraft` takes a `draft_id`; repeated calls with
+  the same id are accepted, and `sendRichMessage` finalizes. What's NOT known is
+  whether the draft updates in place and whether finalizing leaves a DUPLICATE
+  message. If it duplicates, streaming costs a doubled message every turn and
+  isn't worth it. That one observation is the whole blocker.
+
+### Open chores (human, not code)
+
+- `/setjoingroups` → **Disable** on all four bots in BotFather. Not load-bearing
+  (`_authorized` rejects group chats anyway — a group id is negative and can't
+  equal the sender's) but it closes the door at Telegram's end.
+- **Separate dev bot tokens.** Polling now REFUSES to run when a webhook exists,
+  so local dev against the production tokens will simply stop. Four more bots
+  from BotFather is a minute and removes the question permanently.
+
+### API facts that cost real time to find
+
+None of these are in the docs; all were found by probing the live API, and each
+was invisible until something rendered wrong.
+
+1. **Telegram silently ignores unknown fields.** A probe that "accepts" a
+   parameter proves NOTHING about whether it does anything. This burned us twice:
+   `parse_mode` on a rich block (accepted, dropped, literal `<b>` tags in the
+   chat) and three `details` label variants that all "worked" when only one did.
+   The only reliable test is a real send and a look at the render.
+2. **Rich blocks format via `entities`, never `parse_mode`.** Moot now that the
+   markdown path does the parsing, which is most of why that path is better.
+3. **`rich_message.markdown` and `rich_message.blocks` are mutually exclusive**,
+   blocks winning silently. That's why a map is its own message.
+4. **`<details><summary>` is the one HTML form the rich markdown honours.**
+   GitHub's `> [!NOTE]` degrades to a plain quote; `:::details` prints literally.
+5. **Block types that exist**: `paragraph`, `heading` (+`size` 1-3), `list`
+   (+`ordered`, `items:[{blocks:[…]}]` — a `text` field parses and sends EMPTY),
+   `table` (`cells:[[{text, is_header}]]`), `divider` (needs content beside it),
+   `details` (`summary` + `blocks`), `map` (`location.latitude/longitude`, long
+   form only), `collage`, `slideshow`, `anchor` (+`name`).
+6. **`sendRichMessageDraft` needs `draft_id`.** Omitting it returns the
+   misleading `RANDOM_ID_INVALID`.
+
+### Deliberately rejected
+
+- **Reply keyboards** — they replace the on-screen keyboard, hostile for a bot
+  you mostly type prose at.
+- **Command scopes** — single user, no admins to differentiate.
+- **Hand-built rich block trees** — was implemented, then deleted (~100 lines of
+  table/list parsing plus UTF-16 entity offsets) once `rich_message.markdown`
+  proved to render better than the parser ever did.
+- **`sendVenue`** — worked, but the `map` block does the same job, opens the same
+  map-app chooser, and looks like part of the conversation.
+- Payments, Stars, games, stickers, business/secretary mode, managed bots, guest
+  bots, bot-to-bot, attachment menu, web login widget.
+
+### Ideas parked, with reasons
+
+- **Inline keyboards** for one-tap corrections (`✏️ fix` / `🗑 delete` under a
+  logged item). The highest everyday value of anything not built — the main
+  friction in a food log is a wrong estimate, and fixing one currently means
+  typing a sentence. `callback_data` is 64 bytes (an item id fits); every press
+  needs `answerCallbackQuery` or the client spins.
+- **Deep linking** — `t.me/<bot>?start=entry_412` would let an app page link INTO
+  a bot conversation about that thing, closing the capture-here/read-there loop
+  in the other direction. 64-char parameter, arrives as `/start entry_412`.
+- **Mini App via the menu button** — opens the PWA inside Telegram; Telegram signs
+  `initData` with the bot token, so it could authenticate without Google OAuth in
+  a webview. Real work, real payoff, deserves its own plan.
+- **Inline mode** — `@<notes-bot> chicken` in any chat to search recipes and
+  send one to a friend. The only feature that exposes this data outside the
+  user's own chats, so it needs a deliberate yes.
+- **`/settings`** — the docs list it as an expected global command alongside
+  `/start` and `/help`, and nudge times and targets are things you'd plausibly
+  want to change from the phone.
+- **A test bot + Telegram's test environment** (`/bot<token>/test/METHOD`) — this
+  session put ~20 junk messages in a real chat reverse-engineering the rich
+  message API. That belongs somewhere else next time.
