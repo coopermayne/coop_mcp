@@ -1,6 +1,6 @@
 # Plan: four Telegram bots
 
-Status: proposed, 2026-08-23.
+Status: BUILT, 2026-08-24 (phases 1+2; voice notes still open — see §10).
 
 ## What this is
 

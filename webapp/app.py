@@ -15,6 +15,8 @@ Env: PORT, WEB_HOST, WEB_BASE_URL (public origin, for the OAuth redirect),
      SESSION_SECRET, GOOGLE_CLIENT_ID/SECRET, JOURNAL_ALLOWED_EMAILS, JOURNAL_DB.
 """
 
+import asyncio
+import contextlib
 import json
 import os
 import re
@@ -60,9 +62,10 @@ _load_dotenv()
 import data            # noqa: E402  local data layer
 import server          # noqa: E402  reused for db()/reads and ALLOWED_EMAILS
 import chat            # noqa: E402  in-app AI chat agent loop (the one write path)
+import telegram as tg  # noqa: E402  the Telegram bots, a third front end on that loop
 
 from fastapi import FastAPI, Request                          # noqa: E402
-from fastapi.responses import RedirectResponse, Response       # noqa: E402
+from fastapi.responses import JSONResponse, RedirectResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles                   # noqa: E402
 from fastapi.templating import Jinja2Templates                # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware       # noqa: E402
@@ -152,7 +155,23 @@ LOCK_MAX_CHORD = 6
 LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
 LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/")
 
-app = FastAPI(title="Journal")
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """Bring the Telegram bots up with the app and take them down with it.
+
+    This is the STANDALONE path — a laptop running `uvicorn app:app` without
+    combined.py, which is also the only way polling mode is useful. In prod
+    combined.py owns the lifespan and calls the same two functions; both exist so a
+    dev run isn't a second, differently-wired app.
+    """
+    await tg.startup()
+    try:
+        yield
+    finally:
+        await tg.shutdown()
+
+
+app = FastAPI(title="Journal", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
 
@@ -477,6 +496,13 @@ PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health",
                 # 401 JSON, not an HTML login redirect. Guarded by WIDGET_TOKEN in-route.
                 "/api/today.json"}
 
+# Path PREFIXES that are public, for the same reason but where the tail varies.
+# The Telegram webhook carries a per-deploy secret segment, so it can't be an exact
+# path; Telegram has no Google session and would be handed an HTML login page.
+# It does its OWN auth in-route (secret path + secret header) and then again on the
+# sender's numeric id (telegram._authorized) — see webapp/telegram.py.
+PUBLIC_PREFIXES = ("/static", "/telegram/webhook/")
+
 oauth = None
 if AUTH_ENABLED:
     from authlib.integrations.starlette_client import OAuth
@@ -500,7 +526,7 @@ class RequireAuth(BaseHTTPMiddleware):
         path = request.url.path
         if root and path.startswith(root):
             path = path[len(root):] or "/"
-        if path in PUBLIC_PATHS or path.startswith("/static"):
+        if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
             return await call_next(request)
         if request.session.get("email"):
             return await call_next(request)
@@ -1476,6 +1502,52 @@ async def graphs_goal(request: Request):
         goal["start_lbs"], goal["start_date"] = r["weight_lbs"], r["weigh_date"]
     server.update_profile(profile={"weight_goal": goal})
     return RedirectResponse(base + "/graphs", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+# Telegram webhook — the one route the bots need. Everything else about them
+# lives in webapp/telegram.py.
+# --------------------------------------------------------------------------- #
+
+@app.post("/telegram/webhook/{bot}/{secret}")
+async def telegram_webhook(request: Request, bot: str, secret: str):
+    """Accept one update from Telegram and hand it to the agent loop.
+
+    Two checks, and only the second one is real. The path segment keeps scanners out
+    of the handler; the X-Telegram-Bot-Api-Secret-Token HEADER is what proves the
+    caller is Telegram, since a URL leaks into logs and proxies while the header does
+    not. Both compared with compare_digest.
+
+    Those two must never carry the SAME value — see telegram.webhook_path. The path
+    is written to the access log on every request, so if it were the secret itself,
+    the log would publish the credential the header check depends on. Source-IP filtering is
+    possible but would read X-Forwarded-For under forwarded_allow_ips="*", i.e. trust
+    the proxy's word about it, so it isn't done.
+
+    Neither check says WHO is talking — that's telegram._authorized, on the sender's
+    numeric id, inside the handler.
+
+    The 200 goes back BEFORE the work. An agent turn can run a dozen tool hops, and
+    Telegram retries anything it doesn't get a fast 200 for — a retry that arrives
+    mid-turn is how one burrito gets logged twice. The dedupe set in telegram.py is
+    the other half of that; this is why it's needed at all.
+    """
+    if not tg.enabled():
+        return JSONResponse({"ok": True})
+    if not (tg.WEBHOOK_SECRET
+            and secrets.compare_digest(secret, tg.webhook_path(bot).rsplit("/", 1)[-1])):
+        return Response(status_code=403)
+    hdr = request.headers.get("x-telegram-bot-api-secret-token", "")
+    if not secrets.compare_digest(hdr, tg.WEBHOOK_SECRET):
+        return Response(status_code=403)
+    if bot not in tg.BOTS:
+        return Response(status_code=403)
+    try:
+        update = await request.json()
+    except Exception:
+        return JSONResponse({"ok": True})
+    asyncio.create_task(tg.handle_update(bot, update))
+    return JSONResponse({"ok": True})
 
 
 # --------------------------------------------------------------------------- #

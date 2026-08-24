@@ -579,6 +579,158 @@ Note `WEB_BASE_URL` (not `PUBLIC_URL`) — the webapp uses standard browser OAut
 from the MCP server's OAuth-provider flow, so its env vars don't collide if you run both
 in one Coolify project.
 
+## Telegram — four bots on the same loop
+
+The journal, the eating log, the notes layer and the trainer, reachable from a Telegram
+DM. Off by default; turns on when `TELEGRAM_MODE` is set to `webhook` or `polling` and at
+least one bot token exists. It's the **same agent loop as the in-app chat**
+(`webapp/chat.py`) with a different front end, so the project's rule holds unchanged —
+still no LLM inside `server.py`, no new pip dependency, no second process.
+
+**Four bots, not one**, because the split already exists in the code: every tool on the
+journal server is either in `CONNECTOR_HIDDEN_TOOLS` (people/entries) or carries an
+`intake_` / `notes_` / `collections_` prefix. The bots' tool lists are *derived* from
+that, so a tool added later lands in the right bot with no edit here — and
+`chat.assert_tool_partition()` fails the boot if the split ever stops being exact.
+
+| Bot | Handles | Tools |
+|---|---|---|
+| journal | days, events, the people in them | 15 |
+| intake | food, drinks, water | 6 |
+| notes | notes & collections | 12 |
+| trainer | workouts, plans, the library | 19 |
+
+The cost is that you pick the chat: "burrito after the gym with Karl" is three bots'
+business. Each one knows what its siblings own, so it does its part and says where the
+rest belongs rather than silently dropping it.
+
+### Setup
+
+1. **BotFather** → `/newbot` for each bot you want (start with one). Keep each token.
+   On each: `/setjoingroups` → **Disable**, `/setprivacy` → **Enable**.
+2. **`@userinfobot`** → your numeric id. Same id for all four — in a private chat
+   `chat.id` *is* your user id.
+3. Set the env vars (see `.env.example`): `TELEGRAM_MODE`, one or more
+   `TELEGRAM_TOKEN_*`, `TELEGRAM_ALLOWED_CHAT_IDS`, and in webhook mode
+   `TELEGRAM_WEBHOOK_SECRET` (`openssl rand -hex 32`).
+4. Redeploy. Webhooks register themselves at startup — nothing to call by hand, and a
+   redeploy is a no-op rather than a re-register.
+
+**Dev:** `TELEGRAM_MODE=polling` long-polls instead, which is the only mode that can talk
+to a laptop running against `journal_dev.db`.
+
+**Use separate bot tokens for local work.** A token is the same string everywhere, and
+Telegram refuses `getUpdates` while a webhook is set — so polling has to clear one first,
+and pointing a laptop at a production token would unregister the deployment's webhook and
+quietly take delivery over, with nothing in prod's logs to say why. Polling therefore
+REFUSES to start when it finds a webhook already registered, naming the URL and stopping;
+clearing it stays possible as a deliberate `deleteWebhook`, never as a side effect of
+starting a dev server. Four more bots from BotFather is a minute's work and removes the
+question.
+
+Commands, per bot: `/new` (fresh thread), `/help` (what this bot owns), `/whoami` (your
+chat id).
+
+### Security — two doors, and most people only think about the first
+
+**The webhook** is open to the internet by necessity (Telegram carries no Google session,
+so the path is in `PUBLIC_PATHS`). A secret path segment keeps scanners out of the
+handler; the `X-Telegram-Bot-Api-Secret-Token` header is the check that actually proves
+the caller is Telegram, since a URL leaks into logs and a header doesn't.
+
+**The bot itself** is the door people miss: anyone who learns the handle can DM it, and
+those arrive as legitimately-signed Telegram deliveries. `TELEGRAM_ALLOWED_CHAT_IDS` is
+the whole answer, keyed on the numeric id (usernames are changeable and recyclable) and
+**failing closed** — empty means the bots talk to nobody. Note this is deliberately the
+opposite of `JOURNAL_ALLOWED_EMAILS`, where empty means authless dev: there, Google auth
+still stands behind it; here there is nothing behind it.
+
+**If a token leaks:** the holder can read what you send *that* bot and post as it. They
+cannot write to your journal — the allowlist lives in this app, not in Telegram. Four
+tokens means one leak is one domain, the same reasoning that keeps `WIDGET_TOKEN` separate
+from `BACKUP_TOKEN`. Rotate with BotFather `/revoke`.
+
+**What no setting fixes:** bot chats are never end-to-end encrypted. Message text sits in
+plaintext on Telegram's servers and in cloud history on every signed-in device — outside
+Google auth, outside the journal knock. A marginal change rather than a categorical one
+(journal prose already goes to Anthropic's API by design), but it's the reason
+`TELEGRAM_REPLY_TTL` exists, and the realistic threats are Telegram account takeover (fix:
+cloud password / 2FA) and someone picking up an unlocked phone.
+
+### How replies are rendered
+
+Three tiers, each falling back to the next, because a rejected message is a LOST
+message:
+
+1. **Rich** — when the model's reply contains a table, heading, list or block quote,
+   the markdown goes to `sendRichMessage` as `rich_message.markdown` and Telegram
+   parses it into native structure. Read-back answers ("what did I eat this week", a
+   workout plan) arrive as real tables instead of a wall of prose, and the 32,768-char
+   ceiling means no chunking.
+2. **HTML text** — ordinary prose, with inline `**bold**` / `*italic*` / `` `code` `` /
+   `[label](url)` rendered.
+3. **Plain text** — tags stripped, if Telegram rejects the markup.
+
+A confirmation stays a plain sentence: wrapping "Logged the burrito, 900 cal" in a rich
+object buys nothing, so structure is reserved for answers with several rows in them.
+
+Long read-backs **collapse**: `<details><summary>…</summary>…</details>` is the one HTML
+form the rich markdown honours, so the model leads with the finding and hides the table
+behind a tap. (GitHub's `> [!NOTE]` degrades to a plain quote and `:::details` prints
+literally — neither is supported.) `rich_message` honours `markdown` OR `blocks` and
+never both, so anything needing a block — a map — is its own message.
+
+Two things learned the hard way and worth not re-learning: **Telegram silently ignores
+unknown fields**, so a probe that "accepts" a parameter proves nothing about whether it
+does anything — `parse_mode` on a rich block is accepted and dropped, which put literal
+`<b>` tags in a chat. And rich blocks format via **`entities`**, not `parse_mode`; the
+markdown path sidesteps that entirely, which is most of why it's used.
+
+### Photos
+
+Send a photo of a plate, a label or a menu to the intake bot and it estimates from the
+picture. The image is passed to the model inline and **never stored** — which is what
+makes it cheap: Telegram's file URLs embed the bot token and expire, so keeping one as
+an item's featured image would need real blob storage and a decision to go with it, but
+estimating a meal needs the bytes only for the length of one turn. Captions ride along,
+so "half of this" reaches the model with the picture.
+
+### Places
+
+When the notes bot saves or reads back an item with a `location` field, it follows the
+reply with a real inline **map**, which taps through to Google/Apple/Bing/OSM. (An
+earlier version used `sendVenue`; the map block does the same job, opens the same
+choosers, and looks like part of the conversation.) It has to be its own message either
+way: `rich_message` honours `markdown` OR `blocks`, never both, so a map can't be folded
+into the reply above it. The
+coordinates are read from the DB by item id, never from anything the model wrote, so a
+hallucinated coordinate can't reach a maps app. Collections already require coordinates
+on a location field (the webapp's map view can't plot an address), so the data is there.
+
+### Nudges — the bot messaging you first
+
+`TELEGRAM_NUDGES=intake@16:00,journal@21:00` (Pacific, comma-separated `bot@HH:MM`).
+Unset by default: a bot that starts conversations is opt-in.
+
+Each nudge is a **real agent turn**, not a canned string — the same split as everywhere,
+where the server decides *when* and the model decides *whether and what*, reading the day
+out of the DB with its own tools. Every nudge prompt authorizes silence: the model replies
+`SKIP` when there's nothing worth saying, and nothing is delivered. A reminder that fires
+whether or not it has anything to say is one you turn off within a week.
+
+Two scheduling rules worth knowing. Times are Pacific, like every date in this project.
+And **anything already past when the process starts is treated as fired** — a restart at
+6pm won't deliver the 4pm nudge two hours late, and a crash-looping container won't nudge
+on every boot.
+
+Nudges land in the normal thread and take the same per-chat lock as a user message, so one
+can't arrive mid-conversation and tangle the transcript. Replying to a nudge just continues
+the conversation.
+
+**Not wired up:** voice notes (needs a transcription service — a second external network
+call, and its own decision), photos (Telegram file URLs embed the bot token and expire),
+inline keyboards, group chats.
+
 ## Places on a map
 
 A collection whose items carry a `location` field can be laid out as a **map** — a

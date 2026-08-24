@@ -24,14 +24,25 @@ origin.
 capture through the app's own chat, so the journal server's people/entry tools
 (`add_journal_entry` … `get_briefing`; the `CONNECTOR_HIDDEN_TOOLS` set) are hidden
 from MCP clients by `HiddenToolsMiddleware` — dropped from `tools/list`, rejected on
-`tools/call`. Deleting an entry needs no special gate — it's its own tool
+`tools/call`. **The app chat is the exact COMPLEMENT of that, not a superset.** It
+bypasses the middleware (so it *could* see everything) and then narrows its tool list
+to `CONNECTOR_HIDDEN_TOOLS` itself (`_AGENTS["journal"]["include"]`): the connector
+gets eating + notes/collections, the panel gets people + entries, neither gets the
+other's. That mirrors how the app is used — the journal is written in the app's chat,
+food and saved notes are captured in Claude — and it's stated as the complement of one
+frozenset so the halves can't drift: adding a journal tool means adding its name there
+(already the rule) and it lands on both sides at once, while an intake/notes tool needs
+no chat change at all. Deleting an entry needs no special gate — it's its own tool
 (`journal_delete_entry`), hidden like the rest, rather than a `kind` on a shared
 delete. The app chat is untouched
 because it bypasses middleware (`list_tools(run_middleware=False)` + direct function
 calls). Same split for the model-facing prose: the `mcp` instance's `instructions`
 are the CONNECTOR text (intake + collections; `intake_summary` carries `now` since
 `get_briefing` is hidden there), while the chat's journal agent takes
-`JOURNAL_CHAT_INSTRUCTIONS`, the full contract — shared blocks are composed into
+`JOURNAL_CHAT_INSTRUCTIONS`, the journal contract alone (it drops the intake and
+collections blocks and adds `_JOURNAL_ONLY_BLOCK`, which tells the model a meal
+mentioned in passing is part of the ENTRY — write it down, don't offer to log it
+somewhere this panel can't reach) — shared blocks are composed into
 both strings so the surfaces can't drift. Adding a journal tool = adding its name to
 `CONNECTOR_HIDDEN_TOOLS` too.
 
@@ -46,8 +57,8 @@ the model decides. Don't add model calls, embeddings services, or NER inside the
 The rule is about `server.py`, not the whole repo. The **webapp does contain an LLM** —
 `webapp/chat.py` is the web app acting as an *MCP client*, driving the same
 `@mcp.tool()` functions over the Anthropic API (in-process, no transport) so the
-phone/browser gets the full conversational capture — including the journal tools the
-MCP connector hides (see `HiddenToolsMiddleware` above). That preserves
+phone/browser gets conversational capture for the journal proper — the people/entry
+tools the MCP connector hides, and only those (see `HiddenToolsMiddleware` above). That preserves
 the split rather than breaking it: the model still does the judgment, `server.py` stays
 the deterministic data layer with no LLM inside it. So `anthropic` in
 `webapp/requirements.txt` is expected — it lives on the client side of the line.
@@ -236,7 +247,16 @@ There is no exercise-selection or progression logic in the server either.
   prompt + tool schemas live from a FastMCP instance's `instructions` + tool docstrings,
   so changing a docstring updates the chat. (Exception: the journal agent's system
   prompt is `server.JOURNAL_CHAT_INSTRUCTIONS`, not the instance's `instructions` —
-  those are the connector-facing subset; see the hidden-tools note above.) The `exercise` agent is different: it's a
+  those are the connector-facing HALF, and this panel is the other one; see the
+  hidden-tools note above. A server-bound agent narrows its lifted tools with
+  `exclude` (drop these) or `include` (keep only these), and `include` is either a
+  SET of names or a PREDICATE over one — the journal panel passes the frozenset, the
+  Telegram intake/notes bots pass a domain-prefix predicate, which is what lets their
+  tool lists be derived rather than listed.) The four `tg_*` entries are the
+  Telegram bots (see `webapp/telegram.py`); they REUSE the servers and tools and
+  differ only in `blurb`, because the framing is the part that's surface-specific —
+  `_TRAINER_BLURB` talks about the plan card beside the chat, which doesn't exist in
+  a Telegram thread. The `exercise` agent is different: it's a
   WEBAPP-DEFINED agent (its `instructions` and its two tools — `check_library`,
   `create_exercise` — are hand-written here, NOT lifted from a server) so the
   exercise-creation path stays OFF the MCP tool surface. It backs the library page's
@@ -257,6 +277,58 @@ There is no exercise-selection or progression logic in the server either.
   `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
   (config + why in `webapp/tailwind.config.js`). Inter and `marked` are
   self-hosted (`static/fonts/`, `static/vendor/`) for the same reason.
+- `webapp/telegram.py` — the **Telegram bots**: four handles (`journal`, `intake`,
+  `notes`, `trainer`), each a third front end on `chat.py`'s agent loop beside the
+  browser panel and the connectors. No new dependency (`httpx` was already here), no
+  schema change, no second process — a bot is a `BOTS` row binding a token env var to
+  a `tg_*` agent, and one whose token is unset simply doesn't start, so the four ship
+  one at a time. Off unless `TELEGRAM_MODE` is `webhook` (prod) or `polling` (dev —
+  the only mode that reaches a laptop's `journal_dev.db`).
+  **The bots' tool lists are DERIVED, not listed**: `CONNECTOR_HIDDEN_TOOLS` plus the
+  three domain prefixes partition `server.mcp`'s tools exactly, so this is the second
+  consumer of the fact that a domain prefix is load-bearing (see the naming
+  convention below), and a tool added tomorrow lands in the right bot with no edit
+  here. That derivation only holds while the partition is exact, so
+  `chat.assert_tool_partition()` FAILS THE BOOT otherwise — an unprefixed tool with no
+  hidden-set entry would be silently unreachable from every bot, which is the quiet
+  kind of wrong. The one genuinely new failure mode is CONCURRENCY: `run_turn` appends
+  to a shared list, so two messages seconds apart would interleave into an invalid
+  tool_use/tool_result pairing that the API then 400s on forever — hence a per-chat
+  `asyncio.Lock` held for the whole turn, and an `update_id` dedupe set, since the
+  webhook returns 200 BEFORE the work and Telegram retries anything slow (a retry is
+  how one burrito gets logged twice). Replies are `parse_mode=HTML`, never MarkdownV2
+  (18 characters to escape, and one stray `.` is a 400 that silently EATS the
+  reply). HTML needs only `&`/`<`/`>` handled, which `_html` does by
+  escape-then-restore over a tag whitelist — blanket-escaping would turn the
+  model's `<b>` into visible `&lt;b&gt;`, blanket-trusting means one "mac & cheese"
+  is a 400. It can still emit UNBALANCED tags, so `_send` retries once with tags
+  stripped: a rejected message is a LOST message, and worse-looking beats missing.
+  Polling REFUSES to start when the bot already has a webhook registered: a token
+  is the same string everywhere, Telegram refuses `getUpdates` while a webhook is
+  set, so a laptop started on a PRODUCTION token would unregister the deployment
+  and silently take delivery over — the failure mode being prod going quiet with
+  nothing in its own logs. Separate dev tokens are the real fix; the refusal is
+  the guard rail.
+  Replies RENDER rather than arrive as
+  prose: a table/heading/list/quote in the model's markdown is handed to
+  `sendRichMessage` as `rich_message.markdown` and Telegram parses it natively
+  (real tables, checkboxes, and `<details>` collapsibles for long read-backs),
+  while a one-line confirmation stays a plain message — the format earns its
+  place only when there are rows to render. Two API facts worth not
+  re-learning, both found by probing and both invisible until something renders
+  wrong: Telegram SILENTLY IGNORES unknown fields (so a probe that "accepts" a
+  parameter proves nothing — `parse_mode` on a rich block is accepted and
+  dropped, which is how literal `<b>` tags reached a chat), and `markdown` and
+  `blocks` are MUTUALLY EXCLUSIVE with blocks winning, which is why a map is its
+  own message rather than part of the reply above it.
+  **Nudges are the one thing this transport can do that the connectors and the PWA
+  can't — start the conversation** (`TELEGRAM_NUDGES=bot@HH:MM`, Pacific, opt-in).
+  A nudge is a real agent turn, not a canned string, so the usual split holds: the
+  server decides WHEN, the model decides WHETHER and WHAT and may reply `SKIP` to
+  send nothing — a reminder that fires regardless of whether it has anything to say
+  is one you turn off within a week. Anything already past at boot counts as fired,
+  since a 4pm nudge delivered at 6pm is worse than none and a crash-looping
+  container would otherwise nudge every boot.
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.
@@ -304,7 +376,11 @@ only). Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, if the trainer ho
 set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
-(show the logout control in the UI), `GEOCODE_USER_AGENT` (the User-Agent
+(show the logout control in the UI), the `TELEGRAM_*` set (`TELEGRAM_MODE`,
+`TELEGRAM_TOKEN_{JOURNAL,INTAKE,NOTES,TRAINER}`, `TELEGRAM_ALLOWED_CHAT_IDS`,
+`TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_REPLY_TTL`; see README "Telegram" — note the
+allowlist FAILS CLOSED, the opposite of `JOURNAL_ALLOWED_EMAILS`, because it is the
+only identity gate on that path), `GEOCODE_USER_AGENT` (the User-Agent
 `notes_geocode` sends to Nominatim; a generic default, override to identify your
 deploy), and `BACKUP_TOKEN` (strong random token that unlocks
 the headless backup download at `GET /export/journal.db` for a cron `curl` — bearer /

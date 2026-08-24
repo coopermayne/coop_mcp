@@ -63,8 +63,17 @@ else:
 async def _lifespan(app):
     # Both apps run their own StreamableHTTP session manager; enter both or the
     # trainer endpoint has no live session manager.
+    #
+    # The UI app is MOUNTED, and Starlette does not run a mounted app's lifespan —
+    # so webapp.app's own _lifespan never fires here and the Telegram bots would
+    # never start in prod. Starting them from this outer lifespan is that fix; the
+    # two paths call the same pair of functions, and only one of them ever runs.
     async with mcp_app.lifespan(app), trainer_app.lifespan(app):
-        yield
+        await webapp.tg.startup()
+        try:
+            yield
+        finally:
+            await webapp.tg.shutdown()
 
 
 async def _app_root_redirect(request):

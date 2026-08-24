@@ -302,13 +302,26 @@ class HiddenToolsMiddleware(Middleware):
 # there, intake_summary is the clock.
 # ---------------------------------------------------------------------------
 
-def _pacific_block(anchor_tool: str) -> str:
+def _pacific_block(anchor_tool: Optional[str] = None) -> str:
+    """The Pacific-dates rule, parameterized on WHERE the model reads `now`.
+
+    Most surfaces have a tool that carries it (get_briefing, intake_summary) and the
+    rule points at that tool. A surface can have none — the notes bot's tools are all
+    collection-shaped and none returns a clock — and then the anchor is the live
+    "Current moment" system block webapp/chat.py adds to every turn. Naming a tool
+    that doesn't return `now` would be worse than naming nothing: the model would go
+    looking for a field that isn't there and fall back to computing the date itself,
+    which is the one thing this block exists to stop."""
+    where = (f"{anchor_tool} returns `now` (current Pacific date/time), with\n"
+             if anchor_tool else
+             "The \u201cCurrent moment\u201d line in your system prompt is the current\n"
+             "Pacific date/time, with ")
     return f"""\
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
-on Pacific time. {anchor_tool} returns `now` (current Pacific date/time) with
-`date`/`yesterday`/`tomorrow` precomputed: use those EXACT strings for "today"/
-"yesterday"/"tomorrow" rather than computing or shifting dates yourself, and resolve
-any bare day reference against them before defaulting or saving."""
+on Pacific time. {where}`date`/`yesterday`/`tomorrow` precomputed: use those EXACT
+strings for "today"/"yesterday"/"tomorrow" rather than computing or shifting dates
+yourself, and resolve any bare day reference against them before defaulting or
+saving."""
 
 
 _INTAKE_BLOCK = """\
@@ -379,11 +392,29 @@ Three rules govern it:
 _TRAINER_NOTE = "(Workouts/training live on a separate `trainer` MCP server.)"
 
 
-# The app chat's system prompt for the journal surface — the FULL contract,
-# journal included. Consumed by webapp/chat.py; NOT what the connector sees.
+# What the journal PANEL is not for. The other two logs are captured elsewhere —
+# eating and notes/collections through the Claude connector, training in the trainer
+# chat — and this surface no longer carries their tools at all (webapp/chat.py narrows
+# it to CONNECTOR_HIDDEN_TOOLS). Say so, rather than leaving the model to discover it
+# by reaching for a tool that isn't there: a meal named in passing is part of the
+# entry's story, and the right move is to write it down, not to apologize or offer to
+# log it somewhere it can't reach.
+_JOURNAL_ONLY_BLOCK = """\
+This panel captures the JOURNAL — entries and people — and nothing else. Eating,
+notes & collections, and workouts each have their own surface and are NOT among your
+tools here. So when a meal, a drink or a lift comes up in what the user is telling
+you, it is part of the entry: write it into the note like any other detail. Don't
+offer to log it, and don't tell the user where it belongs — they know."""
+
+
+# The app chat's system prompt for the journal surface — the journal contract, and
+# ONLY that. Consumed by webapp/chat.py; NOT what the connector sees. The two texts
+# are complements, like the tool lists they describe: this one drops the intake and
+# collections blocks the connector's `instructions` keep, and they go on sharing the
+# blocks that genuinely apply to both.
 JOURNAL_CHAT_INSTRUCTIONS = f"""\
-Single-user life log: a conversational journal (people are resolved to stable
-entities, not name strings) plus an eating log. The server only stores and matches —
+Single-user life log: a conversational journal — people are resolved to stable
+entities, not name strings. The server only stores and matches —
 the judgment (which person a mention means) is yours.
 
 Three rules: capture never blocks — always save, leave ambiguous mentions pending
@@ -413,11 +444,7 @@ tells them apart.
 
 {_pacific_block("get_briefing")}
 
-Intake is its own log, not a journal entry — log eating and drinking with intake_log
-instead of, or as well as, writing an entry about it.
-{_INTAKE_BLOCK}
-
-{_COLLECTIONS_BLOCK}
+{_JOURNAL_ONLY_BLOCK}
 
 Start a session with get_briefing: it loads the last two weeks of entries plus the
 summaries of everyone mentioned in the last week, so you write in context rather than
@@ -425,6 +452,51 @@ from a blank slate. Everyone else comes back in a compact `roster` (no summary) 
 still enough to resolve a name; pull their full profile with get_person_history when
 they come up.
 {_TRAINER_NOTE}"""
+
+
+# ---------------------------------------------------------------------------
+# Two more compositions of the SAME blocks, for the two journal-side surfaces
+# that have no instructions of their own: the intake and notes Telegram bots
+# (webapp/telegram.py). The journal instance's `instructions` describe the
+# CONNECTOR, which carries eating and notes/collections TOGETHER; a bot carries
+# exactly one of them, so neither text fits and both halves are already written.
+#
+# So these say nothing new about how intake or collections work — that prose has
+# one home each (_INTAKE_BLOCK, _COLLECTIONS_BLOCK) and is composed here for the
+# fourth and fifth time. What's telegram-SPECIFIC (plain text, a phone, which
+# sibling bot owns what) is deliberately NOT here: that's the surface, not the
+# contract, and webapp/chat.py's per-agent `blurb` is where surface framing
+# already lives.
+INTAKE_CHAT_INSTRUCTIONS = f"""\
+Single-user EATING LOG: food, alcohol and water are all intake items, one row per
+thing consumed. The server only stores and sums — turning "a chipotle bowl" into
+numbers is your judgment. There is no food database here; the log IS one.
+
+{_pacific_block("intake_summary")}
+
+{_INTAKE_BLOCK}
+
+{_APP_LINK_BLOCK}
+
+Start a session with intake_summary: it returns `now`, the recent days with their
+summed totals, and the stored eating profile (targets, goals, coaching context), so
+you coach in context rather than from a blank slate."""
+
+
+NOTES_CHAT_INSTRUCTIONS = f"""\
+Single-user NOTES & COLLECTIONS layer: the flexible half of a life log, for
+everything the user wants kept that has no bespoke schema — recipes, trip ideas,
+books, whatever comes up. A note with no collection is an inbox note; a collection
+gives a group of them a shape (its `fields`) and an icon.
+
+{_pacific_block()}
+
+{_COLLECTIONS_BLOCK}
+
+{_APP_LINK_BLOCK}
+
+collections_list is cheap and tells you what shapes already exist — read it before
+filing so a note lands somewhere real rather than starting a near-duplicate."""
 
 
 _auth = _build_auth()

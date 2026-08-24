@@ -10,6 +10,7 @@ dashboard roll-up. Nothing here writes.
 """
 
 import calendar as _cal
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -1124,6 +1125,46 @@ def _item_pins(items: list[dict], loc_fields: list[dict]) -> tuple[list[dict], l
         if not placed:
             unplottable.append(it["title"])
     return pins, unplottable
+
+
+def item_locations(item_id: int) -> list[dict]:
+    """Plottable places on one item, as {title, address, lat, lng}.
+
+    For the Telegram notes bot, which turns each into a real map pin. Reuses
+    `_coords` — the map view's rule for what counts as plottable — rather than
+    re-deriving it, so a value the map refuses can't become a pin here.
+
+    Read from the DB by item id, never from anything a model produced: the bot asks
+    "what did that item actually end up with", so a coordinate the model imagined
+    can't reach a maps app.
+    """
+    conn = server.db()
+    row = conn.execute(
+        "SELECT i.title, i.data, c.fields FROM items i "
+        "LEFT JOIN collections c ON c.id = i.collection_id WHERE i.id = ?",
+        (item_id,)).fetchone()
+    if not row:
+        return []
+    try:
+        blob = json.loads(row["data"] or "{}")
+        fields = json.loads(row["fields"] or "[]")
+    except (TypeError, ValueError):
+        return []
+
+    out = []
+    for f in fields:
+        if f.get("type") != "location":
+            continue
+        v = blob.get(f["key"])
+        ll = _coords(v)
+        if not ll:
+            continue
+        # The label leads (it's what the user calls the place); the item title is
+        # the fallback, since a pin with no name is just a dot.
+        out.append({"title": (v.get("label") or row["title"] or "Saved place")[:64],
+                    "address": (v.get("address") or "")[:128],
+                    "lat": ll[0], "lng": ll[1]})
+    return out
 
 
 def collection_page(name: str) -> dict | None:
