@@ -292,6 +292,12 @@
 
   /* ---------- render ------------------------------------------------------ */
   function render() {
+    // Rebuilding empties every chart container, so mid-render the page is
+    // briefly short enough that the browser clamps the scroll position — which
+    // is why cycling exercises used to throw you back to the top. Charts are
+    // rebuilt synchronously, so restoring the offset afterwards is invisible;
+    // a genuinely shorter page (a panel switched off) just clamps as normal.
+    var scrollY = window.scrollY;
     teardown();
     var anyShown = false;
     ['weight', 'exercises', 'drinks'].forEach(function (key) {
@@ -305,6 +311,7 @@
     root.querySelector('[data-graphs-empty]').hidden = anyShown ||
       HAS_DATA.weight || HAS_DATA.drinks || HAS_DATA.exercises;
     syncChips();
+    if (window.scrollY !== scrollY) window.scrollTo(0, scrollY);
   }
 
   /* ---------- controls ---------------------------------------------------- */
