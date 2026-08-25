@@ -842,19 +842,21 @@ cannot be scored a point at a time.
 
 Facets must be SEPARATE RETRIEVAL PATHS, not restatements. Before adding one,
 ask: would a strong answer to a sibling facet already produce this content? If
-yes, don't schedule it. The usual offender is a cast-of-characters facet next
+yes, DON'T CREATE IT. The usual offender is a cast-of-characters facet next
 to a narrative facet -- a full telling of the story names the cast, so the pair
 double-bills review time and each rehearsal of one quietly pads the other's
-interval off the books. A who's-who card earns scheduling only when it carries
+interval off the books. A who's-who card earns its place only when it carries
 entities the narrative doesn't force out (the prophet consulted, the king who
-commissioned the task); when it would just re-list the story's own cast, store
-it as scheduled=False background instead -- it then rides along on sibling
-cards as context rather than costing its own reviews. Templates are a starting
-proposal, not a quota: dropping or demoting a proposed facet is normal.
+commissioned the task). Templates are a starting proposal, not a quota:
+dropping a proposed facet is normal.
 
-This judgment also runs mid-review: when the user notices a card is a rerun of
-a sibling ("retire this one"), call update_facet(scheduled=False) on the spot
--- history kept, content demoted to background -- and move to the next card.
+The user keeps this deck deliberately LEAN. A card found to be duplicative is
+DELETED (delete_facet), not demoted -- attempt history is not a reason to keep
+a card, and the article already carries the background in better form.
+scheduled=False is reserved for material that was never meant to be quizzed
+(context facets like a person's significance), not as a parking lot for
+redundant cards. This runs mid-review too: when the user flags a card as a
+rerun of a sibling ("kill this one"), delete it on the spot and move on.
 A badly-formed facet stays wrong for as long as it exists, so this is worth care.""")
 if _teacher_auth is not None:
     teacher_mcp.add_middleware(AllowlistMiddleware())
