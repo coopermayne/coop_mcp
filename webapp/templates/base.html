@@ -9,15 +9,29 @@
   <meta name="color-scheme" content="light dark" />
   {# Resolve the theme before first paint to avoid a flash: an explicit choice
      (persisted in localStorage by the nav toggle) wins; otherwise follow the OS.
-     The data-theme attribute drives every dark rule in the <style> below. #}
+     The data-theme attribute drives every dark rule in the <style> below.
+
+     A pin is remembered RELATIVE TO the OS setting it was made against, which is
+     why the stored value is {theme, os} rather than a bare string. Flipping to
+     light on a light Mac used to pin light FOREVER — so when the Mac later went
+     dark the app stayed white, looking like it ignored the system entirely, with
+     no clue on screen that a months-old tap was the cause. Once the OS moves, the
+     pin no longer describes a departure from anything and is dropped. A legacy
+     bare-string pin records no OS, so it reads as stale and clears itself on the
+     next load — which is the migration. #}
   <script>
     (function () {
-      try {
-        var stored = localStorage.getItem('theme');
-        var theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-        document.documentElement.setAttribute('data-theme', theme);
-      } catch (e) {
-        document.documentElement.setAttribute('data-theme', 'light');
+      var os = window.matchMedia
+        && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      var raw = null;
+      try { raw = localStorage.getItem('theme'); } catch (e) {}
+      var pin = null;
+      if (raw) { try { pin = JSON.parse(raw); } catch (e) {} }
+      if (pin && pin.theme && pin.os === os) {
+        document.documentElement.setAttribute('data-theme', pin.theme);
+      } else {
+        if (raw) { try { localStorage.removeItem('theme'); } catch (e) {} }
+        document.documentElement.setAttribute('data-theme', os);
       }
     })();
   </script>
@@ -445,28 +459,31 @@
       });
     }
   </script>
-  {# Nav theme toggle: flip data-theme, persisting the choice so it survives
-     reloads — EXCEPT when the flip lands back on what the OS prefers anyway:
-     then the stored override is cleared, so the app returns to following the OS
-     (before this, the first-ever toggle pinned an explicit theme forever). The
-     matchMedia listener keeps an un-pinned app tracking live OS theme changes. #}
+  {# Nav theme toggle: flip data-theme and pin the choice AGAINST the OS setting
+     it departs from ({theme, os} — see the head script), so it survives reloads
+     but not the OS itself changing. A flip that lands back on what the OS prefers
+     anyway isn't a departure at all, so it clears the pin instead of storing one.
+     The matchMedia listener applies the same rule live: an OS change invalidates
+     any pin, so the app follows the OS from that moment on. #}
   <script>
     (function () {
       var mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
       function osTheme() { return mq && mq.matches ? 'dark' : 'light'; }
+      function forget() { try { localStorage.removeItem('theme'); } catch (e) {} }
       var btn = document.querySelector('[data-theme-toggle]');
       if (btn) btn.addEventListener('click', function () {
         var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
-        try {
-          if (next === osTheme()) localStorage.removeItem('theme');
-          else localStorage.setItem('theme', next);
-        } catch (e) {}
+        if (next === osTheme()) forget();
+        else {
+          try {
+            localStorage.setItem('theme', JSON.stringify({ theme: next, os: osTheme() }));
+          } catch (e) {}
+        }
       });
       if (mq && mq.addEventListener) mq.addEventListener('change', function () {
-        var stored = null;
-        try { stored = localStorage.getItem('theme'); } catch (e) {}
-        if (!stored) document.documentElement.setAttribute('data-theme', osTheme());
+        forget();
+        document.documentElement.setAttribute('data-theme', osTheme());
       });
     })();
   </script>
