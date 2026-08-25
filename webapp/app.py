@@ -881,7 +881,7 @@ async def manifest(request: Request):
 # Tailwind, Inter, marked — no CDNs), so it's all precached and the app styles
 # itself offline. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v8';
+const VERSION = 'v9';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [
@@ -890,6 +890,7 @@ const PRECACHE = [
   BASE + '/static/tailwind.css',
   BASE + '/static/fonts/inter-latin.woff2',
   BASE + '/static/vendor/marked.min.js',
+  BASE + '/static/vendor/purify.min.js',
   BASE + '/static/body-symbols.svg',
   BASE + '/manifest.webmanifest',
 ];
@@ -1003,9 +1004,10 @@ async def journal(request: Request, q: str = "", since: str = "", kind: str = ""
     base = base_path(request)
     pending_n = _pending_count()
     if q:
-        # Browse-page search: the user reads all their own matches, so no small cap
-        # (the 20-ish default on the MCP tool is for the token-budgeted conversation).
-        res = server.search_entries(q, limit=100_000)
+        # Browse-page search: the user reads all their own matches, so no small cap —
+        # on the row count OR the body length (the 20-ish/400-char defaults on the MCP
+        # tool are for the token-budgeted conversation).
+        res = server.search_entries(q, limit=100_000, max_chars=100_000)
         entries = data.attach_people(res["results"])
         for e in entries:
             e["body_md"] = link_people_md(e["body"], e["people"], base)
@@ -1141,12 +1143,16 @@ async def entry(request: Request, entry_id: int):
 
 
 @app.get("/workouts")
-async def workouts(request: Request):
-    sessions = data.workouts_full(limit=20)
+async def workouts(request: Request, since: str = ""):
+    since = (since or "").strip() or None
+    res = data.workouts_full(limit=20, since=since)
     brief = server.get_fitness_briefing(recent_workouts=1)
-    months = data.calendar_months([s["date"] for s in sessions], today=server.today())
+    # Calendar marks EVERY completed session's date, not just the loaded page's —
+    # the all_entry_dates pattern from /journal.
+    months = data.calendar_months(data.all_workout_dates(), today=server.today())
     return page(request, "workouts.html", active="workouts",
-                sessions=sessions,
+                sessions=res["sessions"],
+                has_more=res["has_more"], next_since=res["next_since"],
                 upcoming=data.upcoming_plans(),
                 profile=brief.get("profile", {}),
                 months=months)
