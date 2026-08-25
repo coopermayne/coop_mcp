@@ -6615,8 +6615,11 @@ def delete_training_record(kind: str, id: int) -> dict:
 # the port changed its seams (DB path, Pacific day boundary, learn_fts) and
 # nothing else. Docstrings are the model-facing contract, carried over from the
 # standalone repo. No domain prefix on the names — a single domain on its own
-# connector, same as the trainer. next_card is annotated WRITE, not READ_ONLY:
-# it releases staged facets into rotation as a side effect.
+# connector, same as the trainer. next_card AND due are annotated WRITE, not
+# READ_ONLY: both call the store's _release_new, which releases staged facets
+# into rotation and spends the TEACHER_NEW_PER_DAY budget as a side effect —
+# a READ_ONLY-labeled due() invited speculative/retried calls that silently
+# consumed the day's intake.
 
 
 @teacher_mcp.tool(annotations=READ_ONLY)
@@ -6771,14 +6774,17 @@ def release_more(count: int = 5, tag: Optional[str] = None,
     return learn_store.release_more(count, tag, subject_id)
 
 
-@teacher_mcp.tool(annotations=READ_ONLY)
+@teacher_mcp.tool(annotations=WRITE)
 def due(limit: int = 20, tag: Optional[str] = None,
         subject_id: Optional[str] = None) -> dict:
     """Overview of what's waiting, for planning or answering "what's due?".
 
     To actually run a session use next_card(). Like it, this returns what you
     need to ASK and nothing you'd need to ANSWER -- which is also what separates
-    it from at_risk(), whose whole job is to hand over the answers.
+    it from at_risk(), whose whole job is to hand over the answers. Also like
+    it, this RELEASES staged facets into rotation (spending the shared daily
+    new-card budget), so what's due includes today's new material -- don't call
+    it speculatively in a loop.
 
     `tag` / `subject_id` scope it to one topic; with neither it is the whole
     collection, unchanged.
