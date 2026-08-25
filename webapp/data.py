@@ -599,17 +599,45 @@ def person_detail(person_id: int, history_limit: int = 100_000):
 # Training
 # --------------------------------------------------------------------------- #
 
-def workouts_full(limit: int = 20) -> list:
+def workouts_full(limit: int = 20, since: str | None = None) -> dict:
     """Recent COMPLETED sessions with their done sets grouped by exercise (first-seen
     order). Planned sessions (status='active') and their pending/skipped sets are
-    excluded — those are upcoming_plans(), listed above this on the same page."""
+    excluded — those are upcoming_plans(), listed above this on the same page.
+
+    Default window is the `limit` most recent sessions; `since` (ISO date) instead
+    loads every session on/after it, cumulatively — the same "load older" cursor
+    contract as list_days/food_days, so the button works identically. Returns
+    {"sessions", "has_more", "next_since"}."""
     out = []
     with server.db() as conn:
-        ws = conn.execute(
-            "SELECT id, workout_date, focus, feeling, notes FROM workouts "
-            "WHERE status='done' ORDER BY workout_date DESC, id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if since:
+            ws = conn.execute(
+                "SELECT id, workout_date, focus, feeling, notes FROM workouts "
+                "WHERE status='done' AND workout_date >= ? "
+                "ORDER BY workout_date DESC, id DESC", (since,),
+            ).fetchall()
+        else:
+            ws = conn.execute(
+                "SELECT id, workout_date, focus, feeling, notes FROM workouts "
+                "WHERE status='done' ORDER BY workout_date DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        oldest = ws[-1]["workout_date"] if ws else None
+        has_more, next_since = False, None
+        if oldest:
+            has_more = conn.execute(
+                "SELECT 1 FROM workouts WHERE status='done' AND workout_date < ? LIMIT 1",
+                (oldest,),
+            ).fetchone() is not None
+            if has_more:
+                row = conn.execute(
+                    "SELECT workout_date FROM workouts WHERE status='done' "
+                    "AND workout_date < ? ORDER BY workout_date DESC, id DESC "
+                    "LIMIT 1 OFFSET ?", (oldest, limit - 1),
+                ).fetchone()
+                next_since = row["workout_date"] if row else conn.execute(
+                    "SELECT MIN(workout_date) AS d FROM workouts WHERE status='done'"
+                ).fetchone()["d"]
         for w in ws:
             srows = conn.execute(
                 """SELECT s.weight_lbs, s.reps, s.rpe,
@@ -678,7 +706,19 @@ def workouts_full(limit: int = 20) -> list:
                 "exercise_count": len(exercises),
                 "set_count": len(srows),
             })
-    return out
+    return {"sessions": out, "has_more": has_more, "next_since": next_since}
+
+
+def all_workout_dates() -> list[str]:
+    """Every distinct completed-session date, newest first — the full set the
+    Training page's sidebar calendar marks, independent of how deep the history is
+    currently loaded (the all_entry_dates pattern; a calendar built from the loaded
+    page alone goes blank past the first screen). Cheap: distinct dates only."""
+    with server.db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT workout_date FROM workouts WHERE status='done' "
+            "ORDER BY workout_date DESC").fetchall()
+    return [r["workout_date"] for r in rows]
 
 
 def exercise_library(muscle: str | None = None, q: str | None = None,

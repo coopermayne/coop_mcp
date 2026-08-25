@@ -171,6 +171,12 @@
     {% endif %}
   </article>
   {% endfor %}
+  {% if has_more %}
+  <div class="mt-8 flex justify-center">
+    <a href="{{ base }}/workouts?since={{ next_since }}"
+       class="px-4 py-2 border border-gray-200 text-xs font-medium text-gray-500 hover:border-black hover:text-black transition-colors">Load older</a>
+  </div>
+  {% endif %}
 {% else %}
   <p class="text-sm text-gray-400">No workouts logged yet.</p>
 {% endif %}
