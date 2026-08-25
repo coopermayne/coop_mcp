@@ -21,6 +21,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import server  # noqa: E402  (path set above)
+from learning import store as learn_store  # noqa: E402  the learning log's reads
 
 
 # --------------------------------------------------------------------------- #
@@ -1256,3 +1257,78 @@ def item_page(item_id: int) -> dict | None:
     view["collection"] = c["name"] if c else None
     view["created"] = server.pacific_day(r["created_at"])
     return view
+
+
+# --------------------------------------------------------------------------- #
+# Learn (the spaced-repetition log — see learning/)
+# --------------------------------------------------------------------------- #
+# Same one SQLite file as everything else, so server.db() reads it directly;
+# learn_store is reused where the MCP contract already shapes the read
+# (get_subject), per the header rule. Nothing here writes — the learning log
+# has exactly one write path, the teacher MCP tools.
+
+def learn_overview(q: str | None = None, archived: bool = False) -> dict:
+    """Subjects grouped by type, with facet/due counts, plus the stats headline."""
+    now = server.now()
+    where, params = "WHERE s.archived = ?", [1 if archived else 0]
+    if q:
+        where += " AND s.title LIKE ? ESCAPE '\\'"
+        params.append(f"%{_like_escape(q)}%")
+    with server.db() as conn:
+        rows = conn.execute(
+            f"""SELECT s.id, s.title, s.type, s.tags,
+                       COUNT(f.id) facets,
+                       COALESCE(SUM(f.scheduled = 1 AND f.released = 1), 0) released,
+                       COALESCE(SUM(f.scheduled = 1 AND f.released = 0), 0) staged,
+                       COALESCE(SUM(f.scheduled = 1 AND f.released = 1
+                                    AND f.due <= ?), 0) due_now
+                FROM subjects s LEFT JOIN facets f ON f.subject_id = s.id
+                {where}
+                GROUP BY s.id ORDER BY lower(s.title)""",
+            [now, *params],
+        ).fetchall()
+        archived_count = conn.execute(
+            "SELECT COUNT(*) n FROM subjects WHERE archived = 1").fetchone()["n"]
+
+    by_type: dict[str, list] = {}
+    for r in rows:
+        by_type.setdefault(r["type"], []).append({
+            "id": r["id"], "title": r["title"],
+            "tags": json.loads(r["tags"] or "[]"),
+            "facets": r["facets"], "released": r["released"],
+            "staged": r["staged"], "due_now": r["due_now"],
+        })
+    # stats() is the same roll-up the model sees, so the page and the chat can
+    # never disagree about retention or what's due.
+    stats = learn_store.stats(30)
+    return {
+        "types": sorted(by_type.items(), key=lambda kv: kv[0]),
+        "subject_count": len(rows),
+        "archived_count": archived_count,
+        "stats": stats,
+    }
+
+
+def learn_subject(subject_id: str) -> dict | None:
+    """One subject in full (learn_store.get_subject) + its recent attempts."""
+    try:
+        subject = learn_store.get_subject(subject_id)
+    except ValueError:
+        return None
+    for f in subject["facets"]:
+        # Show WHEN a released facet comes back, as a Pacific day; a staged or
+        # unscheduled facet has a placeholder due that would only mislead.
+        f["due_day"] = server.pacific_day(f["due"]) if f["released"] else None
+    with server.db() as conn:
+        attempts = conn.execute(
+            """SELECT a.reviewed_at, a.rating, a.kind, a.prompt, a.response,
+                      f.name AS facet_name
+               FROM attempts a JOIN facets f ON f.id = a.facet_id
+               WHERE f.subject_id = ?
+               ORDER BY a.reviewed_at DESC LIMIT 20""",
+            (subject_id,),
+        ).fetchall()
+    subject["attempts"] = [
+        {**dict(a), "day": server.pacific_day(a["reviewed_at"])} for a in attempts
+    ]
+    return subject

@@ -1465,6 +1465,27 @@ async def weight_import(request: Request):
 # weigh-in lives on /weight — see that section.
 # --------------------------------------------------------------------------- #
 
+@app.get("/learn")
+async def learn(request: Request):
+    """The learning log (see learning/) — subjects grouped by type, the same
+    stats roll-up the model sees. Deliberately NOT in LOCK_PATHS (like /food:
+    glancing at what's due shouldn't need the knock) and carries no chat panel:
+    the log is worked through the teacher MCP connector, this page only reads."""
+    q = (request.query_params.get("q") or "").strip()
+    archived = request.query_params.get("archived") == "1"
+    return page(request, "learn.html", active="learn", q=q, archived=archived,
+                **data.learn_overview(q or None, archived))
+
+
+@app.get("/learn/{subject_id}")
+async def learn_subject(request: Request, subject_id: str):
+    subj = data.learn_subject(subject_id)
+    if subj is None:
+        return page(request, "notfound.html", active="learn",
+                    status_code=404, what="subject")
+    return page(request, "learn_subject.html", active="learn", s=subj)
+
+
 @app.get("/graphs")
 async def graphs(request: Request):
     return page(request, "graphs.html", active="graphs", graph=data.graph_data())

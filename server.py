@@ -1,10 +1,11 @@
 """
 Journal MCP server.
 
-This module defines TWO FastMCP servers sharing one SQLite DB and one Google auth
-provider: `mcp` (the journal + drinking tools, at /mcp) and `trainer_mcp` (the training
-tools, at /trainer/mcp). They're split so each is its own connector / Claude project and
-a conversation loads only the relevant tool set. webapp/combined.py composes both onto
+This module defines THREE FastMCP servers sharing one SQLite DB: `mcp` (the journal +
+eating tools, at /mcp), `trainer_mcp` (the training tools, at /trainer/mcp), and
+`teacher_mcp` (the spaced-repetition learning log, at /teacher/mcp; logic lives in the
+`learning/` package). They're split so each is its own connector / Claude project and
+a conversation loads only the relevant tool set. webapp/combined.py composes them onto
 one origin; over stdio, MCP_SERVER picks which one a bare `server.py` launch runs.
 
 Design contract:
@@ -30,11 +31,17 @@ import urllib.error
 import zipfile
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 import icons as icon_set   # generated Lucide subset; see scripts/build_icon_set.py
+# The learning log (spaced repetition), ported from the standalone teacher repo.
+# Its store/scheduler stay their own package — server.py only wraps them as the
+# third MCP instance (`teacher_mcp` below) the way it wraps nothing else: the
+# package predates this repo, has no tests, and moving 1,400 lines of scheduling
+# logic it must not break into a file this size would be all risk and no reader.
+from learning import store as learn_store
 import jellyfish
 # typing_extensions, NOT typing: pydantic (which generates the tool schemas) refuses a
 # typing.TypedDict on Python < 3.12, and the local venv is 3.11 while the image is 3.12.
@@ -108,6 +115,20 @@ DESTRUCTIVE = {"destructiveHint": True, "idempotentHint": True, "openWorldHint":
 # which candidate is the place meant — so it keeps the architectural split; it just
 # doesn't get to claim a closed world.
 READ_EXTERNAL = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True}
+
+
+class FacetSpec(TypedDict):
+    """One recallable aspect of a subject (teacher server). grading_mode 'recall'
+    needs `reference` (a string: the target answer); 'list' needs `reference` (an
+    array of the points to recall); 'open' needs `criteria` (how to judge a
+    free-form answer). scheduled=False stores it as background context, never
+    quizzed. `cue` is how to ASK — the angle, not the answer."""
+    name: str
+    grading_mode: Literal["recall", "list", "open"]
+    reference: NotRequired[Optional[str | list[str]]]
+    criteria: NotRequired[Optional[str]]
+    cue: NotRequired[Optional[str]]
+    scheduled: NotRequired[bool]
 
 
 class MentionLink(TypedDict):
@@ -670,6 +691,135 @@ above: the rotation stays theirs to grow, the catalog stays closed. It's also th
 edit, not yours — don't rewrite it with update_profile unless they ask you to.""")
 if _trainer_auth is not None:
     trainer_mcp.add_middleware(AllowlistMiddleware())
+
+# The learning log is the THIRD server — same pattern as the trainer: its own
+# connector (own Claude project, minimal tool surface), its own auth provider
+# (providers are single-resource, see _build_auth), its own host when
+# TEACHER_PUBLIC_URL is set (two OAuth servers can't share an origin), otherwise
+# an authless /teacher/mcp graft in combined.py. The logic lives in learning/;
+# the wrappers at the bottom of this file are the whole MCP surface.
+_teacher_auth = _build_auth(os.environ.get("TEACHER_PUBLIC_URL"))
+teacher_mcp = FastMCP("teacher", auth=_teacher_auth, instructions="""\
+This server is the user's long-term memory for things they want to retain.
+
+TWO MODES, AND CHOOSING BETWEEN THEM
+Material can be worked either by being TESTED or by being USED. They need
+different tools and they must not be mixed:
+
+- EXPLICIT REVIEW -- next_card() -> check() -> record()/study(). The user is
+  sitting down to be quizzed. The answer is withheld from you until they have
+  committed to theirs.
+- CONVERSATIONAL -- at_risk(tag) -> record_encounter(). Nobody is being quizzed.
+  You find out what is going stale, then deliberately work it into what you say
+  next, and log what the user did or didn't follow.
+
+at_risk() HANDS YOU THE ANSWERS, because you cannot use a word you have not been
+given. That is exactly why you must never compose a review question from it: a
+question written while holding the reference has the answer in it, and the user
+scores well on something they did not recall. If they want to be tested, start
+over at next_card().
+
+Both take an optional `tag`/`subject_id`, so one topic can be worked without
+touching the rest of the collection.
+
+RUNNING A REVIEW SESSION
+Call next_card(). It returns ONE facet plus your progress. Then, per card:
+
+1. Ask ONE question about that facet. Compose it fresh -- vary the wording from
+   `past_prompts`, and use `cue` for the angle the facet is meant to test.
+2. NEVER reveal or hint at the answer in the question. next_card() deliberately
+   withholds reference answers so this cannot happen by accident.
+3. WAIT for the user's answer. Do not ask the next question, and do not move on
+   until this card is resolved -- recall under commitment is the thing being
+   trained.
+4. Then resolve it one of two ways:
+   - They attempted it: call check(), grade honestly, call record().
+   - They said they don't know it and want to learn it: call check(), TEACH the
+     material properly, then call study(). Do not grade a 1/4 for something they
+     never knew -- study() is the right tool and keeps the stats meaningful.
+5. Call next_card() again. Repeat until it returns done.
+
+If the queue empties and the user wants to keep going, call release_more() to
+introduce more of the staged collection. Only when they ask -- the daily cap is
+what stops a backlog forming.
+
+Never call next_card() with the previous card unresolved. If you do, you will be
+handed the same card again, because an unrecorded card stays due.
+
+RATINGS
+Always display a rating with its scale: "3/4", never a bare "3".
+  1/4 blank or wrong   2/4 got there with heavy prompting
+  3/4 correct after a pause   4/4 immediate and fluent
+Grade what the user actually said, not what they seemed to mean. Being generous
+corrupts the schedule: inflated grades stretch intervals on material they do not
+know, and nothing else in the system will surface the error.
+
+WHAT A GRADED RESPONSE LOOKS LIKE
+A bold score, then the card's points as bullets -- a bolded label and one
+concise sentence each. Covered points are struck through whole; missed ones stay
+plain, because those are the only part the user has to read:
+
+  **2/4**
+  - ~~**Athenian general**: led the Sicilian expedition during the Peloponnesian War~~
+  - ~~**Socrates' circle**: appears in the Symposium praising him~~
+  - **c. 450-404 BC**: born into the war generation, killed in exile at its end
+  - **Ward of Pericles**: raised in his household after his father died at Coronea
+
+This is the shape for EVERY grading mode. 'list' cards come with their points
+already split; 'recall' and 'open' do not, so split the reference yourself, one
+bullet per fact. There is no prose fallback -- never reply with a "Note:" line
+or a summary sentence. No text around the block, no "you got X but missed Y",
+no restating the question. On a 4/4 every bullet is struck through and the list
+stays -- the full strikethrough is the confirmation. The sentence on a missed
+bullet is the teaching; anything longer waits for the user to ask.
+
+WHAT TEACHING LOOKS LIKE
+The same bullets with nothing struck through, since nothing was recalled:
+
+  - **{label}**: {one concise sentence}
+  - **{label}**: {one concise sentence}
+
+Bold the label only. No lead-in, no wrap-up -- the bullets are the whole answer.
+check(), record() and study() return these formats verbatim in a
+`response_format` field; follow the one you are handed.
+
+GRADING MODES
+- recall: compare to the reference answer.
+- list:   rate by how many reference points were covered; pass `covered`.
+- open:   no fixed answer; judge against `criteria`, not against wording.
+
+WHICH LOG AN OUTCOME GOES IN
+- record()           you asked, they answered. The only thing retention counts.
+- study()            they didn't know it, you taught it.
+- record_encounter() it came up in conversation and they followed it or didn't.
+Encounters advance the schedule but stay out of retention, because meeting a
+word in a sentence that already narrows the possibilities is weaker evidence
+than producing it cold. Logging a real recall as an encounter throws away the
+signal the stats are built from; logging an encounter as a recall inflates them.
+
+If one of those goes in wrong -- the wrong rating, the wrong tool, the wrong
+facet -- call undo_last(facet_id) straight away. It deletes the attempt and puts
+the schedule back. Nothing else can reach a recorded attempt: it has already
+moved the due date and already counts in retention.
+
+SUBJECTS AS STATE
+A subject with no scheduled facets is not review material -- it is a place to
+keep state, in its `context`. Read it in full with get_subject() at the start of
+a session and write it back with update_subject() at the end. `context` is
+replaced wholesale, so read before you write.
+
+CAPTURING
+When the user wants to remember something, call propose_facets() for the type,
+draft a reference for each facet from what you know, confirm with the user, then
+call capture(). Split compound facts into separate facets wherever a point has
+its own natural cue -- 'list' is for points that genuinely cannot be asked alone.
+Within a facet, reach for 'recall' only when the answer is a single fact. If it
+has several parts, it is a 'list' even when they fit in one sentence: the points
+are what the user gets marked off against, and a sentence holding four of them
+cannot be scored a point at a time.
+A badly-formed facet stays wrong for as long as it exists, so this is worth care.""")
+if _teacher_auth is not None:
+    teacher_mcp.add_middleware(AllowlistMiddleware())
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -1427,6 +1577,15 @@ def init_db() -> None:
                 "INSERT OR REPLACE INTO settings(key, value) VALUES "
                 "('workout_focus_shortened', 'true')"
             )
+    # The learning tables (subjects/facets/attempts/learn_fts) keep their own
+    # idempotent schema + migrations in learning/db.py — they arrived as a
+    # package and their migration logic (the attempts-table rebuild) stays with
+    # the code that owns it. Opening one session here runs them, so a prod boot
+    # (combined.py calls init_db) initializes the learning half too rather than
+    # deferring it to the first tool call.
+    from learning.db import session as _learn_session
+    with _learn_session():
+        pass
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -6409,13 +6568,315 @@ def delete_training_record(kind: str, id: int) -> dict:
     return _delete_record(kind, id)
 
 
+# --------------------------------------------------------------------------- #
+# Teacher tools (the learning log — logic in learning/store.py)
+# --------------------------------------------------------------------------- #
+# Thin wrappers, deliberately: the store predates this repo and has no tests, so
+# the port changed its seams (DB path, Pacific day boundary, learn_fts) and
+# nothing else. Docstrings are the model-facing contract, carried over from the
+# standalone repo. No domain prefix on the names — a single domain on its own
+# connector, same as the trainer. next_card is annotated WRITE, not READ_ONLY:
+# it releases staged facets into rotation as a side effect.
+
+
+@teacher_mcp.tool(annotations=READ_ONLY)
+def propose_facets(subject_type: str) -> dict:
+    """Get the default facet breakdown for a subject type, to draft from.
+
+    Call this before capture(). Types with templates: person, myth, word,
+    concept, case, event. Anything else returns a generic two-facet starting
+    point, which you should adapt rather than use as-is.
+    """
+    return learn_store.propose_facets(subject_type)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def capture(
+    title: str,
+    subject_type: str,
+    facets: list[FacetSpec],
+    context: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    source: str = "manual",
+) -> dict:
+    """Store a new subject and its facets.
+
+    New facets are staged and released into rotation a few per day, so a burst of
+    capturing never becomes an unreviewable backlog.
+    """
+    return learn_store.capture(title, subject_type, facets, context, tags, source)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def add_facets(subject_id: str, facets: list[FacetSpec]) -> dict:
+    """Add facets to a subject that already exists. Same facet shape as capture()."""
+    return learn_store.add_facets(subject_id, facets)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def next_card(tag: Optional[str] = None, subject_id: Optional[str] = None) -> dict:
+    """Get the next facet to review. This is how you run an EXPLICIT session.
+
+    Use this when the user is sitting down to be tested: it returns ONE card
+    plus progress, withholds the answer so you cannot leak it into the question,
+    and expects a grade back. Resolve each card with record() or study() before
+    calling again -- an unresolved card is still due and will simply come back.
+
+    For the other mode -- weaving fading material into ordinary conversation
+    rather than testing it -- call at_risk() instead. The two are not
+    interchangeable: this one asks and scores, that one supplies words for you
+    to use.
+
+    `tag` / `subject_id` scope the session to one topic ("just Spanish
+    vocabulary"). With neither, behaviour is exactly what it has always been:
+    the whole collection, most overdue first.
+    """
+    return learn_store.next_card(tag, subject_id)
+
+
+@teacher_mcp.tool(annotations=READ_ONLY)
+def at_risk(tag: str, n: int = 10, include_new: bool = False,
+            subject_id: Optional[str] = None) -> dict:
+    """The facets under `tag` most likely to be forgotten right now.
+
+    This is the CONVERSATIONAL mode, and the counterpart to next_card(). Call it
+    at the start of a conversation to find out what is going stale, then
+    deliberately work those items into what you say -- for vocabulary, use the
+    words in your own sentences so they are met in context instead of being
+    asked about. Call record_encounter() for each one that actually came up.
+
+    Ranked by the scheduler's own memory model, so "at risk" means the same
+    thing here as everywhere else. An item does not have to be due to appear:
+    the point is to catch it on the way down.
+
+    THIS RETURNS THE ANSWERS. It has to -- you cannot use a word you have not
+    been given. That makes it the one review-adjacent tool you must not quiz
+    from: a question composed while holding the reference is a question with the
+    answer already in it. If the user wants to be tested, call next_card().
+
+    Never-reviewed items are left out unless `include_new=True`; they have no
+    memory to have decayed, and including them would swamp the list.
+    """
+    return learn_store.at_risk(tag, n, include_new, subject_id)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def record_encounter(facet_id: str, understood: bool, note: Optional[str] = None) -> dict:
+    """Log that an item came up in conversation and whether the user followed it.
+
+    The resolution for at_risk() items, and the passive counterpart to record().
+    Use it when the word or point went past in ordinary talk -- yours or theirs
+    -- and either landed or stopped them. `understood=False` means they had to
+    ask; `note` is for what actually happened ("used 'sin embargo', asked what
+    it meant").
+
+    Use record() instead whenever you ASKED and they ANSWERED, even informally.
+    The distinction being kept here is evidence quality, not formality:
+    recognising a word inside a sentence that has already narrowed the
+    possibilities is weaker evidence than producing it cold, so an encounter
+    advances the schedule on a shorter interval and is excluded from retention.
+    Logging a real recall as an encounter throws away the only signal the stats
+    are built from.
+    """
+    return learn_store.record_encounter(facet_id, understood, note)
+
+
+@teacher_mcp.tool(annotations=READ_ONLY)
+def get_subject(subject_id: str) -> dict:
+    """One subject in full: complete context, tags, and every facet.
+
+    Nothing is abridged and unscheduled facets are included, which makes this
+    the read path for a subject kept as a STATE STORE rather than as review
+    material -- a course log whose `context` holds the current phase, what has
+    been covered, and a running error log. Read it at the START of a session
+    with this, rewrite it at the END with update_subject().
+
+    search() finds a subject id from a title. Because this returns references,
+    do not call it while a review question is still open.
+    """
+    return learn_store.get_subject(subject_id)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def study(facet_id: str, note: Optional[str] = None, days: float = 1) -> dict:
+    """Record that the user did not know a facet and was taught it instead.
+
+    Use this when they say they don't know it and want to learn it, rather than
+    grading a 1/4. Teach the material first, then call this. The card returns in
+    at least a day, and the attempt is kept out of retention stats because being
+    taught something new is not a failed recall.
+    """
+    return learn_store.study(facet_id, note, days)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def release_more(count: int = 5, tag: Optional[str] = None,
+                 subject_id: Optional[str] = None) -> dict:
+    """Bring extra staged facets into rotation now, past the daily cap.
+
+    Use when the queue is empty and the user wants to keep going. The cap exists
+    to stop a backlog forming, not to stop a good day -- but only call this when
+    the user actually asks for more, never to top up the queue automatically.
+
+    `tag` / `subject_id` choose WHICH staged material comes in, which is how you
+    bring on more Spanish without also pulling in everything else waiting. Note
+    the cap itself is global: a tag narrows the pool, it does not grant that
+    topic a separate allowance.
+    """
+    return learn_store.release_more(count, tag, subject_id)
+
+
+@teacher_mcp.tool(annotations=READ_ONLY)
+def due(limit: int = 20, tag: Optional[str] = None,
+        subject_id: Optional[str] = None) -> dict:
+    """Overview of what's waiting, for planning or answering "what's due?".
+
+    To actually run a session use next_card(). Like it, this returns what you
+    need to ASK and nothing you'd need to ANSWER -- which is also what separates
+    it from at_risk(), whose whole job is to hand over the answers.
+
+    `tag` / `subject_id` scope it to one topic; with neither it is the whole
+    collection, unchanged.
+    """
+    return learn_store.due(limit, tag, subject_id)
+
+
+@teacher_mcp.tool(annotations=READ_ONLY)
+def check(facet_id: str) -> dict:
+    """Reveal the reference answer for grading.
+
+    Call this ONLY after the user has given their answer. Grade what they
+    actually said against the rating anchors, then call record().
+    """
+    return learn_store.check(facet_id)
+
+
+@teacher_mcp.tool(annotations=WRITE)
+def record(
+    facet_id: str,
+    rating: int,
+    prompt: Optional[str] = None,
+    response: Optional[str] = None,
+    critique: Optional[str] = None,
+    covered: Optional[list[str]] = None,
+) -> dict:
+    """Log a graded review attempt and advance the schedule.
+
+    rating is out of 4: 1 blank/wrong, 2 got there with heavy prompting, 3
+    correct after a pause, 4 immediate and fluent. Always show it to the user
+    with the scale ("2/4"), never bare. Store their answer VERBATIM in
+    `response` — it is the only way a drifting grader can ever be detected. For
+    'list' facets pass `covered` with the reference points they actually hit.
+
+    This is for an attempt you ASKED for. The two neighbours:
+    - they didn't know it and you taught it -> study()
+    - it merely came up in conversation -> record_encounter()
+    """
+    return learn_store.record(facet_id, rating, prompt, response, critique, covered)
+
+
+@teacher_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def undo_last(facet_id: str) -> dict:
+    """Take back the most recent attempt on a facet, schedule included.
+
+    Use it the moment a grade goes in wrong -- a 1/4 on an answer they actually
+    gave, a record() that should have been a study(), an encounter logged
+    against the wrong facet. Nothing else can reach a recorded attempt: it has
+    already moved the due date and already counts in retention.
+
+    The attempt is deleted rather than voided, and the facet's card, due date,
+    reps and lapses go back to what they were before it. There is no redo, and
+    calling twice walks back two attempts. Attempts recorded before this tool
+    existed cannot be undone -- the schedule they replaced was never saved.
+    """
+    return learn_store.undo_last(facet_id)
+
+
+@teacher_mcp.tool(annotations=DESTRUCTIVE)
+def delete_facet(facet_id: str) -> dict:
+    """Delete a facet and its whole attempt history. Irreversible.
+
+    For a facet that should never have been captured. If it is merely not worth
+    quizzing, call update_facet(scheduled=False) instead -- that keeps the
+    content as background material and keeps the history.
+    """
+    return learn_store.delete_facet(facet_id)
+
+
+@teacher_mcp.tool(annotations=DESTRUCTIVE)
+def delete_subject(subject_id: str, confirm_title: str) -> dict:
+    """Delete a subject, all its facets, and all their history. Irreversible.
+
+    `confirm_title` must equal the subject's title; a mismatch is refused. Ids
+    are opaque hex and a near miss looks like a hit, so the title is what
+    confirms you are deleting what you think you are.
+
+    Reach for update_subject(archived=True) first in almost every case: that
+    retires a subject from review, search and intake while keeping everything
+    it recorded. This is for material captured in error.
+    """
+    return learn_store.delete_subject(subject_id, confirm_title)
+
+
+@teacher_mcp.tool(name="search", annotations=READ_ONLY)
+def learn_search(query: str, limit: int = 15) -> dict:
+    """Full-text search the collection by subject, context, or facet content."""
+    results = learn_store.search(query, limit)
+    return {"results": results, "count": len(results)}
+
+
+@teacher_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def update_subject(
+    subject_id: str,
+    title: Optional[str] = None,
+    context: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    archived: Optional[bool] = None,
+) -> dict:
+    """Edit a subject, or archive it to retire it from review.
+
+    `context` is REPLACED, not merged. For a subject used as a state store, that
+    means writing the whole log back: read it with get_subject() first, or you
+    will overwrite what you did not read.
+    """
+    return learn_store.update_subject(subject_id, title, context, tags, archived)
+
+
+@teacher_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def update_facet(
+    facet_id: str,
+    reference: Optional[str | list[str]] = None,
+    criteria: Optional[str] = None,
+    cue: Optional[str] = None,
+    scheduled: Optional[bool] = None,
+) -> dict:
+    """Fix a facet whose reference is wrong, vague, or too compound.
+
+    Scheduling history is preserved. Set scheduled=False to demote a facet to
+    background context instead of deleting it.
+    """
+    return learn_store.update_facet(facet_id, reference, criteria, cue, scheduled)
+
+
+@teacher_mcp.tool(name="stats", annotations=READ_ONLY)
+def learn_stats(days: int = 30) -> dict:
+    """Progress: collection size, retention, weakest facets, per-mode breakdown.
+
+    `retention` is graded reviews only. Taught cards and conversational
+    encounters are reported separately and deliberately kept out of it, so the
+    figure stays a measure of cold recall rather than of exposure.
+    """
+    return learn_store.stats(days)
+
+
 if __name__ == "__main__":
     init_db()
     # stdio carries a single MCP stream, so a stdio launch runs ONE server, chosen by
-    # MCP_SERVER (journal|trainer) — point each Claude Desktop config at the right one.
-    # HTTP mode here is for single-server smoke tests; in production
-    # webapp/combined.py serves BOTH MCP servers + the UI in one process.
-    selected = trainer_mcp if os.environ.get("MCP_SERVER") == "trainer" else mcp
+    # MCP_SERVER (journal|trainer|teacher) — point each Claude Desktop config at the
+    # right one. HTTP mode here is for single-server smoke tests; in production
+    # webapp/combined.py serves ALL the MCP servers + the UI in one process.
+    selected = {"trainer": trainer_mcp, "teacher": teacher_mcp}.get(
+        os.environ.get("MCP_SERVER", "journal"), mcp)
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "http":
         # Remote mode (behind Coolify's HTTPS proxy). Connector URL: https://<domain>/mcp

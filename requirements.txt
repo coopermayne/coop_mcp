@@ -4,3 +4,4 @@ tzdata>=2024.1  # zoneinfo tz database for Pacific-time date handling on slim im
 # Imported directly for TypedDict/NotRequired: pydantic rejects typing.TypedDict on
 # Python < 3.12, so the tool payload types must come from typing_extensions.
 typing_extensions>=4.9
+fsrs>=6.0   # the learning log's scheduler (learning/scheduler.py wraps it)

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Learn · Journal{% endblock %}
+{% block content %}
+
+<div class="flex items-baseline justify-between mb-2">
+  <h1 class="text-2xl font-bold tracking-tight">Learn</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ subject_count }} subjects</span>
+</div>
+
+{# The same roll-up the model sees (learn_store.stats), so the page and a chat
+   session can never disagree about what's due or how recall is going. #}
+<div class="mb-6 flex flex-wrap gap-x-6 gap-y-1 text-xs uppercase tracking-widest text-gray-400 tabular-nums">
+  <span><span class="text-black font-semibold">{{ stats.due_now }}</span> due now</span>
+  <span><span class="text-black font-semibold">{{ stats.staged_not_yet_introduced }}</span> staged</span>
+  {% if stats.retention is not none %}
+  <span><span class="text-black font-semibold">{{ (stats.retention * 100) | round | int }}%</span> retention · 30d</span>
+  {% endif %}
+  <span><span class="text-black font-semibold">{{ stats.graded_reviews_in_window }}</span> reviews · 30d</span>
+</div>
+
+<form method="get" action="{{ base }}/learn" class="mb-6">
+  {% if archived %}<input type="hidden" name="archived" value="1">{% endif %}
+  <input type="search" name="q" value="{{ q }}" placeholder="Search subjects…"
+         class="w-full border border-gray-200 rounded-[4px] px-3 py-2 text-sm bg-transparent focus:outline-none focus:border-gray-400 transition-colors">
+</form>
+
+{% if archived %}
+<p class="mb-4 text-xs uppercase tracking-widest text-gray-400">Archived ·
+  <a href="{{ base }}/learn" class="hover:text-black transition-colors">back to active</a></p>
+{% endif %}
+
+{% for type, subjects in types %}
+<div class="mb-8">
+  <div class="mb-2 flex items-baseline justify-between">
+    <h2 class="text-xs uppercase tracking-widest text-gray-400">{{ type }}</h2>
+    <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums">{{ subjects | length }}</span>
+  </div>
+  <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+    {% for s in subjects %}
+    <a href="{{ base }}/learn/{{ s.id }}" class="px-5 sm:px-6 py-3.5 hover:bg-gray-50 transition-colors flex items-baseline justify-between gap-3">
+      <span class="text-sm font-medium min-w-0 truncate">{{ s.title }}</span>
+      <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums whitespace-nowrap">
+        {%- if s.due_now %}<span class="text-black font-semibold">{{ s.due_now }} due</span> · {% endif -%}
+        {{ s.facets }} facet{{ '' if s.facets == 1 else 's' }}
+        {%- if s.staged %} · {{ s.staged }} staged{% endif -%}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<p class="text-sm text-gray-400">{% if q %}Nothing matches.{% else %}Nothing here yet — capture something through the teacher connector.{% endif %}</p>
+{% endfor %}
+
+{% if not archived and archived_count %}
+<p class="mt-8 text-xs uppercase tracking-widest text-gray-400">
+  <a href="{{ base }}/learn?archived=1" class="hover:text-black transition-colors">Archived · {{ archived_count }}</a>
+</p>
+{% endif %}
+
+{% endblock %}

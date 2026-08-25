@@ -10,15 +10,19 @@ stable person records, so later "everything about Tom my father" is an exact loo
 that never pulls in the other Tom. Runs locally over stdio (Claude Desktop) or as a
 remote HTTP server behind Google auth (phone access via claude.ai connectors).
 
-**Two MCP servers, one process, one DB.** The training feature is a *second* FastMCP
+**Three MCP servers, one process, one DB.** The training feature is a *second* FastMCP
 instance — `trainer_mcp`, exposed at its own endpoint `/trainer/mcp` — separate from
-the journal+eating server (`mcp` at `/mcp`). Both live in `server.py` and share the
+the journal+eating server (`mcp` at `/mcp`); the learning feature is a *third*,
+`teacher_mcp` at `/teacher/mcp` (a spaced-repetition log, ported from the standalone
+`teacher` repo — its logic lives in the `learning/` package, only the thin
+`@teacher_mcp.tool()` wrappers live in `server.py`; see the `subjects`/`facets` row in
+the data model). All live in `server.py` and share the
 same SQLite DB; each has its OWN Google auth provider (providers are single-resource —
 see the auth section). Each is its own connector → its own Claude project, so a
-conversation loads only that half's tools (smaller tool surface = less latency, the
+conversation loads only that slice's tools (smaller tool surface = less latency, the
 reason for the split). It's purely an MCP-layer division: the webapp still imports this
-module's functions unchanged. `webapp/combined.py` composes both endpoints onto one
-origin.
+module's functions unchanged. `webapp/combined.py` composes the endpoints onto one
+origin (a secondary server moves to its own host when its `*_PUBLIC_URL` is set).
 
 **The journal connector is intake + collections only.** The user does all journal
 capture through the app's own chat, so the journal server's people/entry tools
@@ -353,7 +357,19 @@ There is no exercise-selection or progression logic in the server either.
   it can't invent a Lucide name the app doesn't carry. Lucide because the nav bar's
   hand-written icons already are Lucide strokes. Re-run the script (needs npm once)
   only to add names or move Lucide versions — nothing fetches at runtime.
-- `scripts/` — `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
+- `learning/` — the teacher server's logic (spaced-repetition store, FSRS wrapper,
+  SQLite layer, facet templates), ported near-verbatim from the standalone `teacher`
+  repo. **Edit it like a vendored library**: it has NO tests, and scheduling
+  correctness is the one property you can't check by using it (a wrong interval looks
+  right until the card comes back months later) — so changes beyond the three port
+  seams (JOURNAL_DB path, Pacific `day_start()`, the `learn_fts` rename) need a reason.
+  It keeps its OWN idempotent schema + migrations in `learning/db.py` (run from
+  `init_db()` and on first connect) rather than folding into `SCHEMA` — the
+  attempts-table rebuild migration stays with the code that owns it. `server.py` wraps
+  its store as `teacher_mcp`'s tools; `webapp/data.py` reads it for `/learn`.
+- `scripts/` — `import_teacher.py` (one-shot, idempotent copy of a standalone
+  teacher repo's DB into the journal DB — ids and FSRS state preserved),
+  `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
   the PWA icon set), and `build_icon_set.py` (regenerate `icons.py`, above).
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
@@ -374,20 +390,22 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # local (Claude Desktop, stdio) — stdio runs ONE server; pick it with MCP_SERVER:
 .venv/bin/python server.py                       # journal+eating (default)
 MCP_SERVER=trainer .venv/bin/python server.py    # trainer
-# remote, both endpoints in one process (this is what the Dockerfile runs):
+MCP_SERVER=teacher .venv/bin/python server.py    # teacher (the learning log)
+# remote, all endpoints in one process (this is what the Dockerfile runs):
 MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db .venv/bin/python webapp/combined.py
-#   journal connector: /mcp   ·   trainer connector: /trainer/mcp   ·   UI: /app
+#   journal: /mcp   ·   trainer: /trainer/mcp   ·   teacher: /teacher/mcp   ·   UI: /app
 ```
 
 Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `MCP_SERVER`
-(`journal`|`trainer`, stdio only — which server a bare `server.py` launch runs),
+(`journal`|`trainer`|`teacher`, stdio only — which server a bare `server.py` launch runs),
 `PORT`, `MCP_HOST`. Auth (set all to protect; unset = authless for dev/staging only):
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (bare origin, no trailing
 slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours), and
 `TRAINER_PUBLIC_URL` (bare origin of the trainer's own host — enables the trainer on its
 own subdomain; unset = trainer falls back to `/trainer/mcp` on the main origin, authless
-only). Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, if the trainer host is
-set, `<TRAINER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
+only), and `TEACHER_PUBLIC_URL` (same, for the teacher server / `/teacher/mcp`).
+Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, per secondary host that is
+set, `<TRAINER_PUBLIC_URL>/auth/callback` / `<TEACHER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
 (show the logout control in the UI), the `TELEGRAM_*` set (`TELEGRAM_MODE`,
@@ -1231,6 +1249,25 @@ working.
   instructions now POINT at the key (read it as instruction, not background; it
   can't loosen the rules; it's the user's to edit) instead of restating what it
   says.
+- `subjects` + `facets` + `attempts` + `learn_fts` — the LEARNING log (the teacher
+  server; logic in `learning/`, schema owned by `learning/db.py`, not `SCHEMA`). A
+  *subject* is a thing being learned (a myth, a word, a case); a *facet* is one
+  recallable aspect of it and the unit of FSRS scheduling, because facets fail
+  independently. Facets grade in one of three modes (`recall`/`list`/`open`), are
+  STAGED on capture and released a few per Pacific day (`TEACHER_NEW_PER_DAY`), and
+  `scheduled=0` marks background context that is never quizzed. `attempts` is the
+  audit trail — every prompt, the user's VERBATIM answer, the grade, and the FSRS
+  card as it stood before (`prev_card`, what makes `undo_last` possible); `kind`
+  separates graded reviews from being taught (`study`) and from conversational
+  `encounter`s, and only reviews count toward retention. The same architectural
+  split as everywhere: the server schedules and records; composing questions and
+  judging answers is the model's, at review time — reference answers are deliberately
+  withheld from `next_card`/`due` so they can't leak into question wording.
+  The webapp reads it at `/learn` (nav menu, shortcut 7) — subjects grouped by type,
+  and a per-subject wiki page showing full references, schedule state, and recent
+  attempts. Read-only like `/food`, outside the journal lock, no chat panel: the ONE
+  write path is the teacher connector's tools. `scripts/import_teacher.py` folds a
+  standalone teacher repo's DB in (idempotent, preserves ids + FSRS state).
 
 ## Matching (in `find_candidates` / `score_surface_against_alias`)
 
@@ -1272,6 +1309,11 @@ app at its root. The trainer then has a complete, isolated OAuth server at its o
 With `TRAINER_PUBLIC_URL` unset (local/authless), `combined.py` falls back to grafting
 the trainer's `/trainer/mcp` endpoint + its protected-resource metadata onto the main
 origin — fine when there's no OAuth, so the collision is moot.
+
+The teacher server is the same story a third time: its own provider
+(`_build_auth(TEACHER_PUBLIC_URL)`), its own host when `TEACHER_PUBLIC_URL` is set
+(redirect URI `<teacher-host>/auth/callback`), authless `/teacher/mcp` graft otherwise
+— `combined.py`'s `_secondary_routes` is the one place that pattern lives now.
 
 ## Gotchas
 

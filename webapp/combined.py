@@ -10,6 +10,9 @@ sharing one DB so each Claude project loads only its own tools.
     the root, so its connector is `https://<trainer-host>/mcp` with clean root OAuth.
     With TRAINER_PUBLIC_URL unset (local/authless), the trainer falls back to
     `/trainer/mcp` on the main origin (no OAuth, so the same-origin collision is moot).
+  - Teacher (the learning log): same story one server over — TEACHER_PUBLIC_URL set
+    routes its host to the teacher app at the root; unset falls back to an authless
+    `/teacher/mcp` graft on the main origin.
 
 Run (local, one origin, trainer at /trainer/mcp):
     MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db python webapp/combined.py
@@ -41,34 +44,43 @@ from starlette.routing import Host, Mount, Route   # noqa: E402
 # never reach the live DB, and any query that references a new column 500s.
 server.init_db()
 
-mcp_app = server.mcp.http_app(path="/mcp")   # journal + drinking, on the main origin
+mcp_app = server.mcp.http_app(path="/mcp")   # journal + eating, on the main origin
 
-# Trainer host derived from TRAINER_PUBLIC_URL (e.g. https://trainer.example.com).
-TRAINER_HOST = urlparse(os.environ.get("TRAINER_PUBLIC_URL", "")).netloc
 
-# Own-host mode (TRAINER_HOST set): trainer app at the root of its own hostname → clean
-# root OAuth. Otherwise same-origin fallback: trainer at /trainer/mcp on the main origin
-# (authless/local only — two real OAuth servers can't share one origin).
-trainer_app = server.trainer_mcp.http_app(path="/mcp" if TRAINER_HOST else "/trainer/mcp")
+def _secondary_routes(instance, prefix: str, public_url: str):
+    """Route one of the secondary MCP servers (trainer, teacher).
 
-if TRAINER_HOST:
-    _trainer_routes = [Host(TRAINER_HOST, app=trainer_app)]
-else:
-    _same_origin = {"/trainer/mcp", "/.well-known/oauth-protected-resource/trainer/mcp"}
-    _trainer_routes = [r for r in trainer_app.routes
-                       if getattr(r, "path", None) in _same_origin]
+    Own-host mode (its *_PUBLIC_URL set): the app at the root of its own
+    hostname → clean root OAuth. Otherwise same-origin fallback: grafted at
+    /<prefix>/mcp on the main origin (authless/local only — two real OAuth
+    servers can't share one origin).
+    """
+    host = urlparse(os.environ.get(public_url, "")).netloc
+    app = instance.http_app(path="/mcp" if host else f"/{prefix}/mcp")
+    if host:
+        return [Host(host, app=app)], app
+    same_origin = {f"/{prefix}/mcp",
+                   f"/.well-known/oauth-protected-resource/{prefix}/mcp"}
+    return [r for r in app.routes if getattr(r, "path", None) in same_origin], app
+
+
+_trainer_routes, trainer_app = _secondary_routes(
+    server.trainer_mcp, "trainer", "TRAINER_PUBLIC_URL")
+_teacher_routes, teacher_app = _secondary_routes(
+    server.teacher_mcp, "teacher", "TEACHER_PUBLIC_URL")
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(app):
-    # Both apps run their own StreamableHTTP session manager; enter both or the
-    # trainer endpoint has no live session manager.
+    # Each app runs its own StreamableHTTP session manager; enter them all or a
+    # secondary endpoint has no live session manager.
     #
     # The UI app is MOUNTED, and Starlette does not run a mounted app's lifespan —
     # so webapp.app's own _lifespan never fires here and the Telegram bots would
     # never start in prod. Starting them from this outer lifespan is that fix; the
     # two paths call the same pair of functions, and only one of them ever runs.
-    async with mcp_app.lifespan(app), trainer_app.lifespan(app):
+    async with mcp_app.lifespan(app), trainer_app.lifespan(app), \
+               teacher_app.lifespan(app):
         await webapp.tg.startup()
         try:
             yield
@@ -82,14 +94,15 @@ async def _app_root_redirect(request):
     return RedirectResponse(url="/app/")
 
 
-# Trainer route(s) first (the Host match in prod, or the grafted same-origin routes
+# Secondary routes first (the Host matches in prod, or the grafted same-origin routes
 # locally), then the UI under /app, then the journal app catch-all at "/" (root OAuth,
-# /mcp, /health). Journal-host requests never match the trainer Host route, so the
+# /mcp, /health). Journal-host requests never match a secondary Host route, so the
 # journal endpoint is byte-for-byte unchanged.
 application = Starlette(
     lifespan=_lifespan,
     routes=[
         *_trainer_routes,
+        *_teacher_routes,
         Route("/app", _app_root_redirect),
         Mount("/app", app=webapp.app),
         Mount("/", app=mcp_app),

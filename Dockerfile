@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 # server.py imports `icons` at module level — a missing icons.py is an import-time crash,
 # not a degraded feature, so it ships with the server.
 COPY server.py icons.py ./
+# The teacher server's logic — server.py imports `learning` at module level, so like
+# icons.py it ships or the container dies at import.
+COPY learning ./learning
 COPY webapp ./webapp
 # Maintenance/seed scripts (e.g. import_exercises.py for seeding the exercise library) —
 # run inside the container against the mounted DB.

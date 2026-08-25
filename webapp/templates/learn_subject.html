@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ s.title }} · Learn{% endblock %}
+{% block content %}
+
+<a href="{{ base }}/learn" class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">← Learn</a>
+
+<div class="mt-4 mb-1 flex items-baseline justify-between gap-3">
+  <h1 class="text-2xl font-bold tracking-tight">{{ s.title }}</h1>
+  <span class="text-xs uppercase tracking-widest text-gray-400 whitespace-nowrap">{{ s.type }}{% if s.archived %} · archived{% endif %}</span>
+</div>
+
+{% if s.tags %}
+<div class="mb-4 text-xs uppercase tracking-widest text-gray-400">{{ s.tags | join(' · ') }}</div>
+{% endif %}
+
+{% if s.context %}
+<p class="mb-8 text-sm leading-relaxed text-gray-600 whitespace-pre-line">{{ s.context }}</p>
+{% endif %}
+
+{# Facets: the reference material — this page is the wiki view, so answers are
+   shown in full. Schedule state rides along quietly on the right. #}
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100 mb-10">
+  {% for f in s.facets %}
+  <div class="px-5 sm:px-6 py-4">
+    <div class="flex items-baseline justify-between gap-3 mb-1.5">
+      <span class="text-sm font-semibold">{{ f.name }}</span>
+      <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums whitespace-nowrap">
+        {%- if not f.scheduled %}background
+        {%- elif not f.released %}staged
+        {%- else %}due {{ f.due_day }}{% if f.reps %} · {{ f.reps }} rep{{ '' if f.reps == 1 else 's' }}{% endif %}{% if f.lapses %} · {{ f.lapses }} lapse{{ '' if f.lapses == 1 else 's' }}{% endif %}
+        {%- endif %}</span>
+    </div>
+    {% if f.grading_mode == 'list' and f.reference %}
+    <ul class="text-sm leading-relaxed text-gray-600 list-disc pl-5 space-y-0.5">
+      {% for point in f.reference %}<li>{{ point }}</li>{% endfor %}
+    </ul>
+    {% elif f.reference %}
+    <p class="text-sm leading-relaxed text-gray-600 whitespace-pre-line">{{ f.reference }}</p>
+    {% endif %}
+    {% if f.criteria %}
+    <p class="mt-1.5 text-sm leading-relaxed text-gray-500"><span class="text-xs uppercase tracking-widest text-gray-400">criteria</span> {{ f.criteria }}</p>
+    {% endif %}
+    {% if f.cue %}
+    <p class="mt-1.5 text-xs text-gray-400 italic">{{ f.cue }}</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if s.attempts %}
+<div class="mb-2 text-xs uppercase tracking-widest text-gray-400">Recent attempts</div>
+<div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100">
+  {% for a in s.attempts %}
+  <div class="px-5 sm:px-6 py-3">
+    <div class="flex items-baseline justify-between gap-3">
+      <span class="text-sm">{{ a.facet_name }}</span>
+      <span class="text-xs uppercase tracking-widest text-gray-400 tabular-nums whitespace-nowrap">
+        {%- if a.kind == 'review' %}<span class="text-black font-semibold">{{ a.rating }}/4</span>
+        {%- else %}{{ a.kind }}{% endif %} · {{ a.day }}</span>
+    </div>
+    {% if a.prompt %}<p class="mt-1 text-xs text-gray-400 italic">{{ a.prompt }}</p>{% endif %}
+    {% if a.response %}<p class="mt-0.5 text-xs text-gray-500">“{{ a.response }}”</p>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

@@ -126,6 +126,30 @@ single process routes that hostname to the trainer server at its root (connector
 With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
 `/trainer/mcp` on the main origin. See "Remote deployment" for the subdomain steps.
 
+## Learning (the teacher server)
+
+The third MCP server on the same DB: a spaced-repetition learning log, ported from the
+standalone `teacher` repo. Same rule again — **no LLM in the server.** It stores
+subjects and their recallable *facets*, schedules them with FSRS, and records how you
+did; composing each question and judging each answer happen in the conversation at
+review time, which is what keeps a facet from decaying into a memorized card front.
+
+Connect it as its own connector / Claude project, like the trainer: set
+`TEACHER_PUBLIC_URL=https://TEACHER-DOMAIN` in production (own subdomain, own Google
+redirect URI `https://TEACHER-DOMAIN/auth/callback`), or reach it authless at
+`/teacher/mcp`; over stdio use `MCP_SERVER=teacher`. The webapp shows the collection
+read-only at `/learn` (nav menu, shortcut `7`) — the wiki view: every subject, its
+facets with their references, schedule state, and recent attempts. Strictly a read
+surface; the log is worked only through the connector.
+
+To bring data over from a standalone teacher repo's database:
+
+```bash
+JOURNAL_DB=./journal.db .venv/bin/python scripts/import_teacher.py path/to/teacher.db
+```
+
+Idempotent (re-running reports 0), preserves ids and FSRS state.
+
 - **Intake: one row per thing consumed.** A sandwich is a row, a beer is a row, a
   12oz glass of water is a row — food, alcohol and water are the same kind of fact, so
   they share one table and one code path. `intake_log` logs ONE item (call it once per
@@ -288,6 +312,7 @@ https://TRAINER-DOMAIN/auth/callback     # only if you run the trainer subdomain
 | `PUBLIC_URL` | `https://YOUR-DOMAIN` (no trailing slash, no `/mcp`) |
 | `JOURNAL_ALLOWED_EMAILS` | your Gmail address (comma-separated for more than one) |
 | `TRAINER_PUBLIC_URL` | `https://TRAINER-DOMAIN` — enables the trainer on its own host (omit to skip the trainer / keep it at `/trainer/mcp` authless) |
+| `TEACHER_PUBLIC_URL` | `https://TEACHER-DOMAIN` — same for the teacher server (omit to keep it at `/teacher/mcp` authless) |
 
 With those set, the server flips from authless to protected on restart. Verified
 behavior: an unauthenticated request gets `401` with a `WWW-Authenticate` header
@@ -773,7 +798,10 @@ second; the server throttles itself and sends a generic one you can override wit
 
 ## Tools
 
-Split across two connectors and the app's own chat. The **journal** server
+Split across three connectors and the app's own chat. The **teacher** server
+(`TEACHER-DOMAIN/mcp`, or `/teacher/mcp` authless) carries the learning log —
+`next_card`/`check`/`record` and friends; see "Learning" above and the tool docstrings
+in `server.py`. The **journal** server
 (`YOUR-DOMAIN/mcp`) exposes to MCP clients only the intake tools (`intake_*`) and the
 notes-&-collections tools (`notes_*`, `collections_*`) — every name carries its domain
 as a prefix, so a client's tool list groups itself and an intake item is never confused
