@@ -372,7 +372,7 @@ it when they simply wanted the thing captured. Don't paste one after every call.
 _COLLECTIONS_BLOCK = """\
 Beyond the structured logs there is one FLEXIBLE layer — notes & collections — for
 everything else the user wants kept (recipes, trip ideas, books, whatever comes up).
-Three rules govern it:
+Four rules govern it:
   - CAPTURE FIRST, FILE SECOND. "Save this" always succeeds: if it clearly fits an
     existing collection (check collections_list — it's cheap), file it there; otherwise
     notes_save with no collection leaves it as an inbox note. Never block a save on
@@ -386,7 +386,15 @@ Three rules govern it:
     with no matching field go in the body — don't invent data keys. When a field
     DOES earn its place, give it the type that fits (url, rating, bool,
     multiselect, location — not text) — the app renders a typed value as the
-    thing it is, and text is where meaning goes to be spelled out."""
+    thing it is, and text is where meaning goes to be spelled out.
+  - ITEMS ARE MEANT TO HAVE PICTURES. Every item carries a featured image without
+    the collection declaring one, and the app draws collections as picture rows,
+    cards and thumbnails — so a filed item with none is a blank tile. Pass
+    featured_image_url= on notes_save/notes_file whenever a real URL is in reach:
+    a link the user pasted, an image URL in what they gave you, the photo of a
+    thing you genuinely know. Never invent or guess one — a made-up URL renders
+    as nothing at all, so say the picture is missing (or ask for a link) instead.
+    A write into a collection tells you when the slot is empty."""
 
 
 _TRAINER_NOTE = "(Workouts/training live on a separate `trainer` MCP server.)"
@@ -4038,6 +4046,33 @@ def _unfilled_fields(fields: list[dict], data: dict) -> list[str]:
     return [f["key"] for f in fields if data.get(f["key"]) in (None, "")]
 
 
+def _missing_image_note(conn: sqlite3.Connection, collection_id: int,
+                        item_id: int) -> Optional[str]:
+    """A line for a filed item that has NO featured image, else None. The third
+    advisory on a write return, next to `unfilled_fields` (fields with no value)
+    and `stranded` (values with no field): an item's picture is the field every
+    collection has without declaring one, and nothing ever mentioned it was
+    empty — so items were landing picture-less by default and the gap only
+    showed up later, on the page, item by item.
+
+    It carries the collection's own COVERAGE rather than a flat scold, because
+    whether a picture belongs here is a fact about the collection and the server
+    doesn't get to decide it: nine of eleven recipes having one says this is a
+    collection you look at, and nought of eleven says the opposite just as
+    clearly. Same split as everywhere — the server states the fact, the model
+    judges. Advisory, never an error; capture must not block on a picture."""
+    r = conn.execute(
+        "SELECT COUNT(*) AS n, "
+        "  SUM(featured_image_url IS NOT NULL AND featured_image_url<>'') AS img "
+        "FROM items WHERE collection_id=? AND id<>?",
+        (collection_id, item_id)).fetchone()
+    total, with_img = r["n"] or 0, r["img"] or 0
+    where = (f"{with_img} of {total} others here have one"
+             if total else "first item here")
+    return (f"none set ({where}) — pass featured_image_url= if you have a real "
+            "URL for it; never guess one")
+
+
 def _inbox_count(conn: sqlite3.Connection) -> int:
     """How many unfiled notes exist. Capture-first-file-second makes the inbox the
     DEFAULT, which means it grows invisibly: every note lands there and nothing in
@@ -4287,8 +4322,15 @@ def save_item(title: str, body: Optional[str] = None,
 
     `featured_image_url` is the item's FEATURED IMAGE (an http/https URL) — a built-in
     every item has, in or out of a collection, so a collection never needs to
-    declare an image field. Set it when the user gives you a picture's URL or
-    the source page has an obvious one; leave it alone otherwise.
+    declare an image field. FILL IT WHENEVER YOU HONESTLY CAN: the app renders
+    items as picture rows and cards, and a collection of blank tiles is the
+    common failure here. Take it from what's in front of you — a link the user
+    pasted (a recipe page, a listing, a product), an image URL in the page or
+    message you were given, the cover/photo URL of a thing you actually know.
+    What you must NOT do is invent one: a guessed-looking URL renders as
+    nothing, so a plausible fake is worse than an empty slot. No candidate you'd
+    stand behind, and it's fine to save without one — mention that a picture is
+    missing rather than making one up, or ask the user for a link.
 
     The return says where it landed: `url` is the item's page in the app, and an
     inbox save carries `inbox_count` — how many notes are now unfiled. Filing is
@@ -4296,7 +4338,10 @@ def save_item(title: str, body: Optional[str] = None,
     nothing else in a conversation ever surfaces it. A save INTO a collection
     instead carries `unfilled_fields` when the collection declares fields this
     item has no value for — ask about them in the same turn if the user is likely
-    to know them now; they're optional, so never withhold the save over one."""
+    to know them now; they're optional, so never withhold the save over one. It
+    also carries `featured_image` when the item landed in a collection with no
+    picture, with how many of that collection's other items have one — the cue
+    to go back with notes_update once you have a URL, or to ask for one."""
     title = (title or "").strip()
     if not title:
         return {"error": "title is required"}
@@ -4327,10 +4372,17 @@ def save_item(title: str, body: Optional[str] = None,
              image, ts, ts))
         item_id = cur.lastrowid
         unfilled = _unfilled_fields(_coll_fields(row), data_clean) if coll_id else []
+        # Only for a FILED item: an inbox note is a scrap ("call the dentist"),
+        # and nagging for a picture on every one of those is how an advisory
+        # stops being read.
+        no_image = (_missing_image_note(conn, coll_id, item_id)
+                    if coll_id and not image else None)
         inbox = _inbox_count(conn) if coll_id is None else None
     out = {"item_id": item_id, "title": title, "collection": coll_name or "inbox"}
     if unfilled:
         out["unfilled_fields"] = unfilled
+    if no_image:
+        out["featured_image"] = no_image
     if inbox is not None:
         out["inbox_count"] = inbox
     if url := _app_url(f"/item/{item_id}"):
@@ -4385,16 +4437,27 @@ def update_item(item_id: int, title: Optional[str] = None, body: Optional[str] =
 
 @mcp.tool(name="notes_file", annotations=WRITE_IDEMPOTENT)
 def move_to_collection(item_id: int, collection: str,
-                       data: Optional[dict] = None) -> dict:
+                       data: Optional[dict] = None,
+                       featured_image_url: Optional[str] = None) -> dict:
     """File an item into a collection (or back to "inbox") — THE promotion
     primitive. Promoting a clustered topic is one call per note: read the note,
     extract its `data` fields from the text, move it; the prose stays as the
     item's body, so nothing is lost and the move is reversible. Only promote
     into a collection the user has agreed to create.
 
+    `featured_image_url` sets the item's picture in the same call — promotion is
+    the moment for it, since you have just read the note and the collection page
+    renders items as picture rows (same rule as notes_save: a real URL from the
+    note or the source, never an invented one).
+
     Returns `unfilled_fields` (declared fields the item still has no value for —
-    the moment to ask, since you have just read the note) and `url`, the item's
-    page in the app. Filing back to "inbox" returns `inbox_count` instead."""
+    the moment to ask, since you have just read the note), `featured_image` when
+    the item has no picture (with how many of the collection's others do), and
+    `url`, the item's page in the app. Filing back to "inbox" returns
+    `inbox_count` instead."""
+    image, err = _clean_featured_image(featured_image_url)
+    if err:
+        return {"error": err}
     with db() as conn:
         r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
         if not r:
@@ -4415,13 +4478,23 @@ def move_to_collection(item_id: int, collection: str,
         err = _bad_data(merged, _coll_fields(row))
         if err:
             return {"error": err}
-        conn.execute("UPDATE items SET collection_id=?, data=?, updated_at=? WHERE id=?",
-                     (row["id"], json.dumps(merged) if merged else None, now(), item_id))
+        # None means "unchanged" here too — filing must not wipe a picture the
+        # item already had.
+        conn.execute("UPDATE items SET collection_id=?, data=?, featured_image_url=?, "
+                     "updated_at=? WHERE id=?",
+                     (row["id"], json.dumps(merged) if merged else None,
+                      image if featured_image_url is not None else r["featured_image_url"],
+                      now(), item_id))
         unfilled = _unfilled_fields(_coll_fields(row), merged)
+        has_image = image if featured_image_url is not None else r["featured_image_url"]
+        no_image = (None if has_image
+                    else _missing_image_note(conn, row["id"], item_id))
     out = {"item_id": item_id, "collection": row["name"],
            **({"data": merged} if merged else {})}
     if unfilled:
         out["unfilled_fields"] = unfilled
+    if no_image:
+        out["featured_image"] = no_image
     if url := _app_url(f"/item/{item_id}"):
         out["url"] = url
     return out

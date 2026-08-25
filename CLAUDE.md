@@ -954,7 +954,7 @@ working.
   everywhere else (`notes_save`, `notes_file`), so `collections_list` and
   `collections_save` both return the `id` that this one kind needs — without it a
   collection was undeletable over MCP — reachable by name but not by handle.
-  The write returns carry two FRAMES, for the same capture-here/read-there split
+  The write returns carry three FRAMES, for the same capture-here/read-there split
   the intake `targets` answer. `notes_save`/`notes_file` report `unfilled_fields`
   (`_unfilled_fields`) — declared fields the item has no value for, the exact mirror
   of `stranded` (values with no field) and reported for the same reason: the return
@@ -963,6 +963,27 @@ working.
   block on them. And a save that lands in the INBOX reports `inbox_count`: capture-
   first-file-second makes the inbox the default, so it grows invisibly and filing
   happens only if the user thinks to look. It is the inbox's `day_totals`.
+  The third is `featured_image` (`_missing_image_note`), on a FILED item with an
+  empty picture slot — the same advisory shape one axis over: the featured image
+  is the field every collection has without declaring one, so `unfilled_fields`
+  never mentioned it and items were landing picture-less by default, on pages
+  (rows, thumbnails, the cards view) that are mostly picture. It carries the
+  collection's own COVERAGE ("1 of 8 others here have one") rather than a flat
+  scold, because whether a picture belongs in THIS collection is a fact about the
+  collection and the server doesn't get a vote — nine of eleven says one thing,
+  nought of eleven says the opposite, and the model reads it the way it reads
+  candidates. Inbox notes are exempt (a scrap like "call the dentist" has no
+  picture and nagging on every one is how an advisory stops being read), and it's
+  advisory like the others — capture never blocks on an image. The prose pushes
+  the same way from two homes: `_COLLECTIONS_BLOCK`'s fourth rule (items are meant
+  to have pictures) and the `notes_save`/`notes_file` docstrings, both of which
+  pair the encouragement with its one hard limit — NEVER invent a URL. A guessed
+  image URL renders as nothing (`onerror="this.remove()"`), so a plausible fake is
+  strictly worse than an empty slot: say the picture is missing, or ask for a link.
+  `notes_file` grew a `featured_image_url=` for this — promotion is the moment
+  you've just read the note and have its source in hand, and it would otherwise
+  take a second `notes_update` call; passing None there leaves the existing
+  picture alone, the same "None means unchanged" as `notes_update`.
   The webapp browses it at
   `/collections` (+ per-collection and per-item pages, rendered generically from the
   collection's own fields + view prefs — no per-domain view code), OUTSIDE the
