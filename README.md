@@ -150,6 +150,11 @@ JOURNAL_DB=./journal.db .venv/bin/python scripts/import_teacher.py path/to/teach
 
 Idempotent (re-running reports 0), preserves ids and FSRS state.
 
+A subject can also carry an **article** — background reading the model writes
+(`update_subject(article=…)`, markdown with hotlinked images) that renders above
+the cards on the subject's `/learn` page. The article is for absorbing detail
+and big picture; the facets stay the tested key points.
+
 - **Intake: one row per thing consumed.** A sandwich is a row, a beer is a row, a
   12oz glass of water is a row — food, alcohol and water are the same kind of fact, so
   they share one table and one code path. `intake_log` logs ONE item (call it once per

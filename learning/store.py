@@ -39,6 +39,9 @@ def _subject_row(row) -> dict:
         "source": row["source"],
         "created_at": row["created_at"],
         "archived": bool(row["archived"]),
+        # Flag only: the article text itself is returned by get_subject alone,
+        # so search/capture/update returns stay compact.
+        "has_article": bool(row["article"]),
     }
 
 
@@ -119,6 +122,7 @@ def capture(
     context: str | None = None,
     tags: list[str] | None = None,
     source: str = "manual",
+    article: str | None = None,
 ) -> dict:
     """Store a subject and its facets. Facets start staged, not due."""
     title = (title or "").strip()
@@ -144,9 +148,10 @@ def capture(
 
         subject_id = _uid()
         conn.execute(
-            """INSERT INTO subjects (id, title, type, context, tags, source, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (subject_id, title, subject_type, context, json.dumps(tags or []), source, now.isoformat()),
+            """INSERT INTO subjects (id, title, type, context, tags, source, created_at, article)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (subject_id, title, subject_type, context, json.dumps(tags or []), source,
+             now.isoformat(), article),
         )
         created = _write_facets(conn, subject_id, specs, now)
         reindex(conn, subject_id)
@@ -1137,6 +1142,7 @@ def get_subject(subject_id: str) -> dict:
     ]
     subject["facet_count"] = len(subject["facets"])
     subject["scheduled_count"] = sum(1 for f in subject["facets"] if f["scheduled"])
+    subject["article"] = row["article"]
     return subject
 
 
@@ -1191,12 +1197,18 @@ def search(query: str, limit: int = 15) -> list[dict]:
 
 
 def update_subject(subject_id: str, title: str | None = None, context: str | None = None,
-                   tags: list[str] | None = None, archived: bool | None = None) -> dict:
+                   tags: list[str] | None = None, archived: bool | None = None,
+                   article: str | None = None) -> dict:
     sets, params = [], []
     for col, val in (("title", title), ("context", context)):
         if val is not None:
             sets.append(f"{col} = ?")
             params.append(val)
+    if article is not None:
+        # Replaced wholesale like context; an empty string clears it back to
+        # "no article" (NULL) rather than storing a blank page.
+        sets.append("article = ?")
+        params.append(article or None)
     if tags is not None:
         sets.append("tags = ?")
         params.append(json.dumps(tags))

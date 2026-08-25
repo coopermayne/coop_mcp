@@ -1263,8 +1263,21 @@ working.
   split as everywhere: the server schedules and records; composing questions and
   judging answers is the model's, at review time — reference answers are deliberately
   withheld from `next_card`/`due` so they can't leak into question wording.
+  A subject can also carry an `article` — model-written background reading
+  (markdown, hotlinked images) for the webapp's subject page. It is a SEPARATE
+  LAYER from the facets on purpose: the article is where detail and big picture
+  live, the facets stay the few tested key points — and it follows the same
+  answer-withholding rule as everything else (never returned by `next_card`/
+  `due`/`at_risk`; `get_subject` returns it in full, everything else carries a
+  `has_article` flag so returns stay compact). Written via
+  `update_subject(article=…)` (wholesale replace, "" clears) or at `capture`;
+  indexed into `learn_fts`; the contract (engaging wiki-style prose, real image
+  URLs only — never guessed, Wikimedia preferred) lives in the teacher
+  `instructions` ARTICLES block.
   The webapp reads it at `/learn` (nav menu, shortcut 7) — subjects grouped by type,
-  and a per-subject wiki page showing full references, schedule state, and recent
+  and a per-subject wiki page showing the article (rendered via the shared
+  `data-md`/marked pipeline, so images get the uniform tiles + lightbox), the
+  facets under a Key-points band, schedule state, and recent
   attempts. Read-only like `/food`, outside the journal lock, no chat panel: the ONE
   write path is the teacher connector's tools. `scripts/import_teacher.py` folds a
   standalone teacher repo's DB in (idempotent, preserves ids + FSRS state).

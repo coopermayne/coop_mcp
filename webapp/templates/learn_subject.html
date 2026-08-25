@@ -13,12 +13,22 @@
 <div class="mb-4 text-xs uppercase tracking-widest text-gray-400">{{ s.tags | join(' · ') }}</div>
 {% endif %}
 
-{% if s.context %}
+{# The ARTICLE: the subject's background-reading page, model-written markdown
+   rendered client-side via the shared data-md/marked pipeline (which also
+   gives its images the uniform tiles + lightbox every prose image gets).
+   Deliberately ABOVE the cards: this is the reading layer, the facets below
+   are the tested key points — separation is the design. Falls back to the
+   short `context` blurb when no article has been written yet — with an
+   article present the blurb is redundant and stays hidden. #}
+{% if s.article %}
+<div data-md class="chat-md mb-10 text-[15px] text-gray-800 leading-relaxed">{{ s.article }}</div>
+{% elif s.context %}
 <p class="mb-8 text-sm leading-relaxed text-gray-600 whitespace-pre-line">{{ s.context }}</p>
 {% endif %}
 
-{# Facets: the reference material — this page is the wiki view, so answers are
-   shown in full. Schedule state rides along quietly on the right. #}
+{# Facets: the tested key points — shown in full (this page is the wiki view).
+   Schedule state rides along quietly on the right. #}
+{% if s.article %}<div class="mb-2 text-xs uppercase tracking-widest text-gray-400">Key points</div>{% endif %}
 <div class="border border-gray-200 rounded-[4px] divide-y divide-gray-100 mb-10">
   {% for f in s.facets %}
   <div class="px-5 sm:px-6 py-4">

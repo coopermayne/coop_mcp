@@ -808,6 +808,28 @@ keep state, in its `context`. Read it in full with get_subject() at the start of
 a session and write it back with update_subject() at the end. `context` is
 replaced wholesale, so read before you write.
 
+ARTICLES
+A subject can carry an `article`: a background-reading page rendered on the
+app's /learn view, written by you via update_subject(article=...) (or at
+capture). It is a DIFFERENT LAYER from the facets, on purpose: the article is
+where detail and big picture live — engaging, wiki-style markdown prose the
+user reads to absorb context — while the facets stay the few key points that
+get TESTED. Don't make the article a restatement of the cards; give it the
+texture around them (the story, the era, the connections, the why-it-matters),
+and let the cards be the sharp edges drawn out of it. A few hundred words to a
+thousand is the right size; headings and short sections beat a wall of text.
+
+Images: markdown image syntax with a REAL, working http(s) URL — link, never
+download. Wikimedia Commons URLs are ideal (stable, hotlinkable). NEVER invent
+or guess an image URL: a dead link renders as nothing on the page, so a
+plausible fake is strictly worse than no image. If you can't verify a URL,
+write the article without pictures.
+
+The article contains answers, so it follows the at_risk() rule: never compose
+a review question while holding it. It is not returned by next_card() or
+due(), and get_subject() (which does return it) should not be called while a
+review question is open.
+
 CAPTURING
 When the user wants to remember something, call propose_facets() for the type,
 draft a reference for each facet from what you know, confirm with the user, then
@@ -6598,13 +6620,18 @@ def capture(
     context: Optional[str] = None,
     tags: Optional[list[str]] = None,
     source: str = "manual",
+    article: Optional[str] = None,
 ) -> dict:
     """Store a new subject and its facets.
 
     New facets are staged and released into rotation a few per day, so a burst of
     capturing never becomes an unreviewable backlog.
+
+    `article` is the subject's optional background-reading page (see the
+    ARTICLES section of the server instructions) — it can also be added later
+    with update_subject().
     """
-    return learn_store.capture(title, subject_type, facets, context, tags, source)
+    return learn_store.capture(title, subject_type, facets, context, tags, source, article)
 
 
 @teacher_mcp.tool(annotations=WRITE)
@@ -6832,14 +6859,20 @@ def update_subject(
     context: Optional[str] = None,
     tags: Optional[list[str]] = None,
     archived: Optional[bool] = None,
+    article: Optional[str] = None,
 ) -> dict:
-    """Edit a subject, or archive it to retire it from review.
+    """Edit a subject, archive it, or write its article.
 
     `context` is REPLACED, not merged. For a subject used as a state store, that
     means writing the whole log back: read it with get_subject() first, or you
     will overwrite what you did not read.
+
+    `article` is likewise replaced wholesale (get_subject() returns the current
+    one; "" clears it). What an article is for and how to write one — including
+    the never-guess-an-image-URL rule — lives in the ARTICLES section of the
+    server instructions.
     """
-    return learn_store.update_subject(subject_id, title, context, tags, archived)
+    return learn_store.update_subject(subject_id, title, context, tags, archived, article)
 
 
 @teacher_mcp.tool(annotations=WRITE_IDEMPOTENT)

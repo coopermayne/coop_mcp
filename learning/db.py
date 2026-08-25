@@ -58,7 +58,13 @@ CREATE TABLE IF NOT EXISTS subjects (
     tags        TEXT NOT NULL DEFAULT '[]',
     source      TEXT NOT NULL DEFAULT 'manual',
     created_at  TEXT NOT NULL,
-    archived    INTEGER NOT NULL DEFAULT 0
+    archived    INTEGER NOT NULL DEFAULT 0,
+    -- The subject's ARTICLE: model-written background reading (markdown, may
+    -- hotlink images) rendered on the webapp's /learn page. Deliberately a
+    -- separate layer from the facets: the article is for taking in detail and
+    -- big picture; the facets stay the tested key points. Never returned by
+    -- next_card/due/at_risk -- it holds answers.
+    article     TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_title
@@ -214,6 +220,12 @@ def _migrate(conn) -> None:
     if "known_at" not in fcols:
         conn.execute("ALTER TABLE facets ADD COLUMN known_at TEXT")
 
+    # The article layer (see the subjects schema comment) arrived after the
+    # port into the journal repo. Additive and nullable, like known_at.
+    scols = {r["name"] for r in conn.execute("PRAGMA table_info(subjects)")}
+    if "article" not in scols:
+        conn.execute("ALTER TABLE subjects ADD COLUMN article TEXT")
+
     # Added after `kind`, and deliberately after _widen_attempt_kinds above:
     # that rebuild copies ATTEMPTS_COLUMNS by name, which is the pre-prev_card
     # set, so a database going through both paths in one connect() still
@@ -270,7 +282,8 @@ def reindex(conn, subject_id: str) -> None:
         "SELECT name, reference, criteria FROM facets WHERE subject_id = ?", (subject_id,)
     ).fetchall()
 
-    parts = [subject["context"] or "", " ".join(json.loads(subject["tags"]))]
+    parts = [subject["context"] or "", " ".join(json.loads(subject["tags"])),
+             subject["article"] or ""]
     for f in facets:
         parts.append(f["name"])
         parts.append(f["reference"] or "")
