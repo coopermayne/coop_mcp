@@ -110,11 +110,13 @@
     // text (preserving newlines) if the markdown lib hasn't loaded.
     function renderMd(el) {
       var raw = el._raw || '';
-      if (window.marked && window.marked.parse) {
+      // Sanitizer required, not optional: model-written markdown can carry raw HTML,
+      // and rendering it unsanitized is an XSS hole (see base.html's purify note).
+      if (window.marked && window.marked.parse && window.DOMPurify && window.DOMPurify.isSupported) {
         // Turn any over-escaped literal "\n" (backslash-n) back into real newlines
         // so a paragraph break renders as a break, not visible escape text.
         raw = raw.replace(/\\r\\n|\\n|\\r/g, '\n');
-        el.innerHTML = window.marked.parse(raw, { breaks: true });
+        el.innerHTML = window.DOMPurify.sanitize(window.marked.parse(raw, { breaks: true }));
         el.querySelectorAll('a').forEach(function (a) {
           a.target = '_blank'; a.rel = 'noopener noreferrer';
         });

@@ -636,10 +636,23 @@
      trainer card. #}
   <script src="{{ base }}/static/confetti.js"></script>
   <script src="{{ base }}/static/vendor/marked.min.js"></script>
+  {# DOMPurify sits between marked and innerHTML everywhere markdown renders (here
+     and chat.js). marked passes raw inline HTML through untouched, and this prose is
+     model-written — an entry/article/recipe that picked up a hostile fragment
+     (prompt injection via a pasted page, a Telegram message, …) must not script the
+     authenticated session. Sanitizing the PARSED output (not the source) keeps
+     markdown intact and also strips javascript: hrefs. #}
+  <script src="{{ base }}/static/vendor/purify.min.js"></script>
   <script>
+    window.sanitizeHtml = function (html) {
+      return (window.DOMPurify && window.DOMPurify.isSupported)
+        ? window.DOMPurify.sanitize(html) : html;
+    };
     window.renderJournalMd = function (scope) {
       var nodes = (scope || document).querySelectorAll('[data-md]:not([data-md-done])');
-      var ok = window.marked && window.marked.parse;
+      // Both libs or neither: rendering unsanitized markdown because the sanitizer
+      // failed to load would quietly reopen the XSS hole; plain text is the safe floor.
+      var ok = window.marked && window.marked.parse && window.DOMPurify && window.DOMPurify.isSupported;
       nodes.forEach(function (el) {
         if (ok) {
           // If this block is itself inside a link (the person page's entry_card),
@@ -650,7 +663,7 @@
           // marked would render it as visible "\n" text. Turn those back into real
           // newlines so the entry reads as paragraphs, not escape codes.
           var src = el.textContent.replace(/\\r\\n|\\n|\\r/g, '\n');
-          el.innerHTML = window.marked.parse(src, { breaks: true });
+          el.innerHTML = window.sanitizeHtml(window.marked.parse(src, { breaks: true }));
           el.querySelectorAll('a').forEach(function (a) {
             if (inLink) {
               var span = document.createElement('span');
