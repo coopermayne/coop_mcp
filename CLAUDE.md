@@ -269,7 +269,21 @@ There is no exercise-selection or progression logic in the server either.
   or an all-time-low weigh-in — see the `sets` and `body_weight` rows): hand-written
   rather than vendored, loaded on every page because it costs nothing until called, and
   driven by requestAnimationFrame on a canvas rather than a CSS animation for the same
-  Low Power Mode reason as the rep-loop crossfade. `static/vendor/`
+  Low Power Mode reason as the rep-loop crossfade.
+  **THEME is two attributes on `<html>`, and the split is the design.**
+  `data-theme-choice` is what the user PICKED (`system|light|dark`, stored in
+  `localStorage` under `theme-choice`); `data-theme` is what that RESOLVES to
+  right now (`light|dark`) and is what every dark rule keys off — including the
+  map's MutationObserver. The picker is an explicit THREE-way in the nav menu
+  because a two-state toggle cannot store one: a toggle can only say "not the
+  OS", so it has to GUESS whether a tap meant "dark right now" or "dark from now
+  on". Guessing wrong is what left the app sitting white on a Mac that had gone
+  dark months after one harmless tap, with nothing on screen to say why. Two
+  consequences worth not undoing. The segment FILL keys off the choice, not the
+  resolved theme, so System stays visibly selected whichever way the OS is
+  leaning. And the old `theme` key is DROPPED on read rather than migrated —
+  written by that toggle, its value records no intent that can be read back, and
+  a bare `"light"` in it is indistinguishable from a deliberate one. `static/vendor/`
   holds the third-party JS/CSS, self-hosted rather than CDN'd: `marked`, uPlot,
   and `leaflet.min.js`/`.css` (loaded ONLY on a collection's map view). Styles are COMPILED
   Tailwind (`static/tailwind.css`, checked in — no CDN, the app styles itself
