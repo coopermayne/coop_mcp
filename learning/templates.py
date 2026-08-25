@@ -11,6 +11,12 @@ On choosing a mode: `recall` is for a facet with ONE fact in it -- a word and
 its meaning. The moment an answer has several parts, it is a `list`, even where
 those parts read naturally as a single sentence. Prose that holds four facts is
 still four facts, and only a list lets them be marked off one at a time.
+
+On overlap: sibling facets should be separate retrieval paths, not restatements
+-- a cast list next to a narrative facet is scheduled only when it carries
+figures the narrative wouldn't force out (see the CAPTURING rules in the server
+instructions, which own this judgment). These templates propose the axes; the
+model decides per subject which ones deserve scheduling.
 """
 
 from __future__ import annotations

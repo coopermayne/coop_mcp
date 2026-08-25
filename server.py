@@ -839,6 +839,22 @@ Within a facet, reach for 'recall' only when the answer is a single fact. If it
 has several parts, it is a 'list' even when they fit in one sentence: the points
 are what the user gets marked off against, and a sentence holding four of them
 cannot be scored a point at a time.
+
+Facets must be SEPARATE RETRIEVAL PATHS, not restatements. Before adding one,
+ask: would a strong answer to a sibling facet already produce this content? If
+yes, don't schedule it. The usual offender is a cast-of-characters facet next
+to a narrative facet -- a full telling of the story names the cast, so the pair
+double-bills review time and each rehearsal of one quietly pads the other's
+interval off the books. A who's-who card earns scheduling only when it carries
+entities the narrative doesn't force out (the prophet consulted, the king who
+commissioned the task); when it would just re-list the story's own cast, store
+it as scheduled=False background instead -- it then rides along on sibling
+cards as context rather than costing its own reviews. Templates are a starting
+proposal, not a quota: dropping or demoting a proposed facet is normal.
+
+This judgment also runs mid-review: when the user notices a card is a rerun of
+a sibling ("retire this one"), call update_facet(scheduled=False) on the spot
+-- history kept, content demoted to background -- and move to the next card.
 A badly-formed facet stays wrong for as long as it exists, so this is worth care.""")
 if _teacher_auth is not None:
     teacher_mcp.add_middleware(AllowlistMiddleware())
