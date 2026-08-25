@@ -518,11 +518,71 @@ def _maybe_rollover(key: tuple) -> None:
         _CONVERSATIONS.pop(key, None)
     _CONV_DATE[key] = cur
 
+
+# One lock per conversation, held for a whole turn. Telegram already holds a
+# per-chat lock, but the browser path relied on client-side JS not sending while
+# a turn was in flight — two tabs sharing the session cookie hit the same convo
+# key and interleave their appends into an invalid tool_use/tool_result pairing
+# the API then 400s on for the rest of the day. Keyed like _CONVERSATIONS;
+# entries are tiny and per-session, dropped by the same rollover cadence as the
+# transcript they guard (never explicitly — an asyncio.Lock is ~100 bytes).
+_TURN_LOCKS: dict[tuple, asyncio.Lock] = {}
+
+
+def _turn_lock(key: tuple) -> asyncio.Lock:
+    return _TURN_LOCKS.setdefault(key, asyncio.Lock())
+
+
+def _repair_tail(messages: list) -> None:
+    """Heal a transcript a previous turn left mid-hop. If the consumer disconnects
+    (phone locks, user navigates) while a tool is executing, the generator is
+    cancelled between appending the assistant's tool_use turn and appending its
+    tool_results — and the API rejects every subsequent request on that thread
+    ("tool_use without tool_result") until /new or midnight. Before starting a
+    turn, answer any dangling tool_use blocks with synthetic errored results so
+    the thread is valid again; the model sees "interrupted" and moves on."""
+    if not messages:
+        return
+    last = messages[-1]
+    if last.get("role") != "assistant":
+        return
+    content = last.get("content") or []
+    dangling = [b for b in content if _bget(b, "type") == "tool_use"]
+    if not dangling:
+        return
+    messages.append({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": _bget(b, "id"),
+         "content": json.dumps({"error": "interrupted — the user disconnected "
+                                "before this tool call finished"}),
+         "is_error": True}
+        for b in dangling
+    ]})
+
+
+def _strip_images(messages: list) -> None:
+    """Drop image blocks from stored history once a turn has finished with them.
+    A Telegram photo arrives as a base64 block; left in _CONVERSATIONS it rides
+    in on every later turn and hop all day — multi-MB and token-expensive — and
+    it contradicts the bot prompt's "the image is not stored anywhere". The image
+    stays for the turn that carries it (the hops re-send it, which is the point);
+    this runs at turn end, in place."""
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(b, dict) and b.get("type") == "image" for b in content):
+            m["content"] = [
+                {"type": "text", "text": "(photo — handled, no longer attached)"}
+                if isinstance(b, dict) and b.get("type") == "image" else b
+                for b in content
+            ]
+
 # Write tools mutate the DB; everything else is read-only retrieval. Used only to
 # label the tool chips the UI shows, never to gate execution.
 _WRITE_TOOLS = {
-    "add_journal_entry", "update_entry", "save_person", "link_mentions",
-    "merge_people", "delete_record", "journal_delete_entry",
+    "add_journal_entry", "update_entry", "reorder_entries", "save_person",
+    "link_mentions", "merge_people", "update_contact",
+    "delete_record", "journal_delete_entry",
     # Intake, notes and collections are NOT reachable from the browser panel (it is
     # narrowed to CONNECTOR_HIDDEN_TOOLS) — they are here for the Telegram intake and
     # notes bots, which drive the same loop over the other half of the journal
@@ -531,9 +591,9 @@ _WRITE_TOOLS = {
     "notes_save", "notes_update", "notes_delete", "notes_file",
     "collections_save", "collections_delete",
     "log_workout", "update_workout", "update_set", "save_exercise",
-    "update_profile",
+    "update_profile", "set_rotation", "set_hearted",
     "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
-    "finish_workout", "create_exercise",
+    "reorder_plan", "finish_workout", "create_exercise",
 }
 
 
@@ -788,59 +848,67 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
 
     tools, dispatch = _TOOLS[agent], _DISPATCH[agent]
     convo_key = _convo_key(agent, session_id, context)
-    _maybe_rollover(convo_key)  # new Pacific day → drop the stale transcript
-    messages = _CONVERSATIONS.setdefault(convo_key, [])
-    messages.append({"role": "user", "content": user_text})
+    # The whole turn runs under the conversation's lock — a second sender (another
+    # tab, a Telegram retry) queues rather than interleaving the shared transcript.
+    async with _turn_lock(convo_key):
+        _maybe_rollover(convo_key)  # new Pacific day → drop the stale transcript
+        messages = _CONVERSATIONS.setdefault(convo_key, [])
+        _repair_tail(messages)  # heal a previously interrupted turn's dangling tool_use
+        messages.append({"role": "user", "content": user_text})
 
-    try:
-        for _hop in range(MAX_TOOL_HOPS):
-            async with client.messages.stream(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=_system_blocks(agent, context),
-                tools=tools,
-                messages=_stamped(messages),
-            ) as stream:
-                async for event in stream:
-                    if (event.type == "content_block_delta"
-                            and event.delta.type == "text_delta"):
-                        yield {"type": "text", "text": event.delta.text}
-                final = await stream.get_final_message()
+        try:
+            for _hop in range(MAX_TOOL_HOPS):
+                async with client.messages.stream(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system=_system_blocks(agent, context),
+                    tools=tools,
+                    messages=_stamped(messages),
+                ) as stream:
+                    async for event in stream:
+                        if (event.type == "content_block_delta"
+                                and event.delta.type == "text_delta"):
+                            yield {"type": "text", "text": event.delta.text}
+                    final = await stream.get_final_message()
 
-            # Persist the assistant turn verbatim (text + any tool_use blocks).
-            messages.append({"role": "assistant", "content": final.content})
+                # Persist the assistant turn verbatim (text + any tool_use blocks).
+                messages.append({"role": "assistant", "content": final.content})
 
-            tool_uses = [b for b in final.content if b.type == "tool_use"]
-            if final.stop_reason != "tool_use" or not tool_uses:
-                yield {"type": "done"}
-                return
+                tool_uses = [b for b in final.content if b.type == "tool_use"]
+                if final.stop_reason != "tool_use" or not tool_uses:
+                    yield {"type": "done"}
+                    return
 
-            # Execute each requested tool off the event loop (sqlite is sync), emit
-            # a chip, and collect results to feed back in one user turn.
-            tool_results = []
-            for tu in tool_uses:
-                fn = dispatch.get(tu.name)
-                if fn is None:
-                    result, is_err = {"error": f"unknown tool {tu.name}"}, True
-                else:
-                    try:
-                        result = await asyncio.to_thread(fn, **(tu.input or {}))
-                        is_err = isinstance(result, dict) and "error" in result
-                    except Exception as e:  # tool raised — let the model recover
-                        result, is_err = {"error": str(e)}, True
-                yield {"type": "tool", **_tool_chip(tu.name, tu.input, result)}
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": json.dumps(result, default=str),
-                    "is_error": is_err,
-                })
-            messages.append({"role": "user", "content": tool_results})
+                # Execute each requested tool off the event loop (sqlite is sync), emit
+                # a chip, and collect results to feed back in one user turn.
+                tool_results = []
+                for tu in tool_uses:
+                    fn = dispatch.get(tu.name)
+                    if fn is None:
+                        result, is_err = {"error": f"unknown tool {tu.name}"}, True
+                    else:
+                        try:
+                            result = await asyncio.to_thread(fn, **(tu.input or {}))
+                            is_err = isinstance(result, dict) and "error" in result
+                        except Exception as e:  # tool raised — let the model recover
+                            result, is_err = {"error": str(e)}, True
+                    yield {"type": "tool", **_tool_chip(tu.name, tu.input, result)}
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tu.id,
+                        "content": json.dumps(result, default=str),
+                        "is_error": is_err,
+                    })
+                messages.append({"role": "user", "content": tool_results})
 
-        yield {"type": "text", "text": "\n\n_(stopped after too many tool steps.)_"}
-        yield {"type": "done"}
-    except Exception as e:
-        yield {"type": "error", "message": str(e)}
+            yield {"type": "text", "text": "\n\n_(stopped after too many tool steps.)_"}
+            yield {"type": "done"}
+        except Exception as e:
+            yield {"type": "error", "message": str(e)}
+        finally:
+            # Turn over (finished, errored, or cancelled by a disconnect): images
+            # served their purpose this turn — drop them from the stored history.
+            _strip_images(messages)
 
 
 def reset(agent: str, session_id: str, context: dict | None = None) -> None:
