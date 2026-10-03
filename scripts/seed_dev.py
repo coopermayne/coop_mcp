@@ -242,27 +242,25 @@ print(f"drinks logged: {len(DRINKS)}")
 # --------------------------------------------------------------------------- #
 # Workouts — a mix of pushes, pulls, legs, runs, walks across the period.
 
-# Seed exercise catalog briefly so muscles aggregate correctly
+# Seed a handful of exercises so muscles aggregate correctly
 EXERCISES = [
-    # (name, category, [muscles], technique_notes) — muscle labels from the
-    # canonical list in save_exercise's docstring so per-muscle recency lines up.
-    ("Bench Press",       "push",   ["chest", "triceps", "shoulders"],            "horizontal push"),
-    ("Overhead Press",    "push",   ["shoulders", "triceps"],                     "vertical push"),
-    ("Incline DB Press",  "push",   ["chest", "shoulders", "triceps"],            "incline push"),
-    ("Pull Up",           "pull",   ["lats", "biceps", "middle back"],            "vertical pull"),
-    ("Barbell Row",       "pull",   ["lats", "middle back", "biceps"],            "horizontal pull"),
-    ("Deadlift",          "pull",   ["hamstrings", "glutes", "lower back"],       "hinge"),
-    ("Back Squat",        "legs",   ["quadriceps", "glutes"],                          "squat"),
-    ("Romanian Deadlift", "legs",   ["hamstrings", "glutes"],                     "hinge"),
-    ("Walking Lunge",     "legs",   ["quadriceps", "glutes"],                          "unilateral"),
-    ("Running",           "cardio", [],                                            "outdoor run"),
-    ("Walking",           "cardio", [],                                            "outdoor walk"),
+    # (name, category, [muscles]) — canonical muscle labels (see add_exercise's
+    # docstring) so per-muscle recency lines up. Cardio carries no muscles.
+    ("Bench Press",       "strength", ["chest", "triceps", "shoulders"]),
+    ("Overhead Press",    "strength", ["shoulders", "triceps"]),
+    ("Incline DB Press",  "strength", ["chest", "shoulders", "triceps"]),
+    ("Pull Up",           "strength", ["lats", "biceps", "middle back"]),
+    ("Barbell Row",       "strength", ["lats", "middle back", "biceps"]),
+    ("Deadlift",          "strength", ["hamstrings", "glutes", "lower back"]),
+    ("Back Squat",        "strength", ["quadriceps", "glutes"]),
+    ("Romanian Deadlift", "strength", ["hamstrings", "glutes"]),
+    ("Walking Lunge",     "strength", ["quadriceps", "glutes"]),
+    ("Running",           "cardio",   []),
+    ("Walking",           "cardio",   []),
 ]
-# create_exercise is the library's write path (the catalog is closed to the AI's
-# save_exercise, which can only enrich/archive existing rows).
-for name, category, muscles, technique in EXERCISES:
-    server.create_exercise(name=name, category=category, muscles=muscles,
-                           technique_notes=technique)
+for name, category, muscles in EXERCISES:
+    r = server.add_exercise(name=name, category=category, muscles=muscles, new=True)
+    assert "error" not in r, (name, r)
 
 WORKOUTS = [
     # (date, focus, feeling, notes, [(exercise, [{weight, reps, rpe} or {duration_seconds, distance_miles}])])

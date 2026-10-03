@@ -151,9 +151,16 @@ class LoggedSet(TypedDict):
 
 
 class LoggedExercise(TypedDict):
-    """One exercise of a completed session: a catalog name plus the sets performed."""
+    """One exercise of a completed session: its name plus the sets performed. A name
+    the user has never done before is created on the fly — give `muscles` (primary,
+    canonical labels) and optionally `secondary_muscles`, or category "cardio". `new`
+    confirms a name that's close to an existing one really is a different movement."""
     name: str
     sets: NotRequired[list[LoggedSet]]
+    muscles: NotRequired[list[str]]
+    secondary_muscles: NotRequired[list[str]]
+    category: NotRequired[Literal["strength", "cardio"]]
+    new: NotRequired[bool]
 
 
 class PlannedSet(TypedDict):
@@ -167,13 +174,39 @@ class PlannedSet(TypedDict):
 
 class PlannedExercise(TypedDict):
     """One exercise in a plan. Either give an explicit `sets` list, or use the
-    shorthand `set_count` (+ the target_* fields) to expand N identical sets."""
+    shorthand `set_count` (+ the target_* fields) to expand N identical sets. A
+    movement not on file yet is created on the fly from `muscles`/`secondary_muscles`
+    (or category "cardio") — see LoggedExercise."""
     name: str
     sets: NotRequired[list[PlannedSet]]
     set_count: NotRequired[int]
     target_weight_lbs: NotRequired[Optional[float]]
     target_reps: NotRequired[Optional[int]]
     target_rpe: NotRequired[Optional[float]]
+    muscles: NotRequired[list[str]]
+    secondary_muscles: NotRequired[list[str]]
+    category: NotRequired[Literal["strength", "cardio"]]
+    new: NotRequired[bool]
+
+
+class SetResult(TypedDict):
+    """One planned set reported done, for complete_sets. Omitted weight_lbs/reps
+    default to the set's targets; weight_lbs is SIGNED (negative = assisted)."""
+    set_id: int
+    weight_lbs: NotRequired[Optional[float]]
+    reps: NotRequired[Optional[int]]
+    rpe: NotRequired[Optional[float]]
+    note: NotRequired[Optional[str]]
+
+
+class ScaleReading(TypedDict):
+    """One row of the scale app's export, for import_weigh_ins. `stamp` is the
+    export's date-and-time cell copied VERBATIM (it's the reading's identity — see
+    import_weigh_ins); give the weight in pounds or kilograms, whichever the export
+    carries."""
+    stamp: str
+    weight_lbs: NotRequired[Optional[float]]
+    weight_kg: NotRequired[Optional[float]]
 
 
 class CollectionField(TypedDict):
@@ -567,11 +600,24 @@ mcp.add_middleware(HiddenToolsMiddleware())
 _trainer_auth = _build_auth(os.environ.get("TRAINER_PUBLIC_URL"))
 trainer_mcp = FastMCP("trainer", auth=_trainer_auth, instructions="""\
 Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe, plus
-duration/distance for cardio like running and walking) and an exercise catalog
-(technique, cautions, target muscles). The server only stores and computes
-deterministic aggregates (per-muscle recency/volume, cardio minutes/miles) — all
-coaching judgment (next weight, what to program, what to rest, how to cue form) is
-yours.
+duration/distance for cardio like running and walking), the user's own exercises
+(active and archived, with target muscles), and their weigh-ins. The server only
+stores and computes deterministic aggregates (per-muscle recency/volume, cardio
+minutes/miles, personal records) — all coaching judgment (next weight, what to
+program, what to rest, how to cue form) is yours.
+
+THIS CONVERSATION IS THE WHOLE INTERFACE. There is no app screen behind it: the user
+plans, trains, reports and reviews progress entirely by talking to you, often on a
+phone between sets. So:
+  - Show a plan as a compact table — exercise, sets × reps @ weight, target RPE — in
+    the order it'll be done. Mid-session, keep replies short: confirm what was
+    logged, then name the next set ("Next: Incline DB Press, 3×10 @ 50").
+  - set_ids, workout_ids and exercise_ids are yours to track, never the user's: they
+    report "did all three at 135, last one was hard", and you map that onto the
+    pending sets from the last plan return.
+  - Progress questions ("how's my bench going?", "what did I do last week?") are
+    answered from get_exercise_history / get_personal_records / the briefing, as a
+    short table or a sentence with the trend — the numbers, not vibes.
 
 All dates here are Pacific (America/Los_Angeles). get_fitness_briefing returns `now`
 (current Pacific date/time) with `date`/`yesterday`/`tomorrow` precomputed: use those
@@ -579,31 +625,39 @@ EXACT strings for "today"/"yesterday"/"tomorrow" rather than computing or shifti
 dates yourself, and resolve any bare day reference against them before defaulting or
 saving.
 
-Start a training session with get_fitness_briefing to load the profile (injuries,
-split, goals), per-muscle recency, recent sessions (with their notes), and the latest
-bodyweight before recommending work. Recent-session notes are durable context — read
-them so a "left shoulder twinge" last time shapes what you program next.
+Start a training conversation with get_fitness_briefing to load the profile (injuries,
+split, goals, coaching), per-muscle recency, recent sessions (with their notes), the
+week's already-planned sessions, and the latest bodyweight before recommending work.
+Recent-session notes are durable context — read them so a "left shoulder twinge" last
+time shapes what you program next. When the user tells you something like that during
+or after a session, put it in the session's notes (finish_workout / update_workout) so
+the next conversation sees it.
 
 Two ways to record training:
-  - PLAN-AS-YOU-LIFT (the live routine): start_workout_plan lays out today's session as
-    PENDING sets with target weights/reps; the user completes them with complete_set as
-    they go (omitted numbers default to the targets). swap_exercise substitutes a
-    busy/broken movement with its CLOSEST like-for-like peer — same movement pattern and
-    role (compound→compound, isolation→isolation), not just any exercise sharing a
-    muscle — add_to_plan tacks on more, update_set
-    retargets a pending set, and finish_workout closes it out (leftover pending sets are
-    skipped). get_workout_plan returns the current state. Design the routine yourself
-    from the briefing, choosing movements from the
-    user's `rotation` — progress what was easy (low RPE), hold/deload what was hard, and
-    keep staple lifts so the tracked data stays comparable. How BIG a session should be,
-    how much it should vary from the last one, and how the week's sessions divide the
-    rotation up are all the USER'S call, not defaults of yours — they're in the profile's
-    `coaching` (see below).
+  - PLAN-AS-YOU-LIFT (the live routine): start_workout_plan lays out a session as
+    PENDING sets with target weights/reps/RPE; as the user reports sets, record them
+    with complete_sets — one call per report, however many sets it covers (omitted
+    numbers default to the targets). Ask how a set felt if they don't say: RPE is what
+    the next weight is judged from. swap_exercise substitutes a busy/broken movement
+    with its CLOSEST like-for-like peer — same movement pattern and role
+    (compound→compound, isolation→isolation), not just any exercise sharing a muscle —
+    add_to_plan tacks on more, remove_from_plan drops one, update_set retargets a
+    pending set or corrects a logged one, reorder_plan resequences, and finish_workout
+    closes it out (leftover pending sets are skipped). get_workout_plan returns the
+    current state. Design the routine yourself from the briefing, choosing movements
+    from the user's active `exercises` — progress what was easy (low RPE), hold/deload what was
+    hard, and keep staple lifts so the tracked data stays comparable. How BIG a session
+    should be, how much it should vary from the last one, and how the week's sessions
+    divide their exercises up are all the USER'S call, not defaults of yours — they're in
+    the profile's `coaching` (see below).
   - POST-HOC (log what already happened): log_workout records a finished session (or
     appends to one) in a single call — use it when the user just tells you what they
-    did rather than working a plan live.
-Only completed ('done') sets count toward recency, history, and PRs; a planned-but-not-
-yet-done set doesn't, so the briefing stays honest mid-session.
+    did rather than working a plan live. If what they did matches a plan that's still
+    open, complete that plan's sets instead, so the plan doesn't linger as "upcoming".
+Both write paths return `new_prs` when a set beat the user's previous best on that
+movement — say so; it's earned. Only completed ('done') sets count toward recency,
+history, and PRs; a planned-but-not-yet-done set doesn't, so the briefing stays honest
+mid-session.
 
 PLANNING AHEAD: several sessions can be planned at once — a whole week, or the rest of
 one after today's is done — as ONE PLAN PER DAY, each carrying its `planned_date`. Lay a
@@ -613,15 +667,14 @@ COMPLETED work only, so the days you just programmed aren't in it — read the b
 `upcoming` so Wednesday's chest work counts against Friday's. And a plan is INTENT, not
 history: `planned_date` is the day it's meant for, while the day it's recorded under is
 stamped by finish_workout, so a session done a day late lands on the day it was actually
-done. The user sees the week as a list of upcoming sessions on their Training page and
-taps one to work through it, so give every plan a `focus` — it's the only title a row
-has. To move one, update_workout(planned_date=…); to read a specific day,
-get_workout_plan(workout_id=…) from `upcoming`.
+done. When the user shows up to train, the briefing's `upcoming` tells you which plan is
+today's; pull it with get_workout_plan(workout_id=…) and walk them through it. To move a
+session, update_workout(planned_date=…); to scrap one, delete_record(kind="workout").
 
 A session's `focus` (whichever tool writes it) is a SHORT kind-of-day label — a couple
 of words like "Pull + Legs", "Push", "Upper", "Cardio". Never pack the lifts or muscle
-list into it: the session's own exercise rows already say what was done, and the
-webapp renders them directly under the title.
+list into it: it's the title of a session whose exercise rows already say what was done,
+and on a week of plans it's what tells the days apart.
 
 Weight on a lift is SIGNED added/removed load, not total bodyweight: 0 (or null) = plain
 bodyweight, positive = weight added (a +25 weighted pull-up), and NEGATIVE = assistance,
@@ -632,63 +685,42 @@ the user gets stronger. Log negatives as given, program the next target along th
 Don't lean on estimated-1RM for assisted (negative-weight) sets — it isn't physically
 meaningful below bodyweight; judge those by assistance level and RPE instead.
 
-The catalog has three nested layers — a LIBRARY, a hearted SUPERSET, and a ROTATION
-(rotation ⊆ hearted ⊆ library):
-  - LIBRARY: the whole catalog, PRE-LOADED with ~870 public-domain movements from
-    free-exercise-db (via scripts/import_exercises.py), each carrying muscles, equipment,
-    a demo image, and step-by-step technique. It's a reference the user searches/browses
-    at /trainer/library. Almost any movement you mention is already here with full data —
-    look it up with `find_exercises` rather than re-deriving it.
-  - HEARTED SUPERSET (hearted): the user's bench of FAVORITE movements — a curated shortlist
-    bigger than the rotation. It's where the rotation is drawn from: every few months the
-    user swaps some of the rotation out for other hearted lifts. List it with
-    find_exercises(hearted_only=True); add/remove with set_hearted. Heart a movement the user
-    likes even when it's not currently programmed, so it's on the bench for the next swap.
-  - ROTATION: the subset (in_rotation) they're ACTIVELY training, kept small enough that
-    progress on each lift is easy to track. HOW small is the user's business and theirs
-    alone — read the size off `rotation` and program the pool you're given; never suggest
-    it's too big or too small, and never offer to prune it. It is hand-curated because
-    that's how the user controls their progression, so treat it as fixed unless they
-    explicitly say to change it. get_fitness_briefing returns it as
-    `rotation`, and it is the ONLY pool you PROGRAM ROUTINES FROM. Build start_workout_plan /
-    log_workout sessions out of rotation movements. NEVER add a movement to the rotation on
-    your own initiative. If a session seems to call for something NOT in the rotation, don't
-    slip it in and don't quietly set_rotation — name the gap to the user, suggest the movement,
-    and only call set_rotation AFTER they explicitly confirm they want it in the rotation (a
-    vague "sounds good" about the workout is NOT permission to grow the rotation — ask
-    plainly). Prefer working with what's already there; if you must propose an addition, pull
-    from the hearted superset first (surface candidates from the wider library with
-    find_exercises(muscle=…)). Adding to the rotation hearts it too. Logging a movement the user
-    actually did hearts it automatically (onto the favorites bench) but does NOT add it to the
-    rotation — the rotation only ever grows on an explicit set_rotation request or via the
-    website, so it stays exactly the size the user chose.
+EXERCISES: there is no library. The user's exercises are the movements they DO —
+`exercises` in the briefing (ACTIVE: the only pool you program from) — plus an ARCHIVE
+of what they've done and stopped, each with a `note` that usually says why
+(list_exercises). Nothing is pre-loaded and no technique data is stored: form cues,
+common mistakes and cautions come from YOUR knowledge, in conversation, when they ask
+(or when a new movement deserves a word), tuned to the profile's injuries.
+  - The active set is theirs to curate. Don't slip new movements into a plan on your
+    own: if a session calls for something they don't do, name the gap and suggest it —
+    and before suggesting, read the archive, so you don't pitch a lift they already
+    dropped for shoulder pain (or so you can say "you used to do X — want it back?").
+  - A NEW movement they've agreed to is created on the fly: give it in the plan/log
+    with its `muscles` (primary) and `secondary_muscles`, in these canonical labels:
+    abdominals, abductors, adductors, biceps, calves, chest, forearms, glutes,
+    hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
+    triceps (cardio: category "cardio", no muscles). Use the name the user uses.
+    add_exercise does the same thing ahead of time. A name close to an existing one
+    comes back `unmatched` with candidates — it's usually the same lift; use the
+    existing name.
+  - "I'm done with X" / "drop X" → archive_exercise with their reason as the `note`.
+    "Bring back X" → archive_exercise(archived=False). Logging an archived lift brings
+    it back on its own (it's being done again). Nothing is ever deleted; history and
+    PRs survive archiving.
+  - update_exercise fixes a name, the muscles, or a note.
 
-The catalog is CLOSED to you: you NEVER invent an exercise — the ~870-movement library
-plus anything the user adds is the whole world, so program only names it already holds.
-Names you pass to the logging/planning tools resolve fuzzily, so a near-spelling still
-lands; but a name with no real match is SKIPPED and returned under `unmatched` with its
-closest `candidates` — re-issue it under one of those, never as a new exercise. New
-movements enter the catalog ONLY through the website's manual add form, so if the user
-wants one that genuinely isn't there, point them to /trainer/library rather than creating
-it. What you CAN do with save_exercise is keep an EXISTING entry coached — fill in
-technique_notes (key cues), common_mistakes, cautions (especially the user's left-shoulder
-limits), equipment, and the muscle EMPHASIS tiers (muscles = primary, secondary_muscles,
-tertiary_muscles — e.g. a Kettlebell Thruster is shoulders primary, quadriceps/glutes
-secondary, triceps tertiary) so the /trainer page doesn't show "No saved technique notes
-yet". Use the canonical muscle labels (they mirror the library's vocabulary): abdominals,
-abductors, adductors, biceps, calves, chest, forearms, glutes, hamstrings, lats, lower
-back, middle back, neck, quadriceps, shoulders, traps, triceps. The user can also just ask
-you to add a movement to their rotation ("add Bulgarian split squats"); that's set_rotation
-(plus save_exercise enrichment if the entry is bare). "Add it to my favorites" / "remember
-this one" without committing it to the active rotation is set_hearted.
+WEIGH-INS come from a connected scale. When the user attaches the scale app's export,
+read it and pass every row to import_weigh_ins (it skips what's already on file). A
+number they merely mention is not a reading — don't log it; the briefing's `bodyweight`
+is the trend to coach from.
 
-The profile's `coaching` key is the USER'S OWN standing instructions to you, written
-by them on the trainer page and delivered with every get_fitness_briefing: how big a
-session should be, what to nudge them about, what tone to take, what to leave alone.
-Read it as instruction, not background — it is where their preferences about HOW you
-coach live, and it outranks any habit of yours. What it CANNOT do is loosen the rules
-above: the rotation stays theirs to grow, the catalog stays closed. It's also theirs to
-edit, not yours — don't rewrite it with update_profile unless they ask you to.""")
+The profile's `coaching` key is the USER'S OWN standing instructions to you, delivered
+with every get_fitness_briefing: how big a session should be, what to nudge them about,
+what tone to take, what to leave alone. Read it as instruction, not background — it is
+where their preferences about HOW you coach live, and it outranks any habit of yours.
+What it CANNOT do is loosen the rules above: the active set stays theirs to curate. It's theirs to edit, and they edit it by
+telling you — so change it with update_profile only when they ask you to in so many
+words, never from a passing remark.""")
 if _trainer_auth is not None:
     trainer_mcp.add_middleware(AllowlistMiddleware())
 
@@ -1022,16 +1054,14 @@ CREATE TABLE IF NOT EXISTS nutrition (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_nutrition_date ON nutrition(food_date);
 
 -- ----------------------------------------------------------------------- --
--- Personal trainer. `exercises` is a catalog of stable exercise ENTITIES
--- (like people): technique lives here so the model can coach form. Muscles
--- are normalized into a child table so "what's rested vs worked" is a plain
--- SQL aggregate, not an LLM guess. Its columns mirror the free-exercise-db
--- dataset (slug/force/level/mechanic/equipment/category + primary/secondary
--- muscles + instructions) so the public-domain LIBRARY imports 1:1; our own
--- coaching layer (common_mistakes, cautions, video_link) sits on top. The
--- `in_rotation` flag marks the small subset the trainer actually programs from;
--- `hearted` is the wider favorites SUPERSET it's drawn from (rotation ⊆ hearted),
--- so the user can swap the rotation every few months from a pool they curate.
+-- Personal trainer. `exercises` holds the user's OWN movements — stable entities
+-- (like people), born on the fly the first time one is planned or logged. `archived`
+-- splits them into the ACTIVE set (what the trainer programs from) and the archive
+-- (what they've stopped, `note` saying why). Muscles are normalized into a child table
+-- so "what's rested vs worked" is a plain SQL aggregate, not an LLM guess. The
+-- slug/force/level/mechanic/equipment/technique/cautions/image columns and the
+-- in_rotation/hearted flags are DORMANT leftovers of the retired pre-loaded library
+-- (see _prune_exercise_library); nothing writes the reference columns any more.
 -- `workouts`/`sets` are the two-level log (session + per-set
 -- weight/reps/rpe), mirroring entries/mentions. The server stores and
 -- retrieves; progression judgment happens in conversation.
@@ -1617,6 +1647,12 @@ def init_db() -> None:
                 "INSERT OR REPLACE INTO settings(key, value) VALUES "
                 "('workout_focus_shortened', 'true')"
             )
+        # The exercise LIBRARY is gone: the catalog is now just the movements the user
+        # does (active) and has done (archived). `note` is the one new column — why a
+        # lift was archived, or what they thought of it.
+        if "note" not in xcols:
+            conn.execute("ALTER TABLE exercises ADD COLUMN note TEXT")
+        _prune_exercise_library(conn)
     # The learning tables (subjects/facets/attempts/learn_fts) keep their own
     # idempotent schema + migrations in learning/db.py — they arrived as a
     # package and their migration logic (the attempts-table rebuild) stays with
@@ -1626,6 +1662,36 @@ def init_db() -> None:
     from learning.db import session as _learn_session
     with _learn_session():
         pass
+
+
+def _prune_exercise_library(conn: sqlite3.Connection) -> None:
+    """One-time teardown of the ~870-movement pre-loaded library. Flag-guarded like the
+    fold-ins above, because it DELETES: after it, a new exercise is born on the fly and
+    must never be pruned by a later boot.
+
+    What survives, and as what: the rotation becomes the ACTIVE set; anything with a
+    logged or planned set, or that was hearted, is kept ARCHIVED — the record of what
+    the user has tried, which is exactly what the model reads before suggesting
+    something new. Everything else (library rows nobody ever touched) is deleted, its
+    muscle and AKA rows cascading with it. The reference-data columns (technique,
+    cautions, images, force/level/mechanic, equipment, slug) are nulled: tips are the
+    model's to give in conversation, not stored data. in_rotation/hearted stay as
+    dormant columns, mirrored from `archived` so a legacy reader sees the same truth."""
+    if conn.execute(
+        "SELECT 1 FROM settings WHERE key='exercise_library_pruned'"
+    ).fetchone():
+        return
+    used = "EXISTS (SELECT 1 FROM sets s WHERE s.exercise_id = exercises.id)"
+    conn.execute(f"DELETE FROM exercises WHERE in_rotation=0 AND hearted=0 AND NOT {used}")
+    conn.execute("UPDATE exercises SET archived = CASE WHEN in_rotation=1 AND archived=0 "
+                 "THEN 0 ELSE 1 END")
+    conn.execute(
+        """UPDATE exercises SET slug=NULL, force=NULL, level=NULL, mechanic=NULL,
+           equipment=NULL, technique_notes=NULL, common_mistakes=NULL, cautions=NULL,
+           video_link=NULL, image_link=NULL, image_link_end=NULL,
+           in_rotation = 1 - archived, hearted = 1 - archived""")
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) "
+                 "VALUES ('exercise_library_pruned', 'true')")
 
 
 # All user-facing dates in this log are Pacific. The user lives and logs on
@@ -2047,8 +2113,8 @@ def link_mentions(links: list[MentionLink]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Website-only mention resolution (NOT MCP tools — like create_exercise /
-# set_archived, these are reachable only by the authenticated user through the
+# Website-only mention resolution (NOT MCP tools — like set_nutrient_targets /
+# import_bodyweight, these are reachable only by the authenticated user through the
 # webapp, never by the journal connector). Claude resolves mentions in chat via
 # link_mentions / save_person; these back the browse pages' inline resolver so the
 # user can also pin people straight from the pending queue or an entry.
@@ -2890,6 +2956,7 @@ def _days_since(d: Optional[str], ref: Optional[str] = None) -> Optional[int]:
 # resolution tries exact, then a spacing/punctuation-insensitive match, then a
 # high-confidence fuzzy/phonetic match — the same shape as person-alias matching.
 EX_MATCH_FLOOR = 0.6   # below this it isn't even offered as a candidate
+ADD_NEAR_DUP = 0.88    # add_exercise asks "did you mean?" at/above this
 EX_CONFIDENT = 0.97    # at/above this (with a clear lead) we resolve silently — set high
                        # on purpose: a one-letter swap on a short name ('Hack Squat' vs
                        # 'Back Squat') scores ~0.93, and those are DIFFERENT lifts, so
@@ -2951,16 +3018,13 @@ def _alias_map(conn: sqlite3.Connection) -> dict[int, list[str]]:
 
 
 def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> list[dict]:
-    """Rank the catalog against a spoken name, best first. Returns
-    [{exercise_id, name, score, in_rotation, primary}] with score >= EX_MATCH_FLOOR, so a
-    caller that can't confidently resolve a name can hand the user the closest real
-    entries instead of guessing. Each exercise is scored against its canonical name AND
-    its AKAs (best surface form wins), so searching 'rdl' or 'bench' surfaces the right
-    lift. In-rotation movements are listed first among equals. Archived (soft-deleted)
-    movements are never surfaced — they're invisible to discovery."""
-    rows = conn.execute(
-        "SELECT id, name, in_rotation FROM exercises WHERE archived=0 ORDER BY name"
-    ).fetchall()
+    """Rank the user's exercises against a spoken name, best first. Returns
+    [{exercise_id, name, score, archived, primary}] with score >= EX_MATCH_FLOOR, so a
+    caller that can't confidently resolve a name can hand back the closest real entries
+    instead of guessing or creating a near-duplicate. Scored against the canonical name
+    AND any AKAs. Archived movements are included (they're the user's history, and the
+    small catalog makes hiding them pointless); active ones list first among equals."""
+    rows = conn.execute("SELECT id, name, archived FROM exercises ORDER BY name").fetchall()
     amap = _alias_map(conn)
 
     def best(r) -> float:
@@ -2968,52 +3032,115 @@ def _match_exercises(conn: sqlite3.Connection, name: str, limit: int = 5) -> lis
         return max(_score_exercise_name(name, f) for f in forms)
 
     scored = sorted(
-        ((best(r), int(r["in_rotation"]), r) for r in rows),
+        ((best(r), 1 - int(r["archived"]), r) for r in rows),
         key=lambda t: (t[0], t[1]), reverse=True,
     )
     return [{"exercise_id": r["id"], "name": r["name"], "score": sc,
-             "in_rotation": bool(r["in_rotation"]),
+             "archived": bool(r["archived"]),
              "primary": _muscles_for(conn, r["id"])["primary"]}
-            for sc, _rot, r in scored[:limit] if sc >= EX_MATCH_FLOOR]
+            for sc, _act, r in scored[:limit] if sc >= EX_MATCH_FLOOR]
 
 
-def _resolve_exercise(conn: sqlite3.Connection, name: str, include_archived: bool = False):
-    """Resolve a spoken name to ONE catalog row, or None. Tries exact on the canonical
-    name (case-insensitive), then an exact AKA match (so 'RDL' lands on Romanian
-    Deadlift), then a punctuation/spacing- or phonetics-tolerant high-confidence fuzzy
-    match (so 'pullup' finds 'Pull Up' and a near-spelling lands on the right row instead
-    of spawning a duplicate). A merely plausible name — below the confident bar, or with a
-    near-tie runner-up — returns None, leaving the caller to surface `_match_exercises`
-    candidates rather than silently pick the wrong lift. An AKA shared by more than one
-    exercise is ambiguous, so it falls through to fuzzy/candidates rather than guessing.
-
-    Archived (soft-deleted) movements stay invisible to the model: the default skips them,
-    so logging/enriching/swapping by name can't reach an archived lift. The website's add
-    form passes include_archived=True so re-adding a name that's archived re-uses (and
-    restores) that row instead of colliding on the UNIQUE name."""
+def _resolve_exercise(conn: sqlite3.Connection, name: str):
+    """Resolve a spoken name to ONE of the user's exercises (active or archived), or
+    None. Tries exact on the name (case-insensitive), then an exact AKA, then a
+    high-confidence fuzzy match with a clear lead. A merely plausible name returns None,
+    leaving the caller to surface `_match_exercises` candidates — or, when nothing is
+    close, to create the movement on the fly (_resolve_or_create)."""
     name = (name or "").strip()
     if not name:
         return None
     row = conn.execute(
-        "SELECT * FROM exercises WHERE lower(name)=lower(?)"
-        + ("" if include_archived else " AND archived=0"),
-        (name,),
+        "SELECT * FROM exercises WHERE lower(name)=lower(?)", (name,),
     ).fetchone()
     if row:
         return row
     hits = conn.execute(
         """SELECT e.* FROM exercises e
            JOIN exercise_aliases a ON a.exercise_id = e.id
-           WHERE a.alias = lower(?)"""
-        + ("" if include_archived else " AND e.archived=0"),
+           WHERE a.alias = lower(?)""",
         (name,),
     ).fetchall()
     if len(hits) == 1:
         return hits[0]
+    # Shorthand: every word of a 2+-word name appears in exactly ONE exercise's name
+    # ("bench press" → Barbell Bench Press). Two hits (Barbell AND Dumbbell Bench Press)
+    # is ambiguous and falls through to candidates.
+    words = re.findall(r"[a-z0-9]+", name.lower())
+    if len(words) >= 2:
+        subset = [r for r in conn.execute("SELECT * FROM exercises").fetchall()
+                  if set(words) <= set(re.findall(r"[a-z0-9]+", r["name"].lower()))]
+        if len(subset) == 1:
+            return subset[0]
     m = _match_exercises(conn, name, limit=2)
     if m and m[0]["score"] >= EX_CONFIDENT and (len(m) == 1 or m[0]["score"] - m[1]["score"] >= 0.06):
         return conn.execute("SELECT * FROM exercises WHERE id=?", (m[0]["exercise_id"],)).fetchone()
     return None
+
+
+def _bad_muscles(*tiers: Optional[list[str]]) -> Optional[str]:
+    bad = [m for t in tiers for m in (t or []) if m.strip().lower() not in MUSCLES]
+    return f"unknown muscle label(s) {bad}; use one of {MUSCLES}" if bad else None
+
+
+def _create_exercise(conn: sqlite3.Connection, name: str, muscles: Optional[list[str]],
+                     secondary_muscles: Optional[list[str]] = None,
+                     category: Optional[str] = None, note: Optional[str] = None) -> int:
+    """Insert a new ACTIVE exercise + its muscle links. Callers validate first."""
+    eid = conn.execute(
+        "INSERT INTO exercises(name, category, note, in_rotation, hearted, archived, "
+        "created_at) VALUES (?,?,?,1,1,0,?)",
+        (name.strip(), (category or "strength").lower(), note, now()),
+    ).lastrowid
+    _set_muscles(conn, eid, muscles or [], secondary_muscles or [])
+    return eid
+
+
+def _set_archived(conn: sqlite3.Connection, eid: int, archived: bool) -> None:
+    a = int(bool(archived))
+    # in_rotation/hearted are dormant mirrors of `archived` (see _prune_exercise_library).
+    conn.execute("UPDATE exercises SET archived=?, in_rotation=?, hearted=? WHERE id=?",
+                 (a, 1 - a, 1 - a, eid))
+
+
+def _resolve_or_create(conn: sqlite3.Connection, spec: dict, events: dict):
+    """The one path every logging/planning tool resolves an exercise name through.
+    Known name → that row (an ARCHIVED one is brought back to active, since it's being
+    done again — noted under events["reactivated"]). Unknown name with nothing close and
+    `muscles` given (or category 'cardio') → created on the fly, noted under
+    events["created"]. Otherwise → None, with an entry under events["unmatched"]: either
+    near-duplicate `candidates` to pick from, or a request for the muscles a new
+    movement needs (recency can't count a lift with no muscles)."""
+    name = (spec.get("name") or "").strip()
+    if not name:
+        return None
+    row = _resolve_exercise(conn, name)
+    if row:
+        if row["archived"]:
+            _set_archived(conn, row["id"], False)
+            events.setdefault("reactivated", []).append(row["name"])
+            row = conn.execute("SELECT * FROM exercises WHERE id=?", (row["id"],)).fetchone()
+        return row
+    near = [c for c in _match_exercises(conn, name) if c["score"] >= ADD_NEAR_DUP]
+    if near and not spec.get("new"):
+        events.setdefault("unmatched", []).append(
+            {"name": name, "candidates": near,
+             "fix": "re-send under one of these names, or with \"new\": true if it's "
+                    "genuinely a different movement"})
+        return None
+    muscles, secondary = spec.get("muscles"), spec.get("secondary_muscles")
+    cardio = (spec.get("category") or "").lower() == "cardio"
+    if not muscles and not cardio:
+        events.setdefault("unmatched", []).append(
+            {"name": name, "fix": "new exercise — re-send with `muscles` (primary) and "
+                                  "optionally `secondary_muscles`, or category 'cardio'"})
+        return None
+    if reason := _bad_muscles(muscles, secondary):
+        events.setdefault("unmatched", []).append({"name": name, "fix": reason})
+        return None
+    eid = _create_exercise(conn, name, muscles, secondary, spec.get("category"))
+    events.setdefault("created", []).append(name)
+    return conn.execute("SELECT * FROM exercises WHERE id=?", (eid,)).fetchone()
 
 
 def _muscles_for(conn: sqlite3.Connection, exercise_id: int) -> dict:
@@ -3056,40 +3183,6 @@ def _set_muscles(conn: sqlite3.Connection, exercise_id: int,
                 )
 
 
-def _aliases_for(conn: sqlite3.Connection, exercise_id: int) -> list[str]:
-    """The exercise's AKAs (common alternative names), sorted, lowercased as stored."""
-    return [r["alias"] for r in conn.execute(
-        "SELECT alias FROM exercise_aliases WHERE exercise_id=? ORDER BY alias",
-        (exercise_id,),
-    )]
-
-
-def _set_aliases(conn: sqlite3.Connection, exercise_id: int,
-                 aliases: Optional[list[str]], *, replace: bool = True) -> None:
-    """Write an exercise's AKAs. No-op when `aliases` is None (leave them untouched).
-    With replace=True (the default) the whole set is rewritten; replace=False merges the
-    new ones onto whatever's there (the seed/import path, so a re-run never clobbers an
-    AKA the user added by hand). Blanks and any form equal to the canonical name are
-    dropped, everything is lowercased+deduped, so search treats them uniformly."""
-    if aliases is None:
-        return
-    canon = conn.execute(
-        "SELECT lower(name) AS n FROM exercises WHERE id=?", (exercise_id,)
-    ).fetchone()
-    canon_name = canon["n"] if canon else ""
-    if replace:
-        conn.execute("DELETE FROM exercise_aliases WHERE exercise_id=?", (exercise_id,))
-    seen: set[str] = set()
-    for a in aliases:
-        a = (a or "").strip().lower()
-        if a and a != canon_name and a not in seen:
-            seen.add(a)
-            conn.execute(
-                "INSERT OR IGNORE INTO exercise_aliases(exercise_id, alias) VALUES (?,?)",
-                (exercise_id, a),
-            )
-
-
 def _exercise_brief(conn: sqlite3.Connection, r) -> dict:
     return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
             "equipment": r["equipment"], "muscles": _muscles_for(conn, r["id"])}
@@ -3108,7 +3201,7 @@ def _exercise_brief(conn: sqlite3.Connection, r) -> dict:
 # when they clear the box, so it should hold a shape they can fill rather than
 # figures that quietly contradict the ones they'd just deleted.
 DEFAULT_COACHING = (
-    "Think in weeks, not single sessions: divide my rotation into a few routines so "
+    "Think in weeks, not single sessions: divide my exercises into a few routines so "
     "each one works different muscle groups and every group gets rest before it "
     "comes round again. The split is yours to propose — tell me what it is and why, "
     "and save it to my profile's `split` once we agree, so the next conversation "
@@ -3116,11 +3209,10 @@ DEFAULT_COACHING = (
     "Each session should be substantial: 2-4 sets per exercise, more on compounds "
     "and fewer on isolation. Say what you're aiming for before you build it.\n"
     "Across any week, no muscle group should go untrained.\n"
-    "Weigh-ins are a MORNING habit and they log THEMSELVES — a connected scale "
-    "records them and I upload its export on the weigh-in page. You cannot write "
-    "one and I am not typing one in, so never offer to log a number I mention; "
-    "read the trend, and if the readings have gone quiet for a stretch (the export "
-    "is overdue) say so once and move on."
+    "Weigh-ins are a MORNING habit and a connected scale records them; every so "
+    "often I attach its export here for you to import. Never offer to log a number "
+    "I mention; read the trend, and if the readings have gone quiet for a stretch "
+    "(an export is overdue) say so once and move on."
 )
 
 
@@ -3640,7 +3732,7 @@ def update_eating_profile(profile: dict) -> dict:
 def set_nutrient_targets(targets: dict, note: Optional[str] = None) -> dict:
     """Set the daily nutrient targets, and the note that explains them, from the
     WEBSITE — the /food page's Targets popover. A NON-tool, website-only path like set_collection_display and
-    set_archived: never a FastMCP tool, so no connector can reach it.
+    import_bodyweight: never a FastMCP tool, so no connector can reach it.
 
     It writes the SAME place update_eating_profile does (settings →
     `eating_profile` → `targets`), because one set of goals feeding both the rings
@@ -4100,7 +4192,7 @@ def set_collection_display(name: str, view: Optional[str] = None,
                            sort_by: Optional[str] = None,
                            sort_dir: Optional[str] = None) -> dict:
     """Set how the webapp renders one collection — the collection page's Display
-    popover. A NON-tool, website-only path (like set_archived/create_exercise):
+    popover. A NON-tool, website-only path (like set_nutrient_targets/import_bodyweight):
     the model proposes a collection's FIELDS, but what actually shows on the page
     is the USER's call, so every preference here is written only from the UI and
     never surfaces in tool returns.
@@ -4891,381 +4983,169 @@ def get_item(item_id: int) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Trainer: exercise catalog
+# Trainer: the user's exercises
+#
+# There is no library. The catalog is the movements the user DOES (active) and has
+# DONE (archived) — nothing pre-loaded, no technique/cautions/image reference data
+# (the model coaches form from its own knowledge, in conversation). A new movement is
+# born on the fly the first time it's planned or logged (_resolve_or_create), or
+# explicitly with add_exercise. Archiving is how a lift leaves the program while
+# staying on record — with a `note` saying why, so the model knows what's been tried.
 # --------------------------------------------------------------------------- #
 
-def _upsert_exercise(*, name, exercise_id, category, equipment, muscles,
-                     secondary_muscles, tertiary_muscles, technique_notes,
-                     common_mistakes, cautions, video_link, image_link, image_link_end,
-                     slug, force, level, mechanic, in_rotation, hearted=None, aliases=None,
-                     allow_create: bool) -> dict:
-    """Shared worker behind save_exercise (enrich-only, allow_create=False) and
-    create_exercise (the website's add form, allow_create=True). New rows are born ONLY
-    when allow_create is set, which the model-facing tool never passes — that's what keeps
-    the catalog growable by the user's hand alone."""
-    if in_rotation is not None:
-        in_rotation = int(bool(in_rotation))
-    if hearted is not None:
-        hearted = int(bool(hearted))
-    # rotation ⊆ hearted: putting a lift in the rotation pulls it into the superset too.
-    if in_rotation:
-        hearted = 1
-    with db() as conn:
-        if exercise_id is not None:
-            row = conn.execute("SELECT id FROM exercises WHERE id=?", (exercise_id,)).fetchone()
-            if not row:
-                return {"error": f"no exercise with id {exercise_id}"}
-        elif name:
-            # The create path (allow_create) considers archived rows so re-adding a
-            # movement reuses & restores it rather than colliding on the UNIQUE name.
-            row = _resolve_exercise(conn, name, include_archived=allow_create)
-        else:
-            return {"error": "pass name or exercise_id"}
-        # Writable scalar columns (everything but name/created_at and the muscle tiers).
-        fields = {"slug": slug, "category": category, "force": force, "level": level,
-                  "mechanic": mechanic, "equipment": equipment,
-                  "technique_notes": technique_notes, "common_mistakes": common_mistakes,
-                  "cautions": cautions, "video_link": video_link, "image_link": image_link,
-                  "image_link_end": image_link_end, "in_rotation": in_rotation,
-                  "hearted": hearted}
-        sets_ = {k: v for k, v in fields.items() if v is not None}
-        if row:
-            eid = row["id"]
-            created = False
-            # Re-adding (via the website's add form) a movement that was archived brings
-            # it back into the library along with whatever fields the add supplies.
-            if allow_create and "archived" in row.keys() and row["archived"]:
-                sets_["archived"] = 0
-            if sets_:
-                cols = ", ".join(f"{k}=?" for k in sets_)
-                conn.execute(f"UPDATE exercises SET {cols} WHERE id=?", (*sets_.values(), eid))
-        elif allow_create:
-            cols = ["name", *sets_, "created_at"]
-            vals = [name.strip(), *sets_.values(), now()]
-            ph = ", ".join("?" for _ in cols)
-            eid = conn.execute(
-                f"INSERT INTO exercises({', '.join(cols)}) VALUES ({ph})", vals,
-            ).lastrowid
-            created = True
-        else:
-            # Closed to the assistant: it can't conjure a new exercise. Hand back the
-            # closest real entries so it programs from those (or asks the user to add it).
-            return {"error": f"{name!r} isn't in the library — add it from the library "
-                             "page first (the catalog is closed to the assistant)",
-                    "candidates": _match_exercises(conn, name or "")}
-        _set_muscles(conn, eid, muscles, secondary_muscles, tertiary_muscles)
-        _set_aliases(conn, eid, aliases)
-        out_name = conn.execute("SELECT name FROM exercises WHERE id=?", (eid,)).fetchone()["name"]
-    if created:
-        return {"exercise_id": eid, "name": out_name, "created": True}
-    muscles_changed = (muscles is not None or secondary_muscles is not None
-                       or tertiary_muscles is not None)
-    return {"exercise_id": eid, "name": out_name, "created": False,
-            "updated": list(sets_) + (["muscles"] if muscles_changed else [])
-                       + (["aka"] if aliases is not None else [])}
-
-
-@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
-def save_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
-                  category: Optional[str] = None, equipment: Optional[str] = None,
-                  muscles: Optional[list[str]] = None,
-                  secondary_muscles: Optional[list[str]] = None,
-                  tertiary_muscles: Optional[list[str]] = None,
-                  technique_notes: Optional[str] = None,
-                  common_mistakes: Optional[str] = None,
-                  cautions: Optional[str] = None,
-                  video_link: Optional[str] = None,
-                  image_link: Optional[str] = None,
-                  image_link_end: Optional[str] = None,
-                  slug: Optional[str] = None,
-                  force: Optional[str] = None,
-                  level: Optional[str] = None,
-                  mechanic: Optional[str] = None,
-                  aliases: Optional[list[str]] = None,
-                  in_rotation: Optional[bool] = None,
-                  hearted: Optional[bool] = None) -> dict:
-    """ENRICH an exercise already in the LIBRARY (browsable at /trainer/library), or set
-    its rotation / hearted flag. The catalog is CLOSED to you: you CANNOT create exercises — the
-    library is pre-loaded from free-exercise-db, and any new movement is added by the user
-    on the website's add form, never the chat. A `name` that isn't on file comes back as
-    an error with `candidates` (the closest real entries); program from those or ask the
-    user to add the movement on the library page.
-
-    Target an existing entry by `exercise_id` or `name` (resolved fuzzily, so a near-
-    spelling lands on the right row) and pass the fields to update — `technique_notes`
-    (how to do it), `common_mistakes`, `cautions` (injury caveats, e.g. the user's left-
-    shoulder limits), `equipment`, `category`, the dataset descriptors `force`
-    (push/pull/static), `level`, `mechanic` (compound/isolation), and the muscle tiers.
-    Only non-null fields are written — this is how you keep /trainer from showing "No
-    saved technique notes yet". Pass `in_rotation=True` to add it to the (small) programming
-    pool, or `hearted=True` to add it to the wider favorites SUPERSET the rotation is drawn
-    from — rotation IMPLIES hearted, so in_rotation=True hearts it too. Only set
-    `in_rotation=True` on the user's EXPLICIT request to grow their rotation — never bundle it
-    into a routine enrichment, since the user keeps that pool small to control progression.
-    Prefer the dedicated `set_rotation` / `set_hearted` tools; logging a movement hearts it
-    for you (onto the favorites bench) but never adds it to the rotation.
-
-    MUSCLES come in three EMPHASIS tiers — `muscles` (primary: what the lift is for),
-    `secondary_muscles` (real assistance), and `tertiary_muscles` (lightly involved) —
-    so "how hard each muscle is worked" is captured, e.g. a Kettlebell Thruster is
-    muscles=["shoulders"], secondary_muscles=["quadriceps","glutes"],
-    tertiary_muscles=["triceps"]. Passing ANY tier REPLACES the whole mapping (a muscle
-    listed in two tiers lands in the higher one), so send every tier you want kept. Use
-    the canonical muscle labels so recency lines up (they mirror the imported library's
-    vocabulary): abdominals, abductors, adductors, biceps, calves, chest, forearms,
-    glutes, hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
-    triceps. Returns the exercise_id and the fields updated.
-
-    AKAs — pass `aliases` (a list of common alternative names this movement is searched or
-    spoken by, e.g. ["rdl","stiff leg deadlift"] for a Romanian Deadlift) to make those
-    surface the exercise in search and resolution. Lowercased on store; passing a list
-    REPLACES the existing AKAs (send every one you want kept), and the canonical name is
-    never stored as its own AKA. AKAs never create a new row — the catalog stays closed."""
-    return _upsert_exercise(
-        name=name, exercise_id=exercise_id, category=category, equipment=equipment,
-        muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
-        technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
-        video_link=video_link, image_link=image_link, image_link_end=image_link_end,
-        slug=slug, force=force, level=level,
-        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, hearted=hearted,
-        allow_create=False)
-
-
-def create_exercise(name: str, category: Optional[str] = None, equipment: Optional[str] = None,
-                    muscles: Optional[list[str]] = None,
-                    secondary_muscles: Optional[list[str]] = None,
-                    tertiary_muscles: Optional[list[str]] = None,
-                    technique_notes: Optional[str] = None,
-                    common_mistakes: Optional[str] = None,
-                    cautions: Optional[str] = None,
-                    video_link: Optional[str] = None,
-                    image_link: Optional[str] = None,
-                    image_link_end: Optional[str] = None,
-                    slug: Optional[str] = None,
-                    force: Optional[str] = None,
-                    level: Optional[str] = None,
-                    mechanic: Optional[str] = None,
-                    aliases: Optional[list[str]] = None,
-                    in_rotation: Optional[bool] = None,
-                    hearted: Optional[bool] = None) -> dict:
-    """Add a new exercise to the library — the trusted, NON-tool write path: the website's
-    manual add form and the bulk importer (scripts/import_exercises.py) are the only
-    callers, so the assistant (whose save_exercise can't create) never grows the catalog.
-    A name already on file is updated rather than duplicated. `aliases` sets its AKAs
-    (common alternative names — see save_exercise). `in_rotation`/`hearted` are left
-    untouched by default (None) — the import keeps new library entries out of both pools,
-    while the add panel passes hearted=True so a movement the user deliberately adds lands
-    in their favorites SUPERSET (ready to promote into the small rotation when they curate
-    it). rotation IMPLIES hearted. Returns like save_exercise."""
-    return _upsert_exercise(
-        name=name, exercise_id=None, category=category, equipment=equipment,
-        muscles=muscles, secondary_muscles=secondary_muscles, tertiary_muscles=tertiary_muscles,
-        technique_notes=technique_notes, common_mistakes=common_mistakes, cautions=cautions,
-        video_link=video_link, image_link=image_link, image_link_end=image_link_end,
-        slug=slug, force=force, level=level,
-        mechanic=mechanic, aliases=aliases, in_rotation=in_rotation, hearted=hearted,
-        allow_create=True)
-
-
-def set_archived(exercise_id: int, archived: bool = True) -> dict:
-    """Archive (soft-delete) or restore a library exercise — the website's "remove from
-    library" control. The NON-tool path, like create_exercise: deliberately NOT a FastMCP
-    tool, so the journal/trainer connectors can't archive, and the assistant has no idea an
-    archived movement ever existed.
-
-    Archiving HIDES the movement everywhere the catalog is DISCOVERED — the library page,
-    name search, name-resolution (logging/enriching/swapping by name), swap suggestions,
-    and the trainer's rotation — and drops it from the rotation AND the hearted superset,
-    all WITHOUT deleting the
-    row, so past workouts that reference it keep their links and history stays intact. It's
-    a clean "acts deleted" without breaking the data. Pass archived=False to restore it to
-    the library; re-adding a movement by the same name on the add form restores it too.
-    Returns the exercise_id, name, and new archived state."""
-    archived = int(bool(archived))
-    with db() as conn:
-        row = conn.execute(
-            "SELECT id, name FROM exercises WHERE id=?", (exercise_id,)
-        ).fetchone()
-        if not row:
-            return {"error": f"no exercise with id {exercise_id}"}
-        if archived:
-            # Archiving also drops it from the rotation AND the hearted superset, so a
-            # hidden movement never lingers in any pool the trainer draws from.
-            conn.execute(
-                "UPDATE exercises SET archived=1, in_rotation=0, hearted=0 WHERE id=?",
-                (exercise_id,)
-            )
-        else:
-            conn.execute("UPDATE exercises SET archived=0 WHERE id=?", (exercise_id,))
-    return {"exercise_id": row["id"], "name": row["name"], "archived": bool(archived)}
-
-
-@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
-def set_rotation(name: Optional[str] = None, exercise_id: Optional[int] = None,
-                 in_rotation: bool = True) -> dict:
-    """Add an exercise to (or remove it from) the user's ROTATION — the curated pool
-    of movements they're actively training, kept small enough that progress on each is easy
-    to track (how small is theirs to decide — don't have an opinion about the count). The rotation is the ONLY set you program routines from. It's drawn from
-    the wider HEARTED superset (see set_hearted) — a bench of favorites the user pulls from
-    when they swap the rotation every few months — which in turn sits inside the browsable
-    ~870-movement library. Target by `exercise_id` or `name` (case-insensitive); an unknown
-    name is an error here (add it via the library first). Pass in_rotation=False to take it
-    out (it STAYS hearted — pruning the rotation keeps it in the favorites bench). Adding to
-    the rotation also hearts it (rotation ⊆ hearted). The rotation is deliberately small so the
-    user can control their progression, so ONLY add to it on the user's EXPLICIT instruction —
-    never on your own judgement while programming a session, and never read approval of a
-    workout as approval to grow the pool. Logging a movement only hearts it (onto the favorites
-    bench), never adds it to the rotation — this tool is the ONLY in-chat way the rotation
-    grows, so reach for it on a clear request — e.g. "add Bulgarian split squats to my
-    rotation"."""
-    in_rotation = int(bool(in_rotation))
-    with db() as conn:
-        if exercise_id is not None:
-            row = conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
-        elif name:
-            row = _resolve_exercise(conn, name)
-        else:
-            return {"error": "pass name or exercise_id"}
-        if not row:
-            return {"error": "no matching exercise (create it with save_exercise first)",
-                    "candidates": _match_exercises(conn, name or "")}
-        # rotation ⊆ hearted: joining the rotation also hearts it; leaving stays hearted.
-        if in_rotation:
-            conn.execute("UPDATE exercises SET in_rotation=1, hearted=1 WHERE id=?", (row["id"],))
-        else:
-            conn.execute("UPDATE exercises SET in_rotation=0 WHERE id=?", (row["id"],))
-        cur = conn.execute("SELECT in_rotation, hearted FROM exercises WHERE id=?",
-                           (row["id"],)).fetchone()
-    return {"exercise_id": row["id"], "name": row["name"],
-            "in_rotation": bool(cur["in_rotation"]), "hearted": bool(cur["hearted"])}
-
-
-@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
-def set_hearted(name: Optional[str] = None, exercise_id: Optional[int] = None,
-                hearted: bool = True) -> dict:
-    """Add an exercise to (or remove it from) the user's HEARTED superset — their bench of
-    favorite movements. This is the wider pool the small ROTATION (see set_rotation) is
-    drawn from: the rotation is the smaller set they actively train, and every few
-    months they swap some out for others from this hearted bench, so it's worth hearting any
-    movement they like even when it's not currently programmed. Target by `exercise_id` or
-    `name` (case-insensitive); an unknown name is an error here (add it via the library
-    first). Pass hearted=False to un-heart it — which also removes it from the rotation,
-    since a rotation lift is always hearted (rotation ⊆ hearted). Logging a movement hearts
-    it automatically. Reach for this when the user says they like / want to remember a
-    movement without committing it to the active rotation yet."""
-    hearted = int(bool(hearted))
-    with db() as conn:
-        if exercise_id is not None:
-            row = conn.execute("SELECT id, name FROM exercises WHERE id=?", (exercise_id,)).fetchone()
-        elif name:
-            row = _resolve_exercise(conn, name)
-        else:
-            return {"error": "pass name or exercise_id"}
-        if not row:
-            return {"error": "no matching exercise (create it with save_exercise first)",
-                    "candidates": _match_exercises(conn, name or "")}
-        # rotation ⊆ hearted: un-hearting must drop it from the rotation too.
-        if hearted:
-            conn.execute("UPDATE exercises SET hearted=1 WHERE id=?", (row["id"],))
-        else:
-            conn.execute("UPDATE exercises SET hearted=0, in_rotation=0 WHERE id=?", (row["id"],))
-        cur = conn.execute("SELECT in_rotation, hearted FROM exercises WHERE id=?",
-                           (row["id"],)).fetchone()
-    return {"exercise_id": row["id"], "name": row["name"],
-            "in_rotation": bool(cur["in_rotation"]), "hearted": bool(cur["hearted"])}
+def _exercise_rows(conn: sqlite3.Connection, archived: Optional[bool]) -> list[dict]:
+    where = "" if archived is None else f"WHERE e.archived={int(archived)}"
+    rows = conn.execute(
+        f"""SELECT e.id, e.name, e.category, e.archived, e.note,
+                   MAX(NULLIF(w.workout_date,'')) AS last_done,
+                   COUNT(DISTINCT CASE WHEN s.status='done' THEN w.id END) AS sessions
+            FROM exercises e
+            LEFT JOIN sets s ON s.exercise_id = e.id AND s.status='done'
+            LEFT JOIN workouts w ON w.id = s.workout_id AND w.status='done'
+            {where}
+            GROUP BY e.id ORDER BY e.name""").fetchall()
+    out = []
+    for r in rows:
+        m = _muscles_for(conn, r["id"])
+        item = {"exercise_id": r["id"], "name": r["name"],
+                "category": r["category"] or "strength",
+                "muscles": m["primary"], "last_done": r["last_done"],
+                "sessions": r["sessions"]}
+        if m["secondary"] or m["tertiary"]:
+            item["secondary_muscles"] = m["secondary"] + m["tertiary"]
+        if r["note"]:
+            item["note"] = r["note"]
+        out.append(item)
+    return out
 
 
 @trainer_mcp.tool(annotations=READ_ONLY)
-def find_exercises(name: Optional[str] = None, exercise_id: Optional[int] = None,
-                   muscle: Optional[str] = None, equipment: Optional[str] = None,
-                   category: Optional[str] = None, rotation_only: bool = False,
-                   hearted_only: bool = False,
-                   similar_to: Optional[str] = None) -> dict:
-    """Read the exercise catalog — one full record, a filtered list, or swap peers.
-
-    ONE record — pass `name` or `exercise_id` to get a movement in full: muscle emphasis
-    tiers (primary/secondary/tertiary), `aka` (common alternative names it's known by),
-    `level` (difficulty), `mechanic` (compound vs isolation), `force`, in_rotation, hearted,
-    technique notes, common mistakes, cautions, and any video/image links, so you can
-    coach proper form. `name` is resolved against the canonical name AND its AKAs (so
-    "RDL" finds Romanian Deadlift); an unresolved `name` returns `candidates` (the closest
-    real entries) — pick from those, don't guess.
-
-    A LIST — narrow the registry with `muscle` (matches any emphasis tier), an `equipment`
-    fragment, `category`, `rotation_only=True`, or `hearted_only=True`. Rows are compact
-    (name, category, equipment, muscles, `level`, `mechanic`, in_rotation, hearted) —
-    `level`/`mechanic` let you weigh difficulty and pick compounds before isolation. The
-    full catalog is large (~870), so when picking exercises for a session prefer
-    rotation_only=True — the small set the user actively trains from. Use hearted_only=True
-    to see the wider favorites SUPERSET the rotation is drawn from — the bench to pull from
-    when the user is swapping out their rotation.
-
-    A SWAP — `similar_to=<exercise>` returns the closest like-for-like peers: shares a
-    primary muscle, ranked by same `mechanic` (compound↔compound, isolation↔isolation),
-    then shared-muscle overlap, then whether it's already in rotation (itself excluded).
-    Use it when a machine's taken or a movement bugs a joint."""
+def list_exercises(include_archived: bool = True) -> dict:
+    """The user's exercises: `active` (what they're currently training — the pool you
+    program from) and `archived` (what they've done before and stopped), each with
+    muscles, category, `last_done`, `sessions` (how many workouts it appeared in) and
+    any `note` (for an archived lift, usually why it was dropped). Read the archive
+    before suggesting something new: it's the record of what's been tried, liked, or
+    abandoned — a lift archived for shoulder pain is not a fresh idea. The briefing
+    already carries the active list; call this when you need the archive."""
     with db() as conn:
-        if name is not None or exercise_id is not None:
-            if exercise_id is not None:
-                r = conn.execute("SELECT * FROM exercises WHERE id=?", (exercise_id,)).fetchone()
-            else:
-                r = _resolve_exercise(conn, name)
-            if not r:
-                return {"error": "no matching exercise",
-                        "candidates": _match_exercises(conn, name or "")}
-            m = _muscles_for(conn, r["id"])
-            return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
-                    "equipment": r["equipment"], "muscles": m,
-                    "aka": _aliases_for(conn, r["id"]),
-                    "force": r["force"], "level": r["level"], "mechanic": r["mechanic"],
-                    "in_rotation": bool(r["in_rotation"]), "hearted": bool(r["hearted"]),
-                    "technique_notes": r["technique_notes"],
-                    "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
-                    "video_link": r["video_link"], "image_link": r["image_link"],
-                    "image_link_end": r["image_link_end"]}
+        out = {"active": _exercise_rows(conn, False)}
+        if include_archived:
+            out["archived"] = _exercise_rows(conn, True)
+    return out
 
-        def _row(r):
-            return {"exercise_id": r["id"], "name": r["name"], "category": r["category"],
-                    "equipment": r["equipment"], "muscles": _muscles_for(conn, r["id"]),
-                    "level": r["level"], "mechanic": r["mechanic"],
-                    "in_rotation": bool(r["in_rotation"]), "hearted": bool(r["hearted"])}
 
-        # Swap peers: shares a primary muscle, ranked by same mechanic / overlap / rotation.
-        if similar_to is not None:
-            target = _resolve_exercise(conn, similar_to)
-            if not target:
-                return {"error": f"no exercise matching {similar_to!r}",
-                        "candidates": _match_exercises(conn, similar_to)}
-            tp = set(_muscles_for(conn, target["id"])["primary"])
-            peers = []
-            for r in conn.execute("SELECT * FROM exercises WHERE archived=0 ORDER BY name").fetchall():
-                if r["id"] == target["id"]:
-                    continue
-                shared = tp & set(_muscles_for(conn, r["id"])["primary"])
-                if not shared:
-                    continue
-                same_mech = bool(target["mechanic"]) and r["mechanic"] == target["mechanic"]
-                peers.append((same_mech, len(shared), int(r["in_rotation"]), _row(r)))
-            peers.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
-            return {"similar_to": target["name"],
-                    "exercises": [p[3] for p in peers], "count": len(peers)}
+def _exercise_by(conn: sqlite3.Connection, name: Optional[str],
+                 exercise_id: Optional[int]):
+    if exercise_id is not None:
+        return conn.execute("SELECT * FROM exercises WHERE id=?", (exercise_id,)).fetchone()
+    return _resolve_exercise(conn, name or "")
 
-        rows = conn.execute("SELECT * FROM exercises WHERE archived=0 ORDER BY name").fetchall()
-        out = []
-        for r in rows:
-            if rotation_only and not r["in_rotation"]:
-                continue
-            if hearted_only and not r["hearted"]:
-                continue
-            m = _muscles_for(conn, r["id"])
-            if muscle and muscle.strip().lower() not in (m["primary"] + m["secondary"] + m["tertiary"]):
-                continue
-            if equipment and (not r["equipment"] or equipment.lower() not in r["equipment"].lower()):
-                continue
-            if category and r["category"] != category:
-                continue
-            out.append(_row(r))
-    return {"exercises": out, "count": len(out)}
+
+@trainer_mcp.tool(annotations=WRITE)
+def add_exercise(name: str, muscles: list[str],
+                 secondary_muscles: Optional[list[str]] = None,
+                 category: Optional[str] = None, note: Optional[str] = None,
+                 new: bool = False) -> dict:
+    """Add a movement to the user's ACTIVE exercises ahead of using it ("I want to start
+    doing landmine presses"). You rarely need this: planning or logging an unknown name
+    with its `muscles` creates it on the fly. Use the user's own name for the lift.
+
+    `muscles` = primary (what the lift is FOR), `secondary_muscles` = real assistance,
+    both in the canonical labels: abdominals, abductors, adductors, biceps, calves,
+    chest, forearms, glutes, hamstrings, lats, lower back, middle back, neck,
+    quadriceps, shoulders, traps, triceps. `category` is "strength" (default) or
+    "cardio" (cardio carries no muscles — pass muscles=[]).
+
+    A name that already exists is refused with the existing entry (an archived one:
+    bring it back with archive_exercise(archived=False)). A near-duplicate is refused
+    with `candidates` unless `new=True` — pass that only when it's genuinely a
+    different movement."""
+    name = (name or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    if reason := _bad_muscles(muscles, secondary_muscles):
+        return {"error": reason}
+    if not muscles and (category or "").lower() != "cardio":
+        return {"error": "give at least one primary muscle (or category='cardio')"}
+    with db() as conn:
+        if row := _resolve_exercise(conn, name):
+            return {"error": f"already on file as {row['name']!r}"
+                             + (" (archived)" if row["archived"] else ""),
+                    "exercise_id": row["id"], "name": row["name"],
+                    "archived": bool(row["archived"])}
+        near = [c for c in _match_exercises(conn, name) if c["score"] >= ADD_NEAR_DUP]
+        if near and not new:
+            return {"error": f"{name!r} looks close to an existing exercise — use that "
+                             "one, or pass new=True if it's genuinely different",
+                    "candidates": near}
+        eid = _create_exercise(conn, name, muscles, secondary_muscles, category, note)
+    return {"exercise_id": eid, "name": name, "created": True}
+
+
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def update_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                    rename: Optional[str] = None,
+                    muscles: Optional[list[str]] = None,
+                    secondary_muscles: Optional[list[str]] = None,
+                    category: Optional[str] = None,
+                    note: Optional[str] = None) -> dict:
+    """Fix an exercise: `rename` it (history follows — sets point at the row, not the
+    name), correct its `muscles`/`secondary_muscles` (passing either rewrites both
+    tiers, so send both), change `category`, or set its `note` ("" clears). Only what you
+    pass changes. To take a lift out of (or back into) the program, use
+    archive_exercise."""
+    if reason := _bad_muscles(muscles, secondary_muscles):
+        return {"error": reason}
+    with db() as conn:
+        row = _exercise_by(conn, name, exercise_id)
+        if not row:
+            return {"error": f"no exercise {name or exercise_id!r}",
+                    "candidates": _match_exercises(conn, name or "")}
+        changed = []
+        if rename and rename.strip() and rename.strip() != row["name"]:
+            clash = conn.execute(
+                "SELECT name FROM exercises WHERE lower(name)=lower(?) AND id<>?",
+                (rename.strip(), row["id"])).fetchone()
+            if clash:
+                return {"error": f"{clash['name']!r} already exists"}
+            conn.execute("UPDATE exercises SET name=? WHERE id=?", (rename.strip(), row["id"]))
+            changed.append("name")
+        if category is not None:
+            conn.execute("UPDATE exercises SET category=? WHERE id=?",
+                         (category.lower() or "strength", row["id"]))
+            changed.append("category")
+        if note is not None:
+            conn.execute("UPDATE exercises SET note=? WHERE id=?", (note or None, row["id"]))
+            changed.append("note")
+        if muscles is not None or secondary_muscles is not None:
+            _set_muscles(conn, row["id"], muscles or [], secondary_muscles or [])
+            changed.append("muscles")
+        out_name = conn.execute("SELECT name FROM exercises WHERE id=?",
+                                (row["id"],)).fetchone()["name"]
+    return {"exercise_id": row["id"], "name": out_name, "updated": changed}
+
+
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def archive_exercise(name: Optional[str] = None, exercise_id: Optional[int] = None,
+                     archived: bool = True, note: Optional[str] = None) -> dict:
+    """Take a lift OUT of the user's active program (archived=True), or bring an
+    archived one back (archived=False). Nothing is deleted: its history, PRs and
+    sessions stay, and it sits in the archive as a record of what's been tried. Pass a
+    `note` with the reason when the user gives one ("bugged my left shoulder", "bored of
+    it", "swapped for landmine press") — it's what makes the archive useful the next
+    time you're choosing something new. Only on the user's say-so: the active set is
+    theirs to curate. (Logging an archived lift brings it back automatically — it's
+    being done again.)"""
+    with db() as conn:
+        row = _exercise_by(conn, name, exercise_id)
+        if not row:
+            return {"error": f"no exercise {name or exercise_id!r}",
+                    "candidates": _match_exercises(conn, name or "")}
+        _set_archived(conn, row["id"], archived)
+        if note is not None:
+            conn.execute("UPDATE exercises SET note=? WHERE id=?", (note or None, row["id"]))
+    return {"exercise_id": row["id"], "name": row["name"], "archived": bool(archived)}
 
 
 # --------------------------------------------------------------------------- #
@@ -5290,21 +5170,20 @@ def log_workout(exercises: list[LoggedExercise], workout_date: Optional[str] = N
     A typical item is {"name": "Leg Press", "sets": [{"weight_lbs": 180, "reps": 10,
     "rpe": 7}, {"weight_lbs": 180, "reps": 8, "rpe": 9.5, "note": "a grind"}]} — the
     full field list is in the schema.
-    Names resolve against the CLOSED catalog (fuzzily, so a near-spelling lands on the
-    right lift). The model never invents an exercise: a name that doesn't match an
-    existing one is SKIPPED and returned under `unmatched` with its closest `candidates`
-    — re-log it under one of those, or have the user add the movement on the library page
-    (the only way the catalog grows). The matched exercises still log (and get hearted onto
-    the favorites bench — but are NOT added to the rotation, which grows only on an explicit
-    set_rotation request), so capture isn't lost. weight_lbs follows the SIGNED
+    Names resolve against the user's exercises (fuzzily, so a near-spelling lands on the
+    right lift; an ARCHIVED one is brought back, reported under `reactivated`). A
+    movement they've never done is CREATED on the fly when you pass its `muscles`
+    (reported under `created`); without them, or when the name is close to an existing
+    one, it's skipped and returned under `unmatched` with what to fix — the rest of the
+    session still logs, so capture isn't lost. weight_lbs follows the SIGNED
     added/removed-load convention (see this server's instructions) and is null for cardio;
     rpe is 1-10 perceived exertion (10 = couldn't do another rep), which is how you judge
-    whether to add weight next time. Returns the logged exercises (with the catalog's
-    canonical names) and any `unmatched`.
+    whether to add weight next time. Returns the logged exercises (with their stored
+    names) plus any `created`/`reactivated`/`unmatched`/`new_prs`.
 
-    CARDIO (running, walking, rowing, cycling): log it as an exercise too — pick the
-    cardio movement from the catalog (those rows carry no muscles, so they stay out of
-    muscle recency and are summarized as cardio instead) and use a set per bout with
+    CARDIO (running, walking, rowing, cycling): log it as an exercise too, with
+    category "cardio" if it's new (cardio carries no muscles, so it stays out of muscle
+    recency and is summarized as cardio instead), and use a set per bout with
     `duration_seconds` and/or `distance_miles` instead of
     weight/reps. A 30-minute, 3.2-mile run is one set
     {"duration_seconds": 1800, "distance_miles": 3.2, "rpe": 6}. weight_lbs/reps stay
@@ -5341,43 +5220,33 @@ def log_workout(exercises: list[LoggedExercise], workout_date: Optional[str] = N
                 "INSERT INTO workouts(workout_date, focus, feeling, notes, created_at) VALUES (?,?,?,?,?)",
                 (wd, focus, feeling, notes, now()),
             ).lastrowid
-        results, unmatched = [], []
+        results, events, set_ids = [], {}, []
         for ex in exercises:
-            name = (ex.get("name") or "").strip()
-            if not name:
-                continue
-            row = _resolve_exercise(conn, name)
+            row = _resolve_or_create(conn, ex, events)
             if not row:
-                # Closed catalog: don't invent the exercise. Skip its sets and hand back
-                # the nearest real names so the model re-logs under one that exists.
-                unmatched.append({"name": name, "candidates": _match_exercises(conn, name)})
                 continue
             eid = row["id"]
-            # A logged movement is one they actually do → it joins the hearted superset (the
-            # bench of favorites). It does NOT auto-join the rotation: that small pool is
-            # hand-curated so the user can control progression, and only grows on an explicit
-            # set_rotation request or via the website. hearted is left untouched if already 0→1.
-            conn.execute("UPDATE exercises SET hearted=1 WHERE id=?", (eid,))
             # continue set numbering if this exercise already has sets in the session
             start = (conn.execute(
                 "SELECT COALESCE(MAX(set_index),0) AS m FROM sets WHERE workout_id=? AND exercise_id=?",
                 (wid, eid),
             ).fetchone()["m"]) + 1
             for i, s in enumerate(ex.get("sets") or [], start=start):
-                conn.execute(
+                set_ids.append(conn.execute(
                     """INSERT INTO sets(workout_id, exercise_id, set_index, weight_lbs,
                        reps, rpe, duration_seconds, distance_miles, note)
                        VALUES (?,?,?,?,?,?,?,?,?)""",
                     (wid, eid, i, s.get("weight_lbs"), s.get("reps"),
                      s.get("rpe"), s.get("duration_seconds"),
                      s.get("distance_miles"), s.get("note")),
-                )
+                ).lastrowid)
             results.append({"exercise_id": eid, "name": row["name"],
                             "sets": len(ex.get("sets") or [])})
+        prs = _new_bests(conn, set_ids)
     out = {"workout_id": wid, "workout_date": wd, "exercises": results,
-           "appended": workout_id is not None}
-    if unmatched:
-        out["unmatched"] = unmatched
+           "appended": workout_id is not None, **events}
+    if prs:
+        out["new_prs"] = prs
     return out
 
 
@@ -5555,6 +5424,53 @@ def pr_for_set(set_id: int) -> Optional[dict]:
         return hit if (best_reps is not None and reps > best_reps) else None
 
 
+def _new_bests(conn: sqlite3.Connection, set_ids: list[int]) -> list[dict]:
+    """pr_for_set's rule, applied to a BATCH of just-written sets: per exercise, the
+    batch's top set (heaviest, then most reps at that weight) is a best when it beats
+    every done set OUTSIDE the batch. Excluding the whole batch rather than one row is
+    the difference that matters here — two sets at a new top weight would otherwise
+    each be "tied" by the other and neither would count. Same no-e1rm, no-cardio,
+    no-first-ever rules. Returns [{exercise_id, name, weight_lbs, reps, previous_lbs}],
+    which complete_sets and log_workout hand back so the model can call it out."""
+    if not set_ids:
+        return []
+    ph = ",".join("?" for _ in set_ids)
+    rows = conn.execute(
+        f"""SELECT s.exercise_id, e.name, s.weight_lbs, s.reps FROM sets s
+            JOIN exercises e ON e.id = s.exercise_id
+            WHERE s.id IN ({ph}) AND s.status='done'
+              AND s.weight_lbs IS NOT NULL AND s.reps IS NOT NULL""",
+        set_ids,
+    ).fetchall()
+    top: dict[int, sqlite3.Row] = {}
+    for r in rows:
+        cur = top.get(r["exercise_id"])
+        if cur is None or (r["weight_lbs"], r["reps"]) > (cur["weight_lbs"], cur["reps"]):
+            top[r["exercise_id"]] = r
+    out = []
+    for eid, r in top.items():
+        best = conn.execute(
+            f"""SELECT MAX(weight_lbs) AS w FROM sets
+                WHERE exercise_id=? AND status='done' AND id NOT IN ({ph})
+                  AND weight_lbs IS NOT NULL AND reps IS NOT NULL""",
+            (eid, *set_ids),
+        ).fetchone()["w"]
+        if best is None or r["weight_lbs"] < best:
+            continue
+        if r["weight_lbs"] == best:
+            best_reps = conn.execute(
+                f"""SELECT MAX(reps) AS r FROM sets
+                    WHERE exercise_id=? AND status='done' AND id NOT IN ({ph})
+                      AND weight_lbs=? AND reps IS NOT NULL""",
+                (eid, *set_ids, best),
+            ).fetchone()["r"]
+            if best_reps is None or r["reps"] <= best_reps:
+                continue
+        out.append({"exercise_id": eid, "name": r["name"], "weight_lbs": r["weight_lbs"],
+                    "reps": r["reps"], "previous_lbs": best})
+    return out
+
+
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_workout(workout_id: int, workout_date: Optional[str] = None,
                    focus: Optional[str] = None, feeling: Optional[str] = None,
@@ -5620,9 +5536,8 @@ def update_set(set_id: int, weight_lbs: Optional[float] = None,
     1-10. `weight_lbs` is SIGNED added/removed load (negative = assisted, 0 = bodyweight,
     positive = added). `duration_seconds`/`distance_miles` are the cardio fields (run/walk/row).
     `target_weight_lbs`/`target_reps`/`target_rpe` retarget a still-pending planned set
-    (e.g. bump the planned weight, or the expected difficulty the user's Easy/Med/Hard
-    buttons prefill from) without completing it — to actually log a planned set as done,
-    use complete_set."""
+    (e.g. bump the planned weight or the expected difficulty) without completing it — to
+    actually log a planned set as done, use complete_sets."""
     if reason := _bad_set({"weight_lbs": weight_lbs, "reps": reps, "rpe": rpe,
                            "duration_seconds": duration_seconds,
                            "distance_miles": distance_miles}):
@@ -5716,20 +5631,15 @@ def _bad_planned(exercises: list[PlannedExercise]) -> Optional[dict]:
 
 
 def _insert_planned(conn: sqlite3.Connection, wid: int,
-                    exercises: list[PlannedExercise]) -> tuple[list[dict], list[dict]]:
-    """Append pending (planned) sets to a workout. Resolves each exercise against the
-    CLOSED catalog (no auto-stub) and continues set numbering per exercise — the same
-    path log_workout uses, but writing targets + status='pending'. Returns
-    (results, unmatched): names that don't resolve are skipped and returned with their
-    closest candidates rather than invented."""
-    results, unmatched = [], []
+                    exercises: list[PlannedExercise]) -> tuple[list[dict], dict]:
+    """Append pending (planned) sets to a workout. Resolves each exercise through
+    _resolve_or_create (the same path log_workout uses) and continues set numbering per
+    exercise, writing targets + status='pending'. Returns (results, events): events
+    carries `created`/`reactivated`/`unmatched` for the return."""
+    results, events = [], {}
     for ex in exercises:
-        name = (ex.get("name") or "").strip()
-        if not name:
-            continue
-        row = _resolve_exercise(conn, name)
+        row = _resolve_or_create(conn, ex, events)
         if not row:
-            unmatched.append({"name": name, "candidates": _match_exercises(conn, name)})
             continue
         eid = row["id"]
         planned = _expand_planned_sets(ex)
@@ -5747,11 +5657,11 @@ def _insert_planned(conn: sqlite3.Connection, wid: int,
             )
         results.append({"exercise_id": eid, "name": row["name"],
                         "planned_sets": len(planned)})
-    return results, unmatched
+    return results, events
 
 
 def _plan_payload(conn: sqlite3.Connection, wid: int,
-                  unmatched: Optional[list[dict]] = None) -> dict:
+                  events: Optional[dict] = None) -> dict:
     """The plan for one workout: exercises ordered by `ex_position` (the user-set order,
     via reorder_plan or the /trainer reorder UX) and otherwise by insertion order, each
     with its sets (target + actual + status), plus a done/total progress count (skipped
@@ -5808,8 +5718,8 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
                "focus": w["focus"],
                "feeling": w["feeling"], "notes": w["notes"], "status": w["status"],
                "progress": {"done": done, "total": total}, "exercises": exercises}
-    if unmatched:
-        payload["unmatched"] = unmatched
+    if events:
+        payload.update(events)
     return payload
 
 
@@ -5909,7 +5819,7 @@ def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = 
     completed, so a session done a day late records the day it was done.
 
     ALWAYS set `focus` — it's the session's only title, and on a week of upcoming plans
-    it's the one thing distinguishing them on the user's Training page.
+    it's the one thing telling the days apart.
 
     Build a full session at the volume this server's instructions call for, across the
     muscle groups that are due.
@@ -5921,15 +5831,12 @@ def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = 
 
     `target_rpe` (1-10) is the difficulty you're programming for each set — set it from
     your judgment of how hard that set should be, and ramp it across the exercise's sets
-    when you intend a build-up. It prefills the Easy/Med/Hard buttons the user taps on the
-    /trainer card (Easy ≈ 5, Med ≈ 7, Hard ≈ 9), so they confirm a feel rather than typing
-    a number; they can still change it. Optional — omit it and the buttons start blank.
-    Pick the movements from the library with `find_exercises(muscle=..., rotation_only=True)` —
-    the catalog is closed, so program only names it already holds (prefer the rotation).
-    Names resolve fuzzily; a name with no real match is SKIPPED and returned under
-    `unmatched` with its closest `candidates` — re-issue it under one of those, or have the
-    user add the movement on the library page. Matched exercises are still planned, so the
-    rest of the routine lands.
+    when you intend a build-up, and show it with the plan so the user knows how hard
+    each set is meant to feel (≈5 easy, ≈7 solid, ≈9 a grind). Optional.
+    Program from the user's active `exercises` (in the briefing). A movement new to them
+    — only with their OK — is created on the fly from its `muscles`; a name that can't
+    be resolved or created comes back under `unmatched` with what to fix, while the rest
+    of the routine lands.
 
     ONE plan per day. This APPENDS to the plan it lands on rather than creating a second
     one for the same day (focus/notes ignored on an append) — that's the plan for
@@ -5973,8 +5880,8 @@ def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = 
                    VALUES ('',?,?,?, 'active', ?)""",
                 (planned_date, focus, notes, now()),
             ).lastrowid
-        results, unmatched = _insert_planned(conn, wid, exercises)
-        return _plan_payload(conn, wid, unmatched=unmatched)
+        results, events = _insert_planned(conn, wid, exercises)
+        return _plan_payload(conn, wid, events=events)
 
 
 @trainer_mcp.tool(annotations=READ_ONLY)
@@ -5992,17 +5899,13 @@ def get_workout_plan(workout_id: Optional[int] = None) -> dict:
         return _plan_payload(conn, w["id"]) if w else {"active": False}
 
 
-@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def complete_set(set_id: int, weight_lbs: Optional[float] = None,
                  reps: Optional[int] = None, rpe: Optional[float] = None,
                  note: Optional[str] = None) -> dict:
-    """Mark one planned set done, recording what was actually lifted. Omitted
-    `weight_lbs`/`reps` default to the set's targets, so "did it as planned" needs only
-    the set_id (add `rpe` 1-10 for how hard it felt — that's how you judge the next
-    weight). Find `set_id` in get_workout_plan. `weight_lbs` is SIGNED: negative =
-    assistance taken off (assisted pull-up at -20), 0 = bodyweight, positive = added
-    load. Flips the set to 'done' and returns the updated plan. (To CORRECT an
-    already-logged set, use update_set instead.)"""
+    """Mark one planned set done — the legacy web card's one-tap path, a plain helper
+    now, not an MCP tool: in a conversation the user reports a whole exercise (or a
+    whole session) at once, which is complete_sets. Omitted `weight_lbs`/`reps` default
+    to the set's targets. Flips the set to 'done' and returns the updated plan."""
     with db() as conn:
         r = conn.execute("SELECT * FROM sets WHERE id=?", (set_id,)).fetchone()
         if not r:
@@ -6016,37 +5919,101 @@ def complete_set(set_id: int, weight_lbs: Optional[float] = None,
                status='done' WHERE id=?""",
             (w, rp, rpe, note, set_id),
         )
-        # Completing a set means the movement was actually trained → keep it in the hearted
-        # superset. It does NOT auto-join the rotation (that pool stays hand-curated — grown
-        # only by an explicit set_rotation request or via the website).
-        conn.execute("UPDATE exercises SET hearted=1 WHERE id=?", (r["exercise_id"],))
         return _plan_payload(conn, r["workout_id"])
+
+
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def complete_sets(sets: list[SetResult]) -> dict:
+    """Mark planned sets done, recording what was actually lifted — as many as the user
+    just reported, in ONE call ("did all three at 135, the last one was an 8" is three
+    items). Omitted `weight_lbs`/`reps` default to the set's targets, so "did it as
+    planned" needs only the set_id; add `rpe` (1-10) whenever the user says how it felt —
+    that's what you judge the next weight from, so ask if they don't volunteer it.
+    Find `set_id`s in get_workout_plan / the last plan return. `weight_lbs` is SIGNED
+    (negative = assisted). Validates every set first and writes nothing if any is bad.
+    (To CORRECT an already-logged set, use update_set; a set they skipped just stays
+    pending and finish_workout marks it skipped.)
+
+    Returns the updated plan, plus `new_prs` when a set beat the heaviest weight ever
+    logged for that movement (or tied it for more reps) — tell the user; it's the one
+    piece of good news the log can prove."""
+    if not sets:
+        return {"error": "pass at least one set"}
+    with db() as conn:
+        rows = {}
+        for item in sets:
+            r = conn.execute("SELECT * FROM sets WHERE id=?", (item["set_id"],)).fetchone()
+            if not r:
+                return {"error": f"no set with id {item['set_id']}"}
+            w = item.get("weight_lbs")
+            rp = item.get("reps")
+            w = w if w is not None else r["target_weight_lbs"]
+            rp = rp if rp is not None else r["target_reps"]
+            if reason := _bad_set({"weight_lbs": w, "reps": rp, "rpe": item.get("rpe")}):
+                return {"error": f"set {item['set_id']}: {reason}"}
+            rows[item["set_id"]] = (r, w, rp)
+        wids = {r["workout_id"] for r, _w, _rp in rows.values()}
+        for item in sets:
+            r, w, rp = rows[item["set_id"]]
+            conn.execute(
+                """UPDATE sets SET weight_lbs=?, reps=?, rpe=?, note=COALESCE(?, note),
+                   status='done' WHERE id=?""",
+                (w, rp, item.get("rpe"), item.get("note"), item["set_id"]),
+            )
+        prs = _new_bests(conn, list(rows))
+        # Normally one session; if the batch spanned several, return the last one's plan
+        # and name the rest, rather than silently showing only part of what was written.
+        wid = rows[sets[-1]["set_id"]][0]["workout_id"]
+        out = _plan_payload(conn, wid)
+        if len(wids) > 1:
+            out["also_updated_workouts"] = sorted(wids - {wid})
+    if prs:
+        out["new_prs"] = prs
+    return out
+
+
+@trainer_mcp.tool(annotations=DESTRUCTIVE)
+def remove_from_plan(exercise: str, workout_id: Optional[int] = None) -> dict:
+    """Drop one exercise from a plan entirely — every set of it, pending AND already
+    done — for "take the curls off Thursday" or a movement added by mistake. To replace
+    it with a peer instead, use swap_exercise (which keeps done sets in the log); to drop
+    a single set, delete_record(kind="set"). Defaults to the next-due plan; pass
+    `workout_id` for a specific day. Returns the updated plan."""
+    with db() as conn:
+        w = _plan_row(conn, workout_id)
+        if not w:
+            return {"error": "no active workout plan"}
+        row = _resolve_exercise(conn, (exercise or "").strip())
+        present = row and conn.execute(
+            "SELECT 1 FROM sets WHERE workout_id=? AND exercise_id=? LIMIT 1",
+            (w["id"], row["id"]),
+        ).fetchone()
+        if not present:
+            return {"error": f"{exercise!r} isn't in this plan",
+                    "plan_exercises": [e["name"] for e in
+                                       _plan_payload(conn, w["id"])["exercises"]]}
+    return remove_plan_exercise(row["id"], workout_id=w["id"])
 
 
 @trainer_mcp.tool(annotations=DESTRUCTIVE)
 def swap_exercise(from_exercise: str, to_exercise: str,
-                  sets: Optional[list[dict]] = None,
+                  sets: Optional[list[PlannedSet]] = None,
+                  to_muscles: Optional[list[str]] = None,
+                  to_secondary_muscles: Optional[list[str]] = None,
                   workout_id: Optional[int] = None) -> dict:
-    """Substitute an exercise in the active plan — for a busy/broken machine, a tweak,
-    or preference. Pick the CLOSEST like-for-like replacement, not just anything that
-    touches the same muscle: match the movement pattern (vertical pull→vertical pull,
-    horizontal press→horizontal press), the role (compound→compound, isolation→
-    isolation), and roughly the loading character. A Lat Pulldown's peer is a Close-/
-    Neutral-Grip Pulldown or a Pull-up — NOT a Straight-Arm Pulldown, which isolates
-    the same lats but is a single-joint accessory and a different stimulus. Use
-    `find_exercises(similar_to=from_exercise)` to see the catalog's closest peers (shared
-    primary muscle, same mechanic) and pick `to_exercise` from there. Only drop to a
-    narrower or different-pattern move when no true peer is available, and say so.
-    The PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
-    log) and `to_exercise` is added with fresh pending sets.
+    """Substitute an exercise in a plan — a busy/broken machine, a tweak, or preference.
+    Pick the CLOSEST like-for-like replacement, not just anything that touches the same
+    muscle: match the movement pattern (vertical pull→vertical pull, horizontal
+    press→horizontal press), the role (compound→compound, isolation→isolation), and
+    roughly the loading character. A Lat Pulldown's peer is a Close-/Neutral-Grip
+    Pulldown or a Pull-up — NOT a Straight-Arm Pulldown. Prefer one of the user's active
+    exercises; if the right peer is new to them, it's created on the fly from
+    `to_muscles` (+ `to_secondary_muscles`).
 
-    By default the substitute mirrors the count and targets of the swapped-out pending
-    sets — but those targets came from a DIFFERENT exercise, so pass `sets`
-    (e.g. [{"target_weight_lbs": 60, "target_reps": 10}, …]) whenever the right weight
-    differs (it usually does). `to_exercise` MUST already be in the closed library — if it
-    doesn't resolve, the swap is refused with the closest `candidates` (and nothing is
-    skipped); pick one of those or have the user add it on the library page.
-    Returns the updated plan."""
+    The PENDING sets of `from_exercise` become 'skipped' (already-done sets stay in the
+    log) and `to_exercise` is added with fresh pending sets. By default those mirror the
+    swapped-out targets — but those came from a DIFFERENT movement, so pass `sets`
+    whenever the right weight differs (it usually does). Returns the updated plan."""
     with db() as conn:
         w = _plan_row(conn, workout_id)
         if not w:
@@ -6054,11 +6021,6 @@ def swap_exercise(from_exercise: str, to_exercise: str,
         frm = _resolve_exercise(conn, from_exercise)
         if not frm:
             return {"error": f"{from_exercise!r} isn't in this plan"}
-        to = _resolve_exercise(conn, to_exercise)
-        if not to:
-            return {"error": f"{to_exercise!r} isn't in the library — pick a peer from "
-                             "find_exercises(similar_to=...) or add it on the library page",
-                    "candidates": _match_exercises(conn, to_exercise)}
         pend = conn.execute(
             """SELECT target_weight_lbs, target_reps, target_rpe FROM sets
                WHERE workout_id=? AND exercise_id=? AND status='pending'
@@ -6072,35 +6034,39 @@ def swap_exercise(from_exercise: str, to_exercise: str,
              "target_rpe": p["target_rpe"]}
             for p in pend
         ]
-        spec = [{"name": to["name"], "sets": sub_sets}]
+        spec = [{"name": to_exercise, "sets": sub_sets, "muscles": to_muscles,
+                 "secondary_muscles": to_secondary_muscles}]
         if err := _bad_planned(spec):
             return err
+        events: dict = {}
+        if not _resolve_or_create(conn, spec[0], events):
+            return {"error": f"can't swap to {to_exercise!r}", **events}
         conn.execute(
             "UPDATE sets SET status='skipped' WHERE workout_id=? AND exercise_id=? AND status='pending'",
             (w["id"], frm["id"]),
         )
-        _results, unmatched = _insert_planned(conn, w["id"], spec)
-        return _plan_payload(conn, w["id"], unmatched=unmatched)
+        _results, more = _insert_planned(conn, w["id"], spec)
+        for k, v in more.items():
+            events.setdefault(k, []).extend(x for x in v if x not in events.get(k, []))
+        return _plan_payload(conn, w["id"], events=events)
 
 
 @trainer_mcp.tool(annotations=WRITE)
 def add_to_plan(exercises: list[PlannedExercise], workout_id: Optional[int] = None) -> dict:
     """Append exercises (or extra sets of an exercise already present) to the active
     plan mid-session — e.g. "add some calf raises" or "give me one more drop set". Same
-    `exercises` shape as start_workout_plan; pick the movements from the library with
-    `find_exercises(...)`. Errors if no plan is active. Names resolve against the closed
-    catalog — a name that doesn't match comes back under `unmatched` with its closest
-    `candidates` and is not added; re-issue it under one of those (or have the user add it
-    on the library page). (To retarget an existing pending set, use update_set with
-    target_weight_lbs/target_reps; to drop one, delete_record(kind="set").)"""
+    `exercises` shape as start_workout_plan (so a new movement is created on the fly
+    from its `muscles`). Errors if no plan is active. (To drop an exercise, use
+    remove_from_plan; to retarget a pending set, update_set; to drop one set,
+    delete_record(kind="set").)"""
     if err := _bad_planned(exercises):
         return err
     with db() as conn:
         w = _plan_row(conn, workout_id)
         if not w:
             return {"error": "no active workout plan; start one with start_workout_plan"}
-        results, unmatched = _insert_planned(conn, w["id"], exercises)
-        return _plan_payload(conn, w["id"], unmatched=unmatched)
+        results, events = _insert_planned(conn, w["id"], exercises)
+        return _plan_payload(conn, w["id"], events=events)
 
 
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
@@ -6129,7 +6095,7 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
                    notes: Optional[str] = None) -> dict:
     """Close out the active plan when the session is over. Remaining pending sets are
     marked 'skipped'; the session flips to 'done' and its completed sets become ordinary
-    history (counting toward recency/PRs and showing on the workouts page). Optionally
+    history (counting toward recency/PRs). Optionally
     record overall `feeling`/`notes`. If nothing was completed, the empty session is
     deleted instead. Returns a short summary."""
     with db() as conn:
@@ -6195,6 +6161,7 @@ _SCALE_TIME_FORMATS = (
     "%Y.%m.%d %I:%M %p", "%Y.%m.%d %H:%M", "%Y.%m.%d %I:%M:%S %p",
     "%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S",
     "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M",
+    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",      # a spreadsheet tool's ISO rendering
 )
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
@@ -6349,7 +6316,12 @@ def import_bodyweight(blob: bytes) -> dict:
         return parsed
     if not parsed:
         return {"error": "no readings found in that file"}
+    return _insert_readings(parsed)
 
+
+def _insert_readings(parsed: list[dict]) -> dict:
+    """The write half both import doors share (the file upload and import_weigh_ins):
+    INSERT OR IGNORE on source_key, then the counts + new_low report."""
     with db() as conn:
         before = conn.execute("SELECT MIN(weight_lbs) AS m FROM body_weight").fetchone()["m"]
         stamp, imported = now(), []
@@ -6377,26 +6349,77 @@ def import_bodyweight(blob: bytes) -> dict:
     return out
 
 
+@trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
+def import_weigh_ins(readings: list[ScaleReading]) -> dict:
+    """Load weigh-ins from the user's connected-scale export — the file their scale's
+    app produces, which they'll attach to the conversation. Read the sheet, and pass one
+    item per row: the date-and-time cell as `stamp` (e.g. "2026.08.22 06:39 AM"; an
+    ISO "2026-08-22 06:39:00" is fine too) and its weight column as `weight_lbs` (or
+    `weight_kg` for a metric export). Ignore every other column (body fat, BMR, …) —
+    this is a weight log.
+
+    The stamp, to the minute, is the reading's identity, which is what makes this
+    IDEMPOTENT: exports overlap (the app hands over "the last 30 days"), so pass the
+    WHOLE sheet every time and only readings not already on file land — `imported: 0`
+    on a re-send is the normal case, not an error. So a stamp is always the export's
+    own, never estimated or made up.
+
+    This is the ONLY way a weigh-in gets written. A number the user just SAYS ("I was
+    184 this morning") is not one — readings come from the scale, and a wrong one is
+    fixed in the scale's app and re-exported. Returns `imported`/`skipped` counts, the
+    date span that landed, `latest_lbs`, `new_low` when a new reading beat the all-time
+    low, and `unparsed` for any stamp that wasn't a recognisable date (those are
+    skipped rather than guessed at)."""
+    parsed, unparsed = [], []
+    for r in readings or []:
+        stamp = (r.get("stamp") or "").strip()
+        at = _parse_scale_stamp(stamp) if stamp else None
+        lbs = r.get("weight_lbs")
+        if lbs is None and r.get("weight_kg") is not None:
+            lbs = round(float(r["weight_kg"]) * 2.20462, 1)
+        if at is None or lbs is None:
+            unparsed.append(stamp or r)
+            continue
+        if not 50 <= float(lbs) <= 700:
+            unparsed.append(stamp)
+            continue
+        # The key is RE-RENDERED in the export's own format rather than taken as
+        # given: a spreadsheet reader may hand the cell back as "2026-08-22 06:39:00",
+        # and the same reading under a second spelling would store twice — including
+        # against rows the old file-upload path keyed as "wyze:2026.08.22 06:39 AM".
+        key = f"{SCALE_EXPORT_SOURCE}:{at.strftime('%Y.%m.%d %I:%M %p')}"
+        parsed.append({"source_key": key,
+                       "weigh_date": at.date().isoformat(),
+                       "weight_lbs": round(float(lbs), 1), "at": at})
+    if not parsed:
+        return {"error": "no usable readings — pass each row's date-and-time cell as "
+                         "`stamp` and its weight", "unparsed": unparsed}
+    parsed.sort(key=lambda r: r["at"])
+    out = _insert_readings(parsed)
+    if unparsed:
+        out["unparsed"] = unparsed
+    return out
+
+
 @trainer_mcp.tool(annotations=READ_ONLY)
 def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) -> dict:
     """One-call trainer context. Returns the stored profile (injuries, split, goals,
     and `coaching` — the user's OWN standing instructions about how to coach them,
-    written on the trainer page; read it as instruction, not background),
+    read it as instruction, not background),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
     in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
     logged last time is a caution this time), `bodyweight` (latest reading, days since,
     and 30-day change; negative = down), `upcoming` (sessions already PLANNED and not yet
     done — workout_id, planned_date, focus, exercise names, set count — next-due first),
-    and `rotation` — the curated pool of movements
-    the user trains (id, name, category, equipment, primary muscles). Call this at the
+    `exercises` — the user's ACTIVE exercises (muscles, last_done, sessions, note) — and
+    `archived_exercises` (how many are in the archive; list_exercises shows them). Call this at the
     start of a training conversation to decide what to work and what to rest: muscles with
     the most days_since (and low recent volume) are recovered and due; ones trained in the
     last ~1-2 days should rest. Cardio is tracked separately because it carries no muscle
-    mapping. BUILD SESSIONS FROM `rotation` — it's the set the user actually trains; don't
-    pull in movements outside it without asking (the full ~870-movement library is a
-    reference the user curates from, via the library page or set_rotation). The
-    recommendation itself is yours to make from this data.
+    mapping. BUILD SESSIONS FROM `exercises` — it's what the user actually trains; don't
+    bring in anything else without asking. The recommendation itself is yours to make
+    from this data.
 
     `as_of` is the day you're planning FOR (YYYY-MM-DD), defaulting to today. When the
     user wants TOMORROW's session, pass tomorrow's date (today + 1; today is in `now`):
@@ -6437,22 +6460,11 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
                GROUP BY e.id""",
             (week_ago, week_ago),
         ).fetchall()
-        # The rotation: the curated pool the model programs from. Compact (id, name,
-        # category, equipment, primary muscles) — one query for the muscles, grouped in.
-        rot_rows = conn.execute(
-            "SELECT id, name, category, equipment FROM exercises "
-            "WHERE in_rotation=1 AND archived=0 ORDER BY name"
-        ).fetchall()
-        rot_primary: dict[int, list[str]] = {}
-        for pr in conn.execute(
-            "SELECT em.exercise_id, em.muscle FROM exercise_muscles em "
-            "JOIN exercises e ON e.id = em.exercise_id "
-            "WHERE e.in_rotation=1 AND e.archived=0 AND em.role='primary' ORDER BY em.muscle"
-        ):
-            rot_primary.setdefault(pr["exercise_id"], []).append(pr["muscle"])
-        rotation = [{"exercise_id": r["id"], "name": r["name"], "category": r["category"],
-                     "equipment": r["equipment"], "primary_muscles": rot_primary.get(r["id"], [])}
-                    for r in rot_rows]
+        # The user's ACTIVE exercises — the pool the model programs from (the archive is
+        # list_exercises' job; only its size rides along here).
+        active = _exercise_rows(conn, False)
+        archived_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM exercises WHERE archived=1").fetchone()["n"]
         # Recent history is COMPLETED sessions only; an in-progress plan (status
         # 'active') is surfaced separately via get_workout_plan.
         recent = conn.execute(
@@ -6528,7 +6540,8 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     return {"now": current_clock(), "profile": profile,
             "muscle_recency": recency, "cardio_recency": cardio,
             "bodyweight": bodyweight, "recent_workouts": recent_out,
-            "upcoming": upcoming_out, "rotation": rotation}
+            "upcoming": upcoming_out, "exercises": active,
+            "archived_exercises": archived_count}
 
 
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
@@ -6542,10 +6555,11 @@ def update_profile(profile: dict) -> dict:
 
     One key is NOT yours to maintain: `coaching`, the user's own standing
     instructions about how you coach (session size, tone, what to nudge). They edit
-    it themselves in /trainer's Coaching popover, and it's the one part of the prompt
-    they steer — rewriting it from a passing remark takes that away. Only write it
-    when the user asks you to change it in so many words, and write the whole text
-    (this merge replaces a key wholesale), so read it back first."""
+    it by telling you to, and it's the one part of the prompt they steer — rewriting
+    it from a passing remark takes that away. Only write it when the user asks you to
+    change it in so many words, and write the whole text (this merge replaces a key
+    wholesale), so read it back first from the briefing and show them the new text.
+    Setting it to "" hands the built-in default back."""
     with db() as conn:
         current = _get_profile(conn)
         current.update(profile)
@@ -6560,7 +6574,7 @@ def update_profile(profile: dict) -> dict:
 def set_trainer_profile(coaching: Optional[str]) -> dict:
     """Set the trainer's `coaching` text from the WEBSITE — /trainer's Coaching
     popover. A NON-tool, website-only path like set_nutrient_targets and
-    set_archived: never a FastMCP tool, so no connector can reach it.
+    import_bodyweight: never a FastMCP tool, so no connector can reach it.
 
     It writes the SAME place update_profile does (settings → `profile` →
     `coaching`), because the point is one text feeding both connectors and the

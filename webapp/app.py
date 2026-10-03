@@ -150,7 +150,7 @@ LOCK_MIN_CHORD = 2
 LOCK_MAX_CHORD = 6
 
 # Journal-only paths the lock guards (relative to the mount prefix). Everything
-# else — trainer, library, auth, static, the lock screen itself — passes
+# else — trainer, auth, static, the lock screen itself — passes
 # straight through.
 LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
 LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/")
@@ -618,7 +618,7 @@ async def lock_page(request: Request):
     else:
         mode = "unlock"
     # active="journal" so base.html renders the nav: the lock only covers the journal,
-    # so the rest of the app (trainer, training, library) stays reachable
+    # so the rest of the app (trainer, training) stays reachable
     # from the lock screen without unlocking.
     # `has_knock`/`has_chord` only ever reach the SETUP screen (the template gates on
     # mode), so the unlock screen still gives nothing away about which gestures work.
@@ -1204,62 +1204,6 @@ async def trainer_profile(request: Request):
     return JSONResponse(res, status_code=code)
 
 
-@app.get("/trainer/library")
-async def trainer_library(request: Request, muscle: str = "", q: str = "",
-                          rotation: str = "", hearted: str = "", archived: str = "",
-                          error: str = ""):
-    """The exercise library: browse the whole catalog — muscles (by emphasis tier),
-    equipment, level/mechanic, technique, and a form gif/video per exercise. Filterable
-    by muscle, name, `rotation` (the small programming pool) or `hearted` (the wider
-    favorites superset it's drawn from); `archived` shows the soft-deleted movements (the
-    Archived view, where each row offers Restore). Each row toggles in/out of the rotation
-    and the hearted superset and can be archived (removed from the library without breaking
-    past workouts). The user curates the closed catalog here: the page's AI add panel (the
-    `exercise` chat agent → server.create_exercise) is the only way a new exercise enters
-    it — the trainer chat can enrich technique but never creates one."""
-    lib = data.exercise_library(muscle=muscle, q=q, rotation=bool(rotation),
-                                hearted=bool(hearted), archived=bool(archived))
-    return page(request, "library.html", active="library", error=error, **lib)
-
-
-@app.post("/trainer/exercise/{exercise_id}/rotation")
-async def trainer_set_rotation(request: Request, exercise_id: int):
-    """Toggle one exercise in/out of the rotation (the library page's star button). Body:
-    {"in_rotation": true|false}. Writes through server.set_rotation (which also hearts it
-    when adding). Returns the resulting {in_rotation, hearted} so the UI can sync both."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    res = server.set_rotation(exercise_id=exercise_id, in_rotation=bool(body.get("in_rotation")))
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-@app.post("/trainer/exercise/{exercise_id}/hearted")
-async def trainer_set_hearted(request: Request, exercise_id: int):
-    """Toggle one exercise in/out of the hearted superset (the library page's heart button).
-    Body: {"hearted": true|false}. Writes through server.set_hearted (un-hearting also drops
-    it from the rotation). Returns the resulting {in_rotation, hearted} so the UI syncs both."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    res = server.set_hearted(exercise_id=exercise_id, hearted=bool(body.get("hearted")))
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-@app.post("/trainer/exercise/{exercise_id}/archive")
-async def trainer_set_archived(request: Request, exercise_id: int):
-    """Archive (soft-delete) or restore one exercise — the library row's Archive / Restore
-    control. Body: {"archived": true|false} (defaults true). Archiving hides it from the
-    library, search and the trainer, and drops it from the rotation, without deleting the
-    row, so past workouts keep their links. Writes through server.set_archived."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    res = server.set_archived(exercise_id=exercise_id,
-                              archived=bool(body.get("archived", True)))
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
 def _num(v):
     """Coerce a JSON value to float|None ('' / null -> None)."""
     if v is None or v == "":
@@ -1392,22 +1336,6 @@ async def trainer_discard_plan(request: Request, workout_id: int):
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
     return JSONResponse(res)
-
-
-@app.get("/trainer/exercise/{exercise_id}/info.json")
-async def trainer_exercise_info(request: Request, exercise_id: int):
-    """Technique for the plan card's "i" button: the catalog's saved technique notes,
-    common mistakes and cautions, plus a YouTube search link to quickly watch the
-    movement (and any saved video_link)."""
-    from fastapi.responses import JSONResponse
-    from urllib.parse import quote_plus
-    info = server.find_exercises(exercise_id=exercise_id)
-    if isinstance(info, dict) and not info.get("error"):
-        terms = ((info.get("name") or "") + " proper form technique").strip()
-        info["youtube_search"] = ("https://www.youtube.com/results?search_query="
-                                  + quote_plus(terms))
-    code = 404 if isinstance(info, dict) and info.get("error") else 200
-    return JSONResponse(info, status_code=code)
 
 
 # --------------------------------------------------------------------------- #
@@ -1671,7 +1599,7 @@ def _chat_context(body: dict):
 # guards the journal's prose) and are strictly read-only for CONTENT: the MCP
 # tools are the one write path for items, so the browser only renders what
 # conversation has filed. The one thing the browser does write is PRESENTATION —
-# the Display popover below, the library-★/♥ pattern applied to rendering.
+# the Display popover below.
 @app.get("/collections")
 async def collections(request: Request):
     """The collections index — or, with ?q=, a title search across every

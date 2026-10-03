@@ -2,8 +2,7 @@
  * Trainer plan card. Renders the active workout plan into #plan-root and handles the
  * write paths the page owns directly: tap-to-complete a planned set, edit a logged
  * ('done') set to fix a data-entry error, drop or replace an exercise (the per-exercise
- * "..." menu), and finish the session. A per-exercise "i" opens saved technique notes +
- * a YouTube search link. Building/swapping the routine happens in the chat, which calls
+ * "..." menu), and finish the session. Building/swapping the routine happens in the chat, which calls
  * window.TrainerPlan.refresh() after each write (see _trainer_chat_panel).
  *
  * One render path: the server bootstraps the initial plan as JSON; every update
@@ -19,7 +18,7 @@
   var wid = root.dataset.workoutId || '';
   function url(path) { return base + '/trainer/' + wid + path; }
   var editingSetId = null; // only one inline set editor open at a time
-  var openPanel = null;    // {eid, kind:'info'|'menu'} — at most one info/menu panel open
+  var openPanel = null;    // {eid, kind:'menu'} — at most one menu panel open
   var currentPlan = null;  // last rendered plan (Finish reads its progress)
   var reordering = false;  // reorder mode: arrows to the left of each exercise, header "Done"
   var reorderList = null;  // working copy of the visible exercises while reordering
@@ -349,20 +348,14 @@
     return b;
   }
 
-  // A small round icon button for the per-exercise controls.
-  function iconBtn(kind, label) {
+  // A small round icon button for the per-exercise "..." menu.
+  function iconBtn(label) {
     var b = el('button', 'w-7 h-7 flex items-center justify-center rounded-full ' +
       'text-gray-300 hover:text-black hover:bg-gray-100 transition-colors');
     b.type = 'button';
     b.setAttribute('aria-label', label);
     b.title = label;
-    if (kind === 'info') {
-      b.appendChild(el('span',
-        'w-4 h-4 flex items-center justify-center rounded-full border border-current ' +
-        'text-[10px] font-semibold leading-none', 'i'));
-    } else {
-      b.appendChild(el('span', 'text-lg leading-none', '⋯'));
-    }
+    b.appendChild(el('span', 'text-lg leading-none', '⋯'));
     return b;
   }
 
@@ -372,11 +365,8 @@
     var head = el('div', 'flex items-center justify-between mb-3 gap-2');
     head.appendChild(el('p', 'text-sm font-medium', ex.name));
     var ctrls = el('div', 'flex items-center gap-1 shrink-0');
-    var info = iconBtn('info', 'How to do ' + ex.name);
-    info.addEventListener('click', function () { toggleInfo(ex); });
-    var menu = iconBtn('menu', 'More options for ' + ex.name);
+    var menu = iconBtn('More options for ' + ex.name);
     menu.addEventListener('click', function () { toggleMenu(ex); });
-    ctrls.appendChild(info);
     ctrls.appendChild(menu);
     head.appendChild(ctrls);
     box.appendChild(head);
@@ -390,7 +380,7 @@
     slot.dataset.editorSlot = String(ex.exercise_id);
     box.appendChild(slot);
 
-    // Panel slot for the "i" info card / "..." menu (one at a time).
+    // Panel slot for the "..." menu.
     var panel = el('div', 'mt-3');
     panel.dataset.panelSlot = String(ex.exercise_id);
     box.appendChild(panel);
@@ -632,7 +622,7 @@
     celebratePR(r.data);
   }
 
-  // ── Per-exercise info ("i") and menu ("...") panels ─────────────────────────
+  // ── Per-exercise menu ("...") panel ─────────────────────────────────────────
 
   function panelSlotFor(eid) { return root.querySelector('[data-panel-slot="' + eid + '"]'); }
 
@@ -644,89 +634,6 @@
   function closeEditors() {
     root.querySelectorAll('[data-editor-slot]').forEach(function (n) { n.innerHTML = ''; });
     editingSetId = null;
-  }
-
-  async function toggleInfo(ex) {
-    var slot = panelSlotFor(ex.exercise_id);
-    if (!slot) return;
-    if (openPanel && openPanel.eid === ex.exercise_id && openPanel.kind === 'info') {
-      closePanels(); return;
-    }
-    closePanels(); closeEditors();
-    openPanel = { eid: ex.exercise_id, kind: 'info' };
-    var card = el('div', 'border-t border-gray-100 pt-3 space-y-2');
-    card.appendChild(el('p', 'text-sm text-gray-400', 'Loading…'));
-    slot.appendChild(card);
-    var info = {};
-    try {
-      var res = await fetch(base + '/trainer/exercise/' + ex.exercise_id + '/info.json',
-        { headers: { 'Accept': 'application/json' } });
-      info = await res.json();
-    } catch (e) { info = { error: 'Could not load technique notes.' }; }
-    // Bail if the user closed/switched the panel while we were fetching.
-    if (!(openPanel && openPanel.eid === ex.exercise_id && openPanel.kind === 'info')) return;
-    renderInfo(card, ex, info || {});
-  }
-
-  function renderInfo(card, ex, info) {
-    card.innerHTML = '';
-    function block(label, text) {
-      if (!text) return;
-      card.appendChild(el('p', 'text-[10px] uppercase tracking-widest text-gray-400', label));
-      card.appendChild(el('p', 'text-sm text-gray-700 leading-relaxed', text));
-    }
-    // Muscle emphasis tiers (primary / secondary / tertiary), each only if present.
-    var m = info.muscles || {};
-    var tiers = [['primary', m.primary], ['secondary', m.secondary], ['tertiary', m.tertiary]]
-      .filter(function (t) { return t[1] && t[1].length; });
-    if (tiers.length) {
-      var mline = el('p', 'text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5');
-      tiers.forEach(function (t) {
-        var span = el('span', '');
-        span.appendChild(el('span', 'text-gray-400', t[0] + ' '));
-        span.appendChild(document.createTextNode(t[1].join(', ')));
-        mline.appendChild(span);
-      });
-      card.appendChild(mline);
-    }
-    // Saved form photos. free-exercise-db ships a start + finish frame; with both, overlay
-    // them and let the shared .rep-loop CSS (base.html) crossfade the two so the rep moves.
-    // A lone image (or a self-looping gif) just renders as a still.
-    if (info.image_link && info.image_link_end) {
-      var wrap = el('div', 'rep-loop relative inline-block rounded-[4px] border border-gray-100 overflow-hidden');
-      var start = el('img', 'block max-h-48 w-auto');
-      start.src = info.image_link; start.alt = (info.name || ex.name || '') + ' — start of the rep';
-      start.loading = 'lazy';
-      var finish = el('img', 'rep-loop-end absolute inset-0 h-full w-full object-cover');
-      finish.src = info.image_link_end; finish.alt = (info.name || ex.name || '') + ' — finish of the rep';
-      finish.loading = 'lazy';
-      wrap.appendChild(start); wrap.appendChild(finish);
-      card.appendChild(wrap);
-    } else if (info.image_link) {
-      var img = el('img', 'rounded-[4px] border border-gray-100 max-h-48 w-auto');
-      img.src = info.image_link; img.alt = (info.name || ex.name || '') + ' technique';
-      img.loading = 'lazy';
-      card.appendChild(img);
-    }
-    block('Technique', info.technique_notes);
-    block('Common mistakes', info.common_mistakes);
-    block('Cautions', info.cautions);
-    if (!info.technique_notes && !info.common_mistakes && !info.cautions) {
-      card.appendChild(el('p', 'text-sm text-gray-400',
-        'No saved technique notes yet — watch a quick video below, or ask the trainer for cues.'));
-    }
-    var links = el('div', 'flex flex-wrap gap-4 pt-1 text-sm');
-    var yt = el('a', 'text-gray-700 hover:text-black underline transition-colors', 'Watch on YouTube ↗');
-    yt.href = info.youtube_search ||
-      ('https://www.youtube.com/results?search_query=' + encodeURIComponent((ex.name || '') + ' proper form technique'));
-    yt.target = '_blank'; yt.rel = 'noopener noreferrer';
-    links.appendChild(yt);
-    if (info.video_link) {
-      var vl = el('a', 'text-gray-700 hover:text-black underline transition-colors', 'Saved video ↗');
-      vl.href = info.video_link; vl.target = '_blank'; vl.rel = 'noopener noreferrer';
-      links.appendChild(vl);
-    }
-    card.appendChild(links);
   }
 
   function toggleMenu(ex) {

@@ -83,186 +83,20 @@ _TRAINER_BLURB = (
     "missed reps) hold or back off. Keep their staple lifts so the progression data "
     "stays comparable — vary exercises only modestly, not every session.\n\n"
     "During the workout: they'll log most sets by tapping the card, but if they tell "
-    "you ('did 10 at 100, felt like an 8') use complete_set. If a machine is taken or "
+    "you ('did 10 at 100, felt like an 8') use complete_sets. If a machine is taken or "
     "broken, use swap_exercise for the same muscle group (pass the right target weight "
     "for the substitute). add_to_plan to tack on more; finish_workout when they're "
     "done — pass its `workout_id` when it isn't the session they're standing on. Call "
     "get_workout_plan (with a `workout_id` from `upcoming` for a specific day) if you "
     "need to see the current state.\n\n"
+    "Exercises: program from the user's ACTIVE exercises (the briefing carries them; "
+    "list_exercises shows the archive too — read it before suggesting something new). "
+    "A movement they haven't done before is created on the fly: plan or log it by name "
+    "with its `muscles`. Only archive a lift on their say-so.\n\n"
     "Technique questions: answer with a clear, specific walkthrough — setup, the "
     "movement, tempo, what it should feel like, and the common mistakes to avoid — "
-    "drawing on the exercise's saved technique_notes/common_mistakes/cautions (via the "
-    "find_exercises tool) and your own knowledge. If you give durable cues for an exercise, "
-    "consider saving them with save_exercise so they're there next time."
+    "from your own knowledge, mindful of any injuries in their profile."
 )
-
-# --------------------------------------------------------------------------- #
-# Exercise-add agent — a WEBAPP-ONLY surface that can CREATE library exercises.
-# --------------------------------------------------------------------------- #
-# The library is closed to the model everywhere else: server.create_exercise is
-# deliberately NOT a FastMCP tool, so the journal/trainer connectors (Claude Desktop,
-# phone) can never grow the catalog — only the website's trusted code path can. This
-# agent is that path with an LLM in front of it: it lives here in the web app (the
-# client side of the no-LLM-in-the-server line, exactly like the rest of chat.py) and
-# is reachable only by the authenticated user on the library page. Its two tools are
-# hand-written here rather than lifted from a server instance, precisely so creating an
-# exercise stays off the MCP tool surface.
-
-_EXERCISE_INSTRUCTIONS = (
-    "You are the exercise-library assistant inside the user's training web app. Your one "
-    "job: take whatever the user tells you about a NEW exercise and add a single, well-"
-    "formed record to their library — filling EVERY field properly, from their info plus "
-    "your own knowledge of the movement.\n\n"
-    "The library is a closed catalog of strength/cardio movements. A record's fields:\n"
-    "- name: the canonical movement name in Title Case (e.g. \"Bulgarian Split Squat\").\n"
-    "- category: a coarse bucket — usually strength, stretching, plyometrics, or cardio "
-    "(or a simple split label like push/pull/legs/core if that's how the user frames it).\n"
-    "- equipment: barbell, dumbbell, machine, cable, kettlebell, body only, bands, etc.\n"
-    "- force: exactly one of push | pull | static.\n"
-    "- level: difficulty — exactly one of beginner | intermediate | expert.\n"
-    "- mechanic: compound | isolation.\n"
-    "- muscles / secondary_muscles / tertiary_muscles: the muscles worked, in three "
-    "EMPHASIS tiers — primary = what the lift is FOR, secondary = real assistance, "
-    "tertiary = lightly involved. Use ONLY these canonical labels: "
-    + ", ".join(server.MUSCLES) + ".\n"
-    "- technique_notes: a concise setup + execution walkthrough (the key cues).\n"
-    "- common_mistakes: the usual form errors.\n"
-    "- cautions: injury / safety caveats.\n"
-    "- aliases: common alternative names this movement is searched/spoken by (AKAs), "
-    "lowercased — e.g. a Romanian Deadlift gets ['rdl','stiff leg deadlift']. Fill the "
-    "obvious ones from your own knowledge so the lift is findable by whatever the user "
-    "calls it; don't repeat the canonical name.\n"
-    "- video_link: optional, only if the user hands you a URL. Never ask for images.\n\n"
-    "How to work:\n"
-    "1. ALWAYS call check_library FIRST with the movement name (and any obvious variant) "
-    "before creating anything. If an exact or essentially-identical entry already exists, "
-    "STOP and tell the user it's already in the library, naming it — do NOT create a "
-    "duplicate. A close but genuinely DIFFERENT movement in the results (e.g. they want "
-    "Hack Squat and only Back Squat is on file) is fine — note it and carry on.\n"
-    "2. Fill EVERY field. Use what the user told you; infer the rest from your own "
-    "knowledge — the muscles and their tiers, force, level, mechanic, equipment, and a "
-    "genuinely useful technique walkthrough, common mistakes, and cautions. Don't leave "
-    "fields blank just because the user didn't mention them — filling them is the point.\n"
-    "3. Ask a follow-up ONLY when something is genuinely ambiguous and would change the "
-    "record — which variation they mean (barbell vs dumbbell), or a load-bearing detail "
-    "you truly can't infer. Don't interrogate the user over things you can reason out; "
-    "propose sensible values and proceed.\n"
-    "4. PREVIEW before saving — do NOT call create_exercise yet. Lay out the full record "
-    "for the user to review: name, category, equipment, force, level, mechanic, the three "
-    "muscle tiers, aliases (AKAs), technique_notes, common_mistakes, and cautions (use a compact "
-    "field-by-field layout, e.g. a markdown list or table, so every field is visible). "
-    "Lead the preview with the dedup result from check_library: either confirm nothing "
-    "close enough is already in the library, or name the close-but-different entries you "
-    "found and why this is distinct. Then ask the user to confirm — save it as shown, or "
-    "tell you what to change.\n"
-    "5. SAVE ONLY ON CONFIRMATION. When the user approves, call create_exercise with "
-    "exactly the previewed values; it's added to the library and their hearted FAVORITES "
-    "(the superset their rotation is drawn from) automatically — not the small active "
-    "rotation, which they curate deliberately. If they ask for changes, revise the preview "
-    "and ask again — re-preview and re-confirm each round until they approve. Never save a "
-    "version the user hasn't signed off on.\n"
-    "6. After saving, confirm briefly what landed — the name, the primary muscle emphasis, "
-    "and that it's in their favorites now (they can star it into the active rotation on the "
-    "library page). Keep it to a couple of lines.\n\n"
-    "Add ONE exercise per request unless the user clearly lists several. Be concise and "
-    "practical — they're on their phone."
-)
-
-
-def _exercise_check(name: str) -> dict:
-    """Look `name` up in the closed library so the agent never makes a duplicate: returns
-    any exact/confident match (full enough to recognise) plus the closest existing
-    entries by fuzzy/phonetic score."""
-    with server.db() as conn:
-        row = server._resolve_exercise(conn, name)
-        match = None
-        if row:
-            match = {"exercise_id": row["id"], "name": row["name"],
-                     "category": row["category"], "equipment": row["equipment"],
-                     "muscles": server._muscles_for(conn, row["id"]),
-                     "in_rotation": bool(row["in_rotation"]),
-                     "hearted": bool(row["hearted"])}
-        candidates = server._match_exercises(conn, name)
-    return {"query": name, "exact_match": match, "candidates": candidates}
-
-
-def _exercise_create(name: str, category=None, equipment=None, muscles=None,
-                     secondary_muscles=None, tertiary_muscles=None,
-                     technique_notes=None, common_mistakes=None, cautions=None,
-                     force=None, level=None, mechanic=None, aliases=None,
-                     video_link=None) -> dict:
-    """Create the exercise through the website's trusted path (server.create_exercise),
-    landing it in the user's HEARTED superset (favorites bench) — not the small rotation,
-    which they curate deliberately to ~10-14 so progress on each lift is easy to track.
-    Image links are intentionally omitted — this surface doesn't handle images."""
-    return server.create_exercise(
-        name=name, hearted=True, category=category, equipment=equipment,
-        muscles=muscles, secondary_muscles=secondary_muscles,
-        tertiary_muscles=tertiary_muscles, technique_notes=technique_notes,
-        common_mistakes=common_mistakes, cautions=cautions, force=force, level=level,
-        mechanic=mechanic, aliases=aliases, video_link=video_link)
-
-
-def _exercise_tools():
-    """The exercise-add agent's tool schemas + name→fn dispatch. Hand-written (not lifted
-    from a FastMCP instance) so the create path stays off the MCP tool surface."""
-    muscle_enum = {"type": "array", "items": {"type": "string", "enum": server.MUSCLES}}
-    tools = [
-        {
-            "name": "check_library",
-            "description": (
-                "Search the existing library for a movement BEFORE creating it. Returns "
-                "any exact/confident match and the closest existing entries, so you can "
-                "avoid duplicates. Always call this first."),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string",
-                             "description": "The exercise name (or a close variant) to look up."},
-                },
-                "required": ["name"],
-            },
-        },
-        {
-            "name": "create_exercise",
-            "description": (
-                "Add one new exercise to the library (and the user's hearted favorites — "
-                "the superset their rotation is drawn from, not the active rotation itself). "
-                "Fill every field you reasonably can. Only call this after check_library "
-                "shows it's not already on file."),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string",
-                             "description": "Canonical movement name, Title Case."},
-                    "category": {"type": "string",
-                                 "description": "Coarse bucket, e.g. strength, cardio, stretching, plyometrics."},
-                    "equipment": {"type": "string",
-                                  "description": "e.g. barbell, dumbbell, machine, cable, kettlebell, body only."},
-                    "force": {"type": "string", "enum": ["push", "pull", "static"]},
-                    "level": {"type": "string", "enum": ["beginner", "intermediate", "expert"]},
-                    "mechanic": {"type": "string", "enum": ["compound", "isolation"]},
-                    "muscles": {**muscle_enum, "description": "PRIMARY muscles — what the lift is for."},
-                    "secondary_muscles": {**muscle_enum, "description": "Real assistance muscles."},
-                    "tertiary_muscles": {**muscle_enum, "description": "Lightly-involved muscles."},
-                    "technique_notes": {"type": "string",
-                                        "description": "Concise setup + execution walkthrough / key cues."},
-                    "common_mistakes": {"type": "string", "description": "The usual form errors."},
-                    "cautions": {"type": "string", "description": "Injury / safety caveats."},
-                    "aliases": {"type": "array", "items": {"type": "string"},
-                                "description": "Common alternative names this movement is "
-                                "searched/spoken by (AKAs), e.g. ['rdl','stiff leg deadlift']. "
-                                "Lowercased; don't repeat the canonical name."},
-                    "video_link": {"type": "string",
-                                   "description": "Optional URL, only if the user provides one."},
-                },
-                "required": ["name"],
-            },
-        },
-    ]
-    dispatch = {"check_library": _exercise_check, "create_exercise": _exercise_create}
-    return tools, dispatch
-
 
 def _included(include, name: str) -> bool:
     """Whether `name` passes an agent's `include` narrowing, which is either a SET of
@@ -284,8 +118,8 @@ def _prefix(*prefixes):
 # The agent registry. A server-bound entry binds a chat surface to one FastMCP instance
 # and narrows its tool list: `exclude` drops names, `include` keeps ONLY those names.
 # An `instructions` key overrides the instance's own (the journal instance's are
-# connector-facing — see the module docstring). A webapp-defined entry instead carries
-# its own `instructions` + a `tools` builder (see the exercise-add agent above).
+# connector-facing — see the module docstring). A webapp-defined entry may instead
+# carry its own `instructions` + a `tools` builder (none does today).
 # Extend, don't special-case.
 #
 # The journal panel's `include` is CONNECTOR_HIDDEN_TOOLS — the two surfaces are exact
@@ -308,7 +142,7 @@ _TG_DOMAINS = {
     "journal": "the journal itself — days, events, the people in them",
     "intake":  "the eating log — food, drinks, water",
     "notes":   "notes & collections — recipes, ideas, links, lists",
-    "trainer": "training — workouts, plans, the exercise library",
+    "trainer": "training — workouts, plans, exercises",
 }
 
 
@@ -367,7 +201,6 @@ _AGENTS = {
     "journal":  {"server": server.mcp, "instructions": server.JOURNAL_CHAT_INSTRUCTIONS,
                  "include": server.CONNECTOR_HIDDEN_TOOLS, "blurb": _JOURNAL_BLURB},
     "trainer":  {"server": server.trainer_mcp, "exclude": set(), "blurb": _TRAINER_BLURB},
-    "exercise": {"instructions": _EXERCISE_INSTRUCTIONS, "tools": _exercise_tools, "blurb": ""},
 
     # One entry per Telegram bot. Server and tools are REUSED; only the framing is
     # new — which is why these are separate entries rather than the browser agents
@@ -590,10 +423,10 @@ _WRITE_TOOLS = {
     "intake_log", "intake_update", "intake_delete", "intake_set_profile",
     "notes_save", "notes_update", "notes_delete", "notes_file",
     "collections_save", "collections_delete",
-    "log_workout", "update_workout", "update_set", "save_exercise",
-    "update_profile", "set_rotation", "set_hearted",
-    "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
-    "reorder_plan", "finish_workout", "create_exercise",
+    "log_workout", "update_workout", "update_set", "delete_record",
+    "update_profile", "add_exercise", "update_exercise", "archive_exercise",
+    "start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
+    "reorder_plan", "finish_workout", "remove_from_plan", "import_weigh_ins",
 }
 
 
@@ -601,8 +434,7 @@ async def _ensure_tools(agent: str):
     """Build the Anthropic tool list + dispatch map for `agent` once. A server-bound
     agent lifts them from its FastMCP instance's list_tools(), narrowed by its
     `include` allowlist and/or its `exclude` names;
-    a webapp-defined agent (the exercise-add surface) supplies its own via a `tools`
-    builder, keeping its create path off the MCP tool surface. A cache_control breakpoint
+    a webapp-defined agent would supply its own via a `tools` builder. A cache_control breakpoint
     on the last tool caches the whole (large, static) tool-schema block across turns."""
     if agent in _TOOLS:
         return
@@ -771,32 +603,31 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     elif name in ("update_workout", "update_set"):
         href = "/workouts"
         summary = "Updated the workout"
-    elif name == "save_exercise":
-        summary = "Saved an exercise"
-    # Exercise-add agent (the library page's AI add).
-    elif name == "check_library":
-        summary = "Checked the library"
-    elif name == "create_exercise":
-        href = "/trainer/library"
+    elif name in ("add_exercise", "update_exercise", "archive_exercise"):
+        href = "/workouts"
+        nm = r.get("name") or g("name")
         if r.get("error"):
-            # A failed create (e.g. a name clash the model missed) shouldn't read as a
-            # write — that's what triggers the page reload on the library surface.
-            kind, summary = "read", "Exercise not added"
+            kind, summary = "read", "Exercise not changed"
+        elif name == "archive_exercise":
+            verb = "Archived" if r.get("archived", g("archived", True)) else "Restored"
+            summary = f"{verb} {nm}" if nm else f"{verb} an exercise"
         else:
-            nm = r.get("name") or g("name")
-            summary = f"Added {nm}" if nm else "Added an exercise"
+            verb = "Added" if name == "add_exercise" else "Updated"
+            summary = f"{verb} {nm}" if nm else f"{verb} an exercise"
+    elif name == "list_exercises":
+        summary = "Looked up exercises"
     elif name == "get_fitness_briefing":
         summary = "Loaded training context"
     # Trainer plan tools. Several sessions can be planned at once, so a chip links to
     # the one this call actually touched (its payload carries the workout_id) rather
     # than to a bare /trainer that would resolve to whichever is next due.
-    elif name in ("start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
+    elif name in ("start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
                   "finish_workout", "get_workout_plan"):
         wid = r.get("workout_id")
         href = f"/trainer/{wid}" if wid else "/workouts"
         summary = {
             "start_workout_plan": "Built a routine",
-            "complete_set": "Logged a set",
+            "complete_sets": "Logged sets",
             "swap_exercise": "Swapped an exercise",
             "add_to_plan": "Added to the plan",
             "finish_workout": "Finished the workout",
