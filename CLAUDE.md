@@ -31,7 +31,8 @@ training workflow needs may live only behind a webapp page: the four things that
 each got a tool — `complete_sets` (a batch, because a conversation reports a whole
 exercise at once where the card tapped one set; the single-set `complete_set` stays as
 the card's plain helper), `remove_from_plan` (the card's per-exercise delete),
-`add_exercise` (the library's add panel — see the `exercises` row) and
+`add_exercise` (the library's add panel — the library itself is gone now, see the
+`exercises` row) and
 `import_weigh_ins` (the `/weight` upload — see `body_weight`). `complete_sets` and
 `log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule applied per batch)
 because the confetti that used to announce a best has no screen to land on. The
@@ -187,7 +188,7 @@ There is no exercise-selection or progression logic in the server either.
     Value-RANGE checks (rpe 1-10, no negative reps) stay in `_bad_set` — JSON Schema
     bounds wouldn't produce the actionable error text the model needs.
   - **Each rule is stated ONCE, in its owner.** Server `instructions` hold cross-tool
-    policy (the three capture rules, Pacific dates, the rotation policy, the signed-weight
+    policy (the three capture rules, Pacific dates, the active-exercises policy, the signed-weight
     convention); a tool's docstring holds its own mechanics. Where both wanted to say it,
     the other side now points at the owner rather than restating it — restating is how
     the two drift apart.
@@ -255,7 +256,7 @@ There is no exercise-selection or progression logic in the server either.
   its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host` routing) or grafted at
   `/trainer/mcp` on the main origin (authless fallback).
 - `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
-  read-only browse pages — including the `/trainer/library` exercise library — plus the
+  read-only browse pages, plus the
   handful of website-only write carve-outs (`/food/targets`, `/weight` and its `/{id}`
   edit + delete, `/graphs/goal`, `/trainer/profile`, a collection's `/display`) and the
   `/chat` panel mount).
@@ -275,13 +276,9 @@ There is no exercise-selection or progression logic in the server either.
   Telegram bots (see `webapp/telegram.py`); they REUSE the servers and tools and
   differ only in `blurb`, because the framing is the part that's surface-specific —
   `_TRAINER_BLURB` talks about the plan card beside the chat, which doesn't exist in
-  a Telegram thread. The `exercise` agent is different: it's a
-  WEBAPP-DEFINED agent (its `instructions` and its two tools — `check_library`,
-  `create_exercise` — are hand-written here, NOT lifted from a server) so the
-  exercise-creation path stays OFF the MCP tool surface. It backs the library page's
-  "+ Add an exercise" panel and is the one place an LLM can grow the catalog — reachable
-  only by the authenticated user, never by the journal/trainer connectors. Off unless
-  `ANTHROPIC_API_KEY` is set; model via `CHAT_MODEL`.
+  a Telegram thread. (The webapp-defined `exercise` agent that backed the library's
+  add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is set; model
+  via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
   `chat.js`, manifest); the app is an installable PWA. `static/confetti.js` is the
   app's one celebratory flourish (`window.Confetti.burst(el)`, thrown at a lifting PR
@@ -658,72 +655,46 @@ working.
   `intake_items` (see above) because a stored total can't be corrected without
   arithmetic. Its rows fold into `intake_items` once, one item per day, on the first
   `init_db` after this change; the table is kept, not dropped.
-- `exercises` — the exercise catalog (stable entities, like people): `slug`, `force`,
-  `level` (difficulty), `mechanic` (compound/isolation), `equipment`, `technique_notes`,
-  `common_mistakes`, `cautions`, `video_link`, `image_link` + `image_link_end` (the rep's
-  start and finish frames — the library crossfades the two into a looping rep animation
-  rather than showing one frozen still), `in_rotation`, `hearted`, and
-  `archived`. PRE-LOADED
-  with ~870 movements from free-exercise-db (`scripts/import_exercises.py`); the schema
-  mirrors that dataset. **Three nested layers** (`rotation ⊆ hearted ⊆ library`): the whole
-  catalog is the **LIBRARY** (browsable at `/trainer/library`); `hearted=1` marks the
-  **SUPERSET**, the user's bench of favorite movements; `in_rotation=1` marks the small
-  curated **ROTATION** (kept small enough that progress on each lift is easy to track —
-  HOW small is the user's business, and the model is told to have no opinion about the
-  count: a hard number in the prose is a number that goes stale the first time they
-  re-curate, and a trainer that opens by offering to prune nine lifts is spending the
-  session on the one thing it doesn't decide), the only pool the trainer programs from. The rotation is drawn from the hearted
-  superset — every few months the user swaps some of the rotation out for other hearted
-  lifts. `set_rotation`/`set_hearted` curate the two pools (mirrored by the library page's
-  ★/♥ toggles); the invariant `in_rotation ⇒ hearted` is enforced everywhere either flag is
-  written — adding to the rotation hearts it, un-hearting drops it from the rotation, archiving
-  clears BOTH, and the website's **+ Add an exercise** panel lands new movements in the
-  *hearted superset* (not the rotation, which stays deliberate and hand-curated). **Logging
-  a movement hearts it but NEVER adds it to the rotation** — the rotation is the user's
-  control over their progression, so it grows ONLY on an explicit `set_rotation` request (in
-  chat, after clear confirmation) or via the website's ★ toggle, never automatically from
-  training. The
-  catalog is **CLOSED to the model**: the logging/planning tools resolve a name against it
-  (fuzzily — exact, then spacing/punct-insensitive, then a high-confidence typo match;
-  `EX_CONFIDENT` is high so Hack/Back Squat surfaces as a candidate, not a silent
-  mis-resolve) and a name with no match is SKIPPED and returned under `unmatched` with its
-  closest `candidates`, never auto-created. **Superseded in part by the MCP-only trainer:**
-  the trainer connector now has `add_exercise`, gated in its contract to an explicit user
-  request after a preview, refusing an existing name and asking "did you mean?" at
-  `ADD_NEAR_DUP` (0.88 — tighter than the 0.6 candidate floor, which nearly every name
-  clears against an 870-row library). It lands hearted, never in the rotation. The
-  paragraph below is the original website-only design. New exercises enter ONLY through the website's
-  **+ Add an exercise** panel on `/trainer/library` — an AI helper (the webapp-defined
-  `exercise` chat agent in `webapp/chat.py`) that dedupes, fills every field from the
-  user's words plus its own knowledge, and calls `create_exercise` — plus the bulk
-  importer. Both are NON-tool paths the *connectors* can't reach: `create_exercise` is
-  never a FastMCP tool, so the journal/trainer servers still can't grow the catalog; only
-  the authenticated user, through the website, can. The model-facing `save_exercise` only
-  *enriches* existing rows or toggles `in_rotation`.
-  `find_exercises(similar_to=…)` returns like-for-like swap peers (shared primary muscle + same
-  mechanic). **Archiving** (`archived=1`) is a SOFT delete — the library page's "remove"
-  control (`server.set_archived`, another NON-tool, website-only path; it also clears
-  `in_rotation`). An archived movement is invisible everywhere the catalog is *discovered*
-  — the library, name search, name-resolution, swap peers, the rotation — so the model has
-  no idea it exists, exactly as if deleted; but the row and any past-workout links it's
-  referenced by survive, and by-id history (`get_exercise_history`, etc.) still resolves.
-  Restore from the library's **Archived** view, or by re-adding the same name on the add
-  form (`create_exercise` reuses & un-archives the row rather than colliding on the UNIQUE
-  name).
-- `exercise_aliases` — AKAs (common alternative names) per exercise, the `aliases` table's
-  twin for the catalog: one canonical row, many surface forms ("rdl"→Romanian Deadlift,
-  "bench"→Barbell Bench Press). `_resolve_exercise`/`_match_exercises` score against the
-  canonical name AND its AKAs (archived rows still excluded), so a lift resolves and the
-  library search surfaces it by whatever the user calls it. Stored lowercased; an AKA never
-  creates a row (catalog stays closed). Set via `save_exercise`/`create_exercise`'s
-  `aliases=`; the default-library AKAs are seeded by `scripts/seed_exercise_akas.py` (keyed
-  by exact NAME, not id — ids differ between dev and prod — so it's safe to run against
-  production; merge, idempotent).
+- `exercises` — the user's OWN movements, nothing else. **There is no library.** It used
+  to be ~870 movements pre-loaded from free-exercise-db with technique notes, cautions,
+  rep images and a three-layer rotation ⊆ hearted ⊆ library curation; the user retired
+  all of it ("I don't need to be storing a ton of exercises I don't do"), and the reason
+  is worth keeping: reference data about movements is what the MODEL already knows, so
+  storing it bought a closed catalog the user had to curate in a browser before they
+  could log anything new. Now a row is just `name`, `category` (`strength`|`cardio`),
+  `archived`, and a `note`, plus its muscles.
+  **Two states.** ACTIVE (`archived=0`) is what the trainer programs from — the
+  briefing's `exercises`. ARCHIVED is what the user did and stopped, kept as a record
+  rather than deleted, with `note` saying why ("bugged my left shoulder"); the model
+  reads it (`list_exercises`) before proposing something new, so it neither pitches a
+  lift that was dropped for pain nor forgets one worth bringing back. `archive_exercise`
+  moves a lift between the two on the user's say-so; LOGGING an archived lift
+  reactivates it automatically (it's being done again). Archiving never deletes — sets,
+  history and PRs stay linked.
+  **Born on the fly.** Every planning/logging path resolves names through ONE helper,
+  `_resolve_or_create`: a known name (fuzzy, AKA, or a 2+-word shorthand whose words
+  all appear in exactly one name — "bench press" → Barbell Bench Press) is that row; a
+  name close to an existing one (`ADD_NEAR_DUP`, 0.88) comes back `unmatched` with
+  candidates unless the item says `new: true`, because a near-twin is usually the same
+  lift misspoken and a duplicate row would split its history in two; an unknown name is
+  CREATED when the item carries `muscles` (or category cardio), and otherwise comes back
+  `unmatched` asking for them — muscles are required because recency can't count a lift
+  that maps to none. `add_exercise` is the same thing ahead of time. The returns name
+  what happened (`created`/`reactivated`/`unmatched`) so nothing changes silently.
+  **The migration** (`_prune_exercise_library`, flag-guarded, runs once): the rotation
+  became ACTIVE; anything with a logged/planned set or a heart became ARCHIVED; every
+  other library row was DELETED (muscles and AKAs cascade). The reference columns
+  (`slug`, `force`, `level`, `mechanic`, `equipment`, `technique_notes`,
+  `common_mistakes`, `cautions`, `video_link`, `image_link`, `image_link_end`) were
+  nulled and are dormant; `in_rotation`/`hearted` are dormant MIRRORS of `archived`
+  (`1 - archived`, kept in step by `_set_archived`) so no stale reader disagrees.
+- `exercise_aliases` — AKAs per exercise, now READ-ONLY: `_resolve_exercise` and
+  `_match_exercises` still score against whatever survived the prune, but nothing
+  writes new ones (the user's own name for a lift is its name).
 - `exercise_muscles` — normalizes muscle→exercise so per-muscle recency/volume is a
-  plain GROUP BY. `role` is one of three EMPHASIS tiers — primary|secondary|tertiary
-  ("how hard" each muscle is worked, e.g. a thruster = shoulders primary, quads/glutes
-  secondary, triceps tertiary); recency/volume count all tiers equally. Canonical muscle
-  list is `MUSCLES`.
+  plain GROUP BY. New rows use two tiers (primary|secondary); legacy rows may carry a
+  `tertiary`, which `list_exercises` folds into secondary. Recency/volume count all
+  tiers equally. Canonical muscle list is `MUSCLES`, enforced by `_bad_muscles`.
 - `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), plus
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
   lifts, weight/reps NULL for cardio). A planned set also carries `target_rpe` — the
@@ -1265,7 +1236,7 @@ working.
   handed BACK rather than only overwritten. Two of its lines (session sizing, and what
   to say about weigh-ins) used to sit in `trainer_mcp`'s `instructions` — the wrong home,
   for a reason worth keeping straight when the next knob comes along.
-  `instructions` is CONTRACT: the rotation policy, the closed catalog, the signed-
+  `instructions` is CONTRACT: the active-exercises policy, the signed-
   weight convention — rules that pair with tool code, belong in git, and must not
   be editable from a textarea. These were PREFERENCE, the part the user wants to
   tune between sessions. And the delivery differs: `instructions` reaches a
