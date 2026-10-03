@@ -25,9 +25,6 @@
        coaching is off. #}
     <button id="coach-btn" type="button"
             class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Coaching</button>
-    <a href="{{ base }}/trainer/library" aria-label="Exercise library" title="Exercise library" class="text-gray-400 hover:text-black transition-colors">
-    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6"/><path d="M9 11h6"/></svg>
-    </a>
     <div id="coach-pop" hidden
          class="absolute right-0 top-7 z-20 w-80 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-3">How to coach me</p>
@@ -39,8 +36,7 @@
                 class="w-full border border-gray-200 rounded-[4px] px-2 py-1.5 text-[13px] leading-snug text-gray-700">{{ coaching }}</textarea>
       <p class="text-[11px] text-gray-400 mt-2 mb-3 leading-snug">
         Read at the start of every session. Blank falls back to the default shown.
-        Preferences only — how you train is yours to set, but the rotation and the
-        exercise library stay under your control either way.
+        Preferences only — which exercises are active stays your call either way.
       </p>
       <p id="coach-err" hidden class="text-[11px] text-red-600 mb-3 leading-snug"></p>
       <button id="coach-apply" type="button"

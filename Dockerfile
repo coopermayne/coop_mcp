@@ -14,8 +14,7 @@ COPY server.py icons.py ./
 # icons.py it ships or the container dies at import.
 COPY learning ./learning
 COPY webapp ./webapp
-# Maintenance/seed scripts (e.g. import_exercises.py for seeding the exercise library) —
-# run inside the container against the mounted DB.
+# Maintenance/seed scripts — run inside the container against the mounted DB.
 COPY scripts ./scripts
 
 # Remote mode. DB lives on a mounted volume so it survives redeploys. One process serves

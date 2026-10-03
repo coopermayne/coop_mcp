@@ -3,9 +3,8 @@
    Hand-written rather than vendored: the effect is a page of arithmetic, and everything
    else in static/vendor/ is there because it isn't.
 
-   Driven by requestAnimationFrame on a canvas, NOT a CSS animation, for the reason the
-   .rep-loop note in base.html records: iOS Safari pauses CSS animations (and GIFs) in
-   Low Power Mode — which is exactly the phone standing in a gym. rAF keeps ticking.
+   Driven by requestAnimationFrame on a canvas, NOT a CSS animation, because iOS Safari
+   pauses CSS animations (and GIFs) in Low Power Mode — which is exactly the phone standing in a gym. rAF keeps ticking.
    Canvas rather than a swarm of absolutely-positioned nodes: 70 elements restyled every
    frame is 70 style recalcs, against one composited layer. */
 (function () {
@@ -111,7 +110,7 @@
   // was never going to play is a dead wait for exactly the person who asked for less
   // motion — the one caller who does that (weight.js's reload) reads this.
   function burst(el) {
-    // The one opt-out, matching .cal-zoom and the rep-loop: someone who's asked for less
+    // The one opt-out, matching .cal-zoom: someone who's asked for less
     // motion gets none, and the caller doesn't have to know that.
     if (reduced() || document.hidden) return false;
     var c = ensureCanvas();

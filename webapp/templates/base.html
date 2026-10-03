@@ -57,7 +57,7 @@
      with the command in webapp/tailwind.config.js after changing classes. #}
   <link rel="stylesheet" href="{{ base }}/static/tailwind.css" />
   {# Shared "is focus in a text field?" test — used by the global shortcuts
-     (1-5 and "/") below and the library page's j/k navigation, so the keys never
+     (1-5 and "/") below, so the keys never
      hijack typing. Defined in <head>: page-level scripts run before the
      end-of-body ones, and their handlers may fire first. #}
   <script>
@@ -139,19 +139,6 @@
     }
     .cal-zoom { animation: calZoom 520ms cubic-bezier(.2,.8,.2,1); transform-origin: 0 0; }
     @media (prefers-reduced-motion: reduce) { .cal-zoom { animation: none; } }
-
-    /* Exercise form photos: free-exercise-db ships a start + finish frame per movement.
-       Overlay the two (the finish absolutely on top of the start) and crossfade back and
-       forth (~2s) so the rep reads as a movement instead of one frozen still. Shared by
-       the library cards and the /trainer plan card; a lone frame (or a self-looping gif)
-       just renders as a still through the non-.rep-loop path.
-       The crossfade is driven by JS (the rep-loop script near the end of <body>), NOT a
-       CSS `animation`: iOS Safari PAUSES CSS animations (and animated GIFs) in Low Power
-       Mode, which froze the crossfade on phones while it ran fine on desktop.
-       requestAnimationFrame keeps ticking in Low Power Mode, so the rep animates
-       everywhere. This resting rule (finish frame hidden) is the no-JS / reduced-motion
-       fallback — the start frame just shows as a still. */
-    .rep-loop-end { opacity: 0; }
 
     /* Theme picker: three segments, the picked one filled. Driven by
        data-theme-CHOICE (what was picked), not data-theme (what it resolved to)
@@ -305,8 +292,8 @@
     /* Confetti overlay (static/confetti.js) — one fixed, pointer-transparent canvas
        shared by every burst on any page. Above #lightbox (60) and the chat panels so a
        celebration is never clipped, and pointer-events:none so it can never eat the tap
-       that earned it. The motion is requestAnimationFrame, not a CSS animation, for the
-       Low Power Mode reason in the .rep-loop note above. Hidden until a burst is
+       that earned it. The motion is requestAnimationFrame, not a CSS animation, because
+       iOS Safari pauses CSS animations in Low Power Mode. Hidden until a burst is
        running; the JS honors prefers-reduced-motion by never starting one, and the rule
        below makes that belt-and-braces. */
     #confetti-canvas { position: fixed; inset: 0; z-index: 70; pointer-events: none; display: none; }
@@ -682,34 +669,6 @@
       });
     };
     window.renderJournalMd();
-  </script>
-  {# Rep-loop crossfade. We drive the finish-frame opacity in JS rather than a CSS
-     `animation` because iOS Safari pauses CSS animations (and GIFs) in Low Power Mode —
-     the crossfade then froze on phones while it worked on desktop. One shared
-     requestAnimationFrame loop (which keeps ticking in Low Power Mode) fades every
-     .rep-loop-end on the page; it re-scans periodically so cards the trainer page builds
-     after load are picked up too. Honors prefers-reduced-motion by not animating (the CSS
-     resting rule leaves the start frame as a still). #}
-  <script>
-    (function () {
-      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-      var PERIOD = 2000;            // ms for a full start → finish → start cycle
-      var els = [], lastScan = -Infinity;
-      // Pages with no rep-loops (the journal, people, graphs) must not pay for a
-      // 60fps rAF treadmill that only ever finds nothing — it keeps the page from
-      // idling on phones. With zero elements we drop to a 1s setTimeout re-scan,
-      // and rejoin rAF the moment a scan (or a trainer-card render) surfaces one.
-      function frame(t) {
-        if (t - lastScan > 500) { els = document.querySelectorAll('.rep-loop-end'); lastScan = t; }
-        if (!els.length) { setTimeout(function () { requestAnimationFrame(frame); }, 1000); return; }
-        var phase = (t % PERIOD) / PERIOD;                 // 0..1
-        var tri = phase < 0.5 ? phase * 2 : 2 - phase * 2; // triangle 0 → 1 → 0
-        var o = tri * tri * (3 - 2 * tri);                 // smoothstep for a soft fade
-        for (var i = 0; i < els.length; i++) els[i].style.opacity = o;
-        requestAnimationFrame(frame);
-      }
-      requestAnimationFrame(frame);
-    })();
   </script>
   {# Lightbox. Prose images and the item hero render as small tiles (see the CSS
      above), so the full picture needs somewhere to go. ONE delegated listener on

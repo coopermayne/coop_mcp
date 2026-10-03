@@ -721,99 +721,6 @@ def all_workout_dates() -> list[str]:
     return [r["workout_date"] for r in rows]
 
 
-def exercise_library(muscle: str | None = None, q: str | None = None,
-                     rotation: bool = False, hearted: bool = False,
-                     archived: bool = False) -> dict:
-    """The exercise catalog as a browsable LIBRARY: every movement in full — muscles in
-    their three emphasis tiers (primary/secondary/tertiary), equipment, technique notes,
-    common mistakes, cautions, and a form gif/video — plus `in_rotation` (is it in the
-    small programming pool), `hearted` (is it in the wider favorites SUPERSET the rotation
-    is drawn from; rotation ⊆ hearted) and how much it's actually been trained (`sessions`,
-    `last_done`). Optionally filtered by `muscle` (any tier), a name fragment `q`,
-    `rotation=True` to show only the rotation, or `hearted=True` to show the superset.
-
-    By default only LIVE movements are listed; `archived=True` instead shows the
-    soft-deleted ones (the Archived view, where each row offers Restore). Archived
-    movements are hidden from every other view — and from the trainer — but their rows and
-    past-workout links are kept.
-
-    Also returns `muscles` (the canonical list, for the filter chips), `rotation_count`,
-    `hearted_count`, and the active `muscle`/`q`/`rotation`/`hearted`/`archived` so the
-    template can render the current filter. Read-only; writes go through
-    server.save_exercise / server.set_rotation / server.set_hearted / server.set_archived."""
-    from urllib.parse import quote_plus
-    muscle = (muscle or "").strip().lower() or None
-    q = (q or "").strip() or None
-    with server.db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM exercises WHERE archived=? ORDER BY name", (int(archived),)
-        ).fetchall()
-        # one pass over the muscle map: {exercise_id: {primary:[], secondary:[], tertiary:[]}}
-        mmap: dict[int, dict] = {}
-        for mr in conn.execute("SELECT exercise_id, muscle, role FROM exercise_muscles ORDER BY muscle"):
-            d = mmap.setdefault(mr["exercise_id"],
-                                {"primary": [], "secondary": [], "tertiary": []})
-            d.setdefault(mr["role"], []).append(mr["muscle"])
-        # AKAs per exercise, so the name search also matches alternative names and the
-        # card can show them ({exercise_id: [alias, ...]}).
-        akamap: dict[int, list[str]] = {}
-        for ar in conn.execute("SELECT exercise_id, alias FROM exercise_aliases ORDER BY alias"):
-            akamap.setdefault(ar["exercise_id"], []).append(ar["alias"])
-        # training volume per exercise (completed sets only): session count + last done
-        vol: dict[int, dict] = {}
-        for vr in conn.execute(
-            """SELECT exercise_id,
-                      COUNT(DISTINCT workout_id) AS sessions,
-                      MAX(w.workout_date) AS last_done
-               FROM sets s JOIN workouts w ON w.id = s.workout_id
-               WHERE s.status='done' GROUP BY exercise_id"""
-        ):
-            vol[vr["exercise_id"]] = {"sessions": vr["sessions"], "last_done": vr["last_done"]}
-    out = []
-    rotation_count = 0
-    hearted_count = 0
-    for r in rows:
-        in_rotation = bool(r["in_rotation"])
-        is_hearted = bool(r["hearted"])
-        if in_rotation:
-            rotation_count += 1
-        if is_hearted:
-            hearted_count += 1
-        m = mmap.get(r["id"], {"primary": [], "secondary": [], "tertiary": []})
-        all_m = m["primary"] + m["secondary"] + m["tertiary"]
-        aka = akamap.get(r["id"], [])
-        if rotation and not in_rotation:
-            continue
-        if hearted and not is_hearted:
-            continue
-        if muscle and muscle not in all_m:
-            continue
-        if q and not server._name_query_match(r["name"], q) \
-                and not any(q.lower() in a for a in aka):
-            continue
-        v = vol.get(r["id"], {"sessions": 0, "last_done": None})
-        out.append({
-            "exercise_id": r["id"], "name": r["name"], "category": r["category"],
-            "equipment": r["equipment"], "muscles": m, "aka": aka, "in_rotation": in_rotation,
-            "hearted": is_hearted,
-            "level": r["level"], "mechanic": r["mechanic"], "force": r["force"],
-            "technique_notes": r["technique_notes"],
-            "common_mistakes": r["common_mistakes"], "cautions": r["cautions"],
-            "video_link": r["video_link"], "image_link": r["image_link"],
-            "image_link_end": r["image_link_end"],
-            "youtube_search": "https://www.youtube.com/results?search_query="
-                              + quote_plus((r["name"] or "") + " proper form technique"),
-            "has_notes": bool(r["technique_notes"] or r["common_mistakes"] or r["cautions"]),
-            "sessions": v["sessions"], "last_done": v["last_done"],
-        })
-    # rotation first, then the rest of the hearted superset, then most-trained, alphabetical
-    out.sort(key=lambda e: (not e["in_rotation"], not e["hearted"], -e["sessions"], e["name"].lower()))
-    return {"exercises": out, "count": len(out), "muscles": server.MUSCLES,
-            "rotation_count": rotation_count, "hearted_count": hearted_count,
-            "muscle": muscle, "q": q or "",
-            "rotation": rotation, "hearted": hearted, "archived": archived}
-
-
 def active_plan(workout_id: int | None = None) -> dict:
     """One workout plan for a /trainer session page, straight from the server (see
     server.get_workout_plan): {"active": False} or the full plan with exercises, sets
@@ -902,7 +809,7 @@ def graph_data() -> dict:
       sets (weight NULL) don't produce points, so pure-cardio movements are
       absent. Judgment about what the numbers mean stays with the reader/model —
       this is arithmetic only.
-    - rotation_ids: the current rotation, the page's default selection.
+    - active_ids: the user's active (non-archived) exercises.
     - weight_goal: the goal from the trainer profile (settings key 'profile',
       the same blob get_fitness_briefing surfaces, so the trainer chat sees it
       too): {target_lbs, target_date?, start_lbs?, start_date?} or None. The
@@ -947,9 +854,9 @@ def graph_data() -> dict:
                GROUP BY s.exercise_id, w.workout_date
                ORDER BY e.name, w.workout_date""",
         ).fetchall()
-        rotation_ids = [
+        active_ids = [
             r["id"] for r in conn.execute(
-                "SELECT id FROM exercises WHERE in_rotation=1 AND archived=0 ORDER BY name"
+                "SELECT id FROM exercises WHERE archived=0 ORDER BY name"
             )
         ]
     exercises: list[dict] = []
@@ -963,7 +870,7 @@ def graph_data() -> dict:
         ex["points"].append({"date": r["date"], "top": r["top"],
                              "e1rm": r["e1rm"], "vol": r["vol"]})
     return {"weight": weight, "drinks": drinks, "exercises": exercises,
-            "rotation_ids": rotation_ids, "today": server.today(),
+            "active_ids": active_ids, "today": server.today(),
             "weight_goal": goal}
 
 

@@ -2113,8 +2113,8 @@ def link_mentions(links: list[MentionLink]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Website-only mention resolution (NOT MCP tools — like create_exercise /
-# set_archived, these are reachable only by the authenticated user through the
+# Website-only mention resolution (NOT MCP tools — like set_nutrient_targets /
+# import_bodyweight, these are reachable only by the authenticated user through the
 # webapp, never by the journal connector). Claude resolves mentions in chat via
 # link_mentions / save_person; these back the browse pages' inline resolver so the
 # user can also pin people straight from the pending queue or an entry.
@@ -3732,7 +3732,7 @@ def update_eating_profile(profile: dict) -> dict:
 def set_nutrient_targets(targets: dict, note: Optional[str] = None) -> dict:
     """Set the daily nutrient targets, and the note that explains them, from the
     WEBSITE — the /food page's Targets popover. A NON-tool, website-only path like set_collection_display and
-    set_archived: never a FastMCP tool, so no connector can reach it.
+    import_bodyweight: never a FastMCP tool, so no connector can reach it.
 
     It writes the SAME place update_eating_profile does (settings →
     `eating_profile` → `targets`), because one set of goals feeding both the rings
@@ -4192,7 +4192,7 @@ def set_collection_display(name: str, view: Optional[str] = None,
                            sort_by: Optional[str] = None,
                            sort_dir: Optional[str] = None) -> dict:
     """Set how the webapp renders one collection — the collection page's Display
-    popover. A NON-tool, website-only path (like set_archived/create_exercise):
+    popover. A NON-tool, website-only path (like set_nutrient_targets/import_bodyweight):
     the model proposes a collection's FIELDS, but what actually shows on the page
     is the USER's call, so every preference here is written only from the UI and
     never surfaces in tool returns.
@@ -6574,7 +6574,7 @@ def update_profile(profile: dict) -> dict:
 def set_trainer_profile(coaching: Optional[str]) -> dict:
     """Set the trainer's `coaching` text from the WEBSITE — /trainer's Coaching
     popover. A NON-tool, website-only path like set_nutrient_targets and
-    set_archived: never a FastMCP tool, so no connector can reach it.
+    import_bodyweight: never a FastMCP tool, so no connector can reach it.
 
     It writes the SAME place update_profile does (settings → `profile` →
     `coaching`), because the point is one text feeding both connectors and the
