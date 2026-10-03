@@ -190,10 +190,9 @@ and big picture; the facets stay the tested key points.
 
 - **A closed exercise library.** The catalog is a fixed set the trainer draws on but
   never grows: ~870 movements pre-loaded from free-exercise-db, plus any you add yourself
-  through the AI **+ Add an exercise** panel at `/trainer/library` (describe a movement and
-  it dedupes, fills in the muscles/difficulty/technique/cautions, and adds it). That panel
-  runs on the website only — the journal/trainer connectors still can't create exercises.
-  The AI programs only from what's
+  by asking the trainer connector for it (`add_exercise`: it previews the record, dedupes,
+  and saves on your OK) or, legacy, through the **+ Add an exercise** panel at
+  `/trainer/library`. The AI never adds one on its own initiative and programs only from what's
   there. `log_workout` records a session — the whole thing in one call, or set-by-set as
   it happens by passing the first call's `workout_id` back on each later call so the sets
   append to one session instead of fragmenting it. Exercise names resolve against the
@@ -628,7 +627,7 @@ that, so a tool added later lands in the right bot with no edit here — and
 | journal | days, events, the people in them | 15 |
 | intake | food, drinks, water | 6 |
 | notes | notes & collections | 12 |
-| trainer | workouts, plans, the library | 19 |
+| trainer | workouts, plans, the library | 22 |
 
 The cost is that you pick the chat: "burrito after the gym with Karl" is three bots'
 business. Each one knows what its siblings own, so it does its part and says where the
@@ -843,13 +842,20 @@ newer than this table; see CLAUDE.md's `collections` section for the full contra
 | `intake_find_past` | Fuzzy-search everything ever logged, by name — grouped by item text, latest numbers + times logged + last date, recency-weighted — so repeats reuse settled numbers instead of re-estimates |
 | `intake_set_profile` | Merge durable eating facts into the JSON profile — `targets` (daily nutrient goals, also read by the webapp's rings), goals, stats, coaching context |
 | `intake_delete` | Delete one logged intake item — the day's totals re-derive from what's left |
-| `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Cannot create — the catalog is closed to the AI; new exercises are added on the `/trainer/library` form |
+| `save_exercise` | Enrich an existing catalog entry (technique, mistakes, cautions, equipment, level/mechanic, form gif/video, muscles in primary/secondary/tertiary tiers) or toggle `in_rotation`/`hearted`. Never creates — that's `add_exercise` |
+| `add_exercise` | Add a movement the library genuinely lacks, on the user's explicit ask after a preview; refuses an existing name and asks "did you mean?" on a near-duplicate unless `force_new=True`. Lands hearted, never in the rotation |
 | `set_rotation` | Add/remove an exercise from the rotation (the small ~10–14 pool the trainer programs from; adding also hearts it) |
 | `set_hearted` | Add/remove an exercise from the hearted superset (the wider favorites bench the rotation is drawn from; un-hearting also drops it from the rotation) |
 | `find_exercises` | Read the closed catalog — a full record when you name/id one (else `candidates`), a filtered list (muscle/equipment/category/`rotation_only`/`hearted_only`) with `level`/`mechanic`, or `similar_to=<lift>` for like-for-like swap peers |
 | `log_workout` | Record a session; one call, or pass `workout_id` to append set-by-set; names resolve against the closed catalog, unmatched ones come back under `unmatched`/`candidates` (never auto-created) |
 | `update_workout` | Edit session metadata (move date, focus, feeling, notes); `planned_date` moves a *planned* session to another day (`""` unschedules); `append_note` adds a line without clobbering earlier notes |
-| `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`) |
+| `update_set` | Correct one logged set (find `set_id` via `get_exercise_history`), or retarget a pending one |
+| `start_workout_plan` | Lay out a session (today or a `planned_date`) as pending sets with target weight/reps/RPE |
+| `complete_sets` | Mark any number of planned sets done in one call (omitted numbers default to the targets); returns the plan + `new_prs` |
+| `swap_exercise` / `add_to_plan` / `remove_from_plan` / `reorder_plan` | Edit a plan mid-session |
+| `get_workout_plan` / `finish_workout` | Read a plan; close it out (pending sets skipped, session dated) |
+| `get_personal_records` | Heaviest / best-e1RM / cardio bests per lift |
+| `import_weigh_ins` | Load rows from the scale app's export (attached to the conversation); idempotent on the reading's timestamp |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight + `upcoming` (sessions already planned, not yet done) |
 | `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set` (weigh-ins are import-only and not deletable here) — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `intake_delete`, `notes_delete`, `collections_delete`) |

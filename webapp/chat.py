@@ -83,7 +83,7 @@ _TRAINER_BLURB = (
     "missed reps) hold or back off. Keep their staple lifts so the progression data "
     "stays comparable — vary exercises only modestly, not every session.\n\n"
     "During the workout: they'll log most sets by tapping the card, but if they tell "
-    "you ('did 10 at 100, felt like an 8') use complete_set. If a machine is taken or "
+    "you ('did 10 at 100, felt like an 8') use complete_sets. If a machine is taken or "
     "broken, use swap_exercise for the same muscle group (pass the right target weight "
     "for the substitute). add_to_plan to tack on more; finish_workout when they're "
     "done — pass its `workout_id` when it isn't the session they're standing on. Call "
@@ -592,8 +592,9 @@ _WRITE_TOOLS = {
     "collections_save", "collections_delete",
     "log_workout", "update_workout", "update_set", "save_exercise",
     "update_profile", "set_rotation", "set_hearted",
-    "start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
+    "start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
     "reorder_plan", "finish_workout", "create_exercise",
+    "remove_from_plan", "add_exercise", "import_weigh_ins",
 }
 
 
@@ -790,13 +791,13 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     # Trainer plan tools. Several sessions can be planned at once, so a chip links to
     # the one this call actually touched (its payload carries the workout_id) rather
     # than to a bare /trainer that would resolve to whichever is next due.
-    elif name in ("start_workout_plan", "complete_set", "swap_exercise", "add_to_plan",
+    elif name in ("start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
                   "finish_workout", "get_workout_plan"):
         wid = r.get("workout_id")
         href = f"/trainer/{wid}" if wid else "/workouts"
         summary = {
             "start_workout_plan": "Built a routine",
-            "complete_set": "Logged a set",
+            "complete_sets": "Logged sets",
             "swap_exercise": "Swapped an exercise",
             "add_to_plan": "Added to the plan",
             "finish_workout": "Finished the workout",

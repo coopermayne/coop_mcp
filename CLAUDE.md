@@ -24,6 +24,21 @@ reason for the split). It's purely an MCP-layer division: the webapp still impor
 module's functions unchanged. `webapp/combined.py` composes the endpoints onto one
 origin (a secondary server moves to its own host when its `*_PUBLIC_URL` is set).
 
+**The trainer is MCP-only now; the app is legacy for it.** The user trains entirely
+through the trainer connector in Claude (planning the week, reporting sets between
+lifts, progress and advice) and keeps the web app for the journal. So nothing a
+training workflow needs may live only behind a webapp page: the four things that did
+each got a tool — `complete_sets` (a batch, because a conversation reports a whole
+exercise at once where the card tapped one set; the single-set `complete_set` stays as
+the card's plain helper), `remove_from_plan` (the card's per-exercise delete),
+`add_exercise` (the library's add panel — see the `exercises` row) and
+`import_weigh_ins` (the `/weight` upload — see `body_weight`). `complete_sets` and
+`log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule applied per batch)
+because the confetti that used to announce a best has no screen to land on. The
+`trainer_mcp` instructions open by saying the conversation IS the interface (plan as a
+table, ids never shown, short mid-session replies). The `/trainer`, `/workouts`,
+`/weight` pages still work and still read the same DB; don't build new trainer UI there.
+
 **The journal connector is intake + collections only.** The user does all journal
 capture through the app's own chat, so the journal server's people/entry tools
 (`add_journal_entry` … `get_briefing`; the `CONNECTOR_HIDDEN_TOOLS` set) are hidden
@@ -672,7 +687,12 @@ working.
   (fuzzily — exact, then spacing/punct-insensitive, then a high-confidence typo match;
   `EX_CONFIDENT` is high so Hack/Back Squat surfaces as a candidate, not a silent
   mis-resolve) and a name with no match is SKIPPED and returned under `unmatched` with its
-  closest `candidates`, never auto-created. New exercises enter ONLY through the website's
+  closest `candidates`, never auto-created. **Superseded in part by the MCP-only trainer:**
+  the trainer connector now has `add_exercise`, gated in its contract to an explicit user
+  request after a preview, refusing an existing name and asking "did you mean?" at
+  `ADD_NEAR_DUP` (0.88 — tighter than the 0.6 candidate floor, which nearly every name
+  clears against an 870-row library). It lands hearted, never in the rotation. The
+  paragraph below is the original website-only design. New exercises enter ONLY through the website's
   **+ Add an exercise** panel on `/trainer/library` — an AI helper (the webapp-defined
   `exercise` chat agent in `webapp/chat.py`) that dedupes, fills every field from the
   user's words plus its own knowledge, and calls `create_exercise` — plus the bulk
@@ -798,7 +818,13 @@ working.
   a dedicated server tool. There is NO weight-goal/target logic in the server — the
   coaching is the model's, as everywhere else.
   **A weigh-in is a MORNING reading taken by a CONNECTED SCALE, and there is exactly
-  ONE way one gets in: importing the scale app's export.** The user weighs in every
+  ONE way one gets in: importing the scale app's export.** It has two doors now, both
+  imports: the `/weight` upload, and the trainer tool `import_weigh_ins`, where the
+  model reads the export the user attaches and passes its rows. Same `source_key`
+  identity, but the tool RE-RENDERS the key from the parsed stamp in the export's own
+  format (`%Y.%m.%d %I:%M %p`) rather than trusting the string, since a spreadsheet
+  reader may hand the cell back as ISO and a second spelling of one reading would store
+  it twice. A number the user merely says is still not a reading. The user weighs in every
   morning on a smart scale that writes to its vendor's app; every so often they upload
   that app's `.xlsx` on `/weight` (**Import scale export** → `POST /weight/import` →
   `server.import_bodyweight`, a NON-tool website-only path like `set_nutrient_targets`
