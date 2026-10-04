@@ -1,8 +1,10 @@
-# Journal MCP
+# Journal + Trainer
 
-A conversational journal with entity resolution. You talk; Claude captures entries
-and resolves who you mean. The server is a deterministic data + matching layer —
-no LLM inside it. The judgment ("which Tom?") happens in the conversation.
+A conversational journal with entity resolution, plus a personal-trainer MCP server.
+You write the journal by talking to the web app's own chat; Claude captures entries
+and resolves who you mean. Training (and a small daily water/protein log) happens in
+Claude through the trainer connector. The server is a deterministic data + matching
+layer — no LLM inside it. The judgment ("which Tom?") happens in the conversation.
 
 ## What it does
 
@@ -35,74 +37,33 @@ no LLM inside it. The judgment ("which Tom?") happens in the conversation.
 ## Setup
 
 ```bash
-cd journal-mcp
 python3 -m venv .venv
-.venv/bin/pip install fastmcp jellyfish
+.venv/bin/pip install -r requirements.txt -r webapp/requirements.txt
 ```
 
 The database is a single SQLite file at `~/journal.db` (override with `JOURNAL_DB`).
 It holds named real people in your life — keep it somewhere encrypted, or swap in
 SQLCipher later if you want at-rest encryption.
 
-## Register with Claude Desktop
+## Register the trainer with Claude Desktop
 
 Edit `claude_desktop_config.json` (Settings → Developer → Edit Config):
 
 ```json
 {
   "mcpServers": {
-    "journal": {
-      "command": "/ABSOLUTE/PATH/journal-mcp/.venv/bin/python",
-      "args": ["/ABSOLUTE/PATH/journal-mcp/server.py"],
-      "env": { "JOURNAL_DB": "/ABSOLUTE/PATH/journal.db" }
-    },
     "trainer": {
       "command": "/ABSOLUTE/PATH/journal-mcp/.venv/bin/python",
       "args": ["/ABSOLUTE/PATH/journal-mcp/server.py"],
-      "env": { "JOURNAL_DB": "/ABSOLUTE/PATH/journal.db", "MCP_SERVER": "trainer" }
+      "env": { "JOURNAL_DB": "/ABSOLUTE/PATH/journal.db" }
     }
   }
 }
 ```
 
-Use absolute paths. The two entries run the same `server.py` against the same DB; over
-stdio each launch serves one MCP server, selected by `MCP_SERVER` (the journal+notes
-tools, or — with `MCP_SERVER=trainer` — the training tools). Register only `journal` if
-you don't want the trainer tools loaded. Restart Claude Desktop; the tools appear in the
-tools menu.
-
-## Make the conversation flow (the efficient-integration half)
-
-Put this in a dedicated Claude **Project's** custom instructions, so every chat in
-that project follows the protocol without you re-explaining it. The tool docstrings
-already carry most of it; this just sets the posture.
-
-> You are my journaling assistant. When I tell you about my day:
-> 1. Write a clean entry: turn my free-association into clear, concise, organized
->    prose that keeps the substance and my voice and drops the filler. Call
->    `add_journal_entry` with that as `body`, my original words verbatim as
->    `raw_body`, and the people I named as `mentions` (the surface form I actually
->    used, taken from my raw words). Do this first, always — never make me wait on
->    resolution.
-> 2. For each returned mention, look at the candidates:
->    - One candidate ≥ 0.85 with the next one ≥ 0.15 behind → link it silently with
->      `link_mentions`. If my surface form wasn't already that person's alias, set
->      `learn_alias: true`.
->    - Two close candidates (e.g. both Toms) → ask me which one in one short
->      question, using context, then link.
->    - Nothing ≥ 0.6 → it's probably someone new; ask, then `save_person` (no
->      `person_id`) and link.
-> 3. If I say I'll explain later, leave the mention pending — don't push.
-> 4. At the start of a session, call `get_briefing` once to load context — who I
->    know (recent people with summaries, everyone else by name/role), the pending
->    queue, and the last two weeks of entries.
->    When I tell you something durable about a person, keep their `summary` current
->    with `save_person` (pass their `person_id`), and set their `groups` when I place
->    them in a circle.
-> 5. When I ask what's happened with someone, use `get_person_history`; for topics
->    or events, use `search_entries`; for "who's connected to X", use
->    `get_related_people`.
-> Keep confirmations to one line. Don't read entries back to me unless I ask.
+Use absolute paths. Over stdio a bare `server.py` launch serves the trainer — the only
+MCP server. (The journal has no connector: it's written in the web app's chat.)
+Restart Claude Desktop; the tools appear in the tools menu.
 
 ## Personal trainer (+ water & protein)
 
@@ -112,48 +73,12 @@ deterministic aggregates (per-muscle recency, day totals); the coaching judgment
 — next weight, what to rest, which exercises, how to explain form — happens in the
 conversation, from what the retrieval tools return.
 
-**The trainer is a separate MCP server.** The training tools — and the water/protein
-log — live on their own FastMCP instance sharing the same DB. Connect it as its
-own connector and give it its own Claude **Project**, so a journaling chat doesn't load
-the workout tools and vice-versa — each conversation carries a smaller, more relevant
-tool set. Use the trainer posture below as that project's custom instructions.
-
-Where it's exposed depends on auth. Two full OAuth servers can't share one origin (their
-`/authorize`, `/token`, `/auth/callback` paths collide), so in production the trainer
-runs on its **own subdomain** — set `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN` and the
-single process routes that hostname to the trainer server at its root (connector:
-`https://TRAINER-DOMAIN/mcp`, clean root OAuth). Over stdio use `MCP_SERVER=trainer`.
-With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
+**The trainer is the one MCP server.** Connect it as a connector in its own Claude
+**Project**. In production it runs on its **own subdomain** — set
+`TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN` and the single process routes that hostname
+to the trainer server at its root (connector: `https://TRAINER-DOMAIN/mcp`, clean root
+OAuth). Over stdio a bare `server.py` launch runs it. With `TRAINER_PUBLIC_URL` unset (local/authless), the trainer falls back to
 `/trainer/mcp` on the main origin. See "Remote deployment" for the subdomain steps.
-
-## Learning (the teacher server)
-
-The third MCP server on the same DB: a spaced-repetition learning log, ported from the
-standalone `teacher` repo. Same rule again — **no LLM in the server.** It stores
-subjects and their recallable *facets*, schedules them with FSRS, and records how you
-did; composing each question and judging each answer happen in the conversation at
-review time, which is what keeps a facet from decaying into a memorized card front.
-
-Connect it as its own connector / Claude project, like the trainer: set
-`TEACHER_PUBLIC_URL=https://TEACHER-DOMAIN` in production (own subdomain, own Google
-redirect URI `https://TEACHER-DOMAIN/auth/callback`), or reach it authless at
-`/teacher/mcp`; over stdio use `MCP_SERVER=teacher`. The webapp shows the collection
-read-only at `/learn` (nav menu, shortcut `7`) — the wiki view: every subject, its
-facets with their references, schedule state, and recent attempts. Strictly a read
-surface; the log is worked only through the connector.
-
-To bring data over from a standalone teacher repo's database:
-
-```bash
-JOURNAL_DB=./journal.db .venv/bin/python scripts/import_teacher.py path/to/teacher.db
-```
-
-Idempotent (re-running reports 0), preserves ids and FSRS state.
-
-A subject can also carry an **article** — background reading the model writes
-(`update_subject(article=…)`, markdown with hotlinked images) that renders above
-the cards on the subject's `/learn` page. The article is for absorbing detail
-and big picture; the facets stay the tested key points.
 
 - **Water and protein — the one intake log kept.** `log_intake` logs ONE thing consumed
   with `water_oz` and/or `protein_g` (plus an optional label like "protein shake"); it's
@@ -220,50 +145,38 @@ put there belongs in your profile, where you change it by just saying so.
 
 ## Remote deployment — phone access via Coolify
 
-The local setup above connects only to Claude Desktop. To use the journal on your
-**phone**, the server has to run as a remote MCP server: a public HTTPS endpoint that
-Anthropic's cloud connects to. You add it once at claude.ai (you can't add a new
-connector from the mobile app), then it works on iOS/Android. Requires a Pro or Max plan.
+One container serves the **web app** (journal, water & protein, training history,
+graphs) at `https://YOUR-DOMAIN/app` and the **trainer MCP server** for Claude. The
+trainer connector works on your phone once added at claude.ai (you can't add a new
+connector from the mobile app). On Coolify:
 
-The server already supports this: set `MCP_TRANSPORT=http` and it serves Streamable
-HTTP at `/mcp` (see the Dockerfile). On Coolify:
-
-1. New resource → from this repo (or Dockerfile). Coolify builds the image.
+1. New resource → from this repo (Dockerfile build pack). Coolify builds the image.
 2. Add a **persistent volume** mounted at `/data` so `journal.db` survives redeploys.
-   The OAuth state lives there too — see "Staying logged in across redeploys" below.
-3. Give it a domain; Coolify provisions HTTPS via Let's Encrypt automatically.
-4. **For the trainer, add a second domain** on the SAME Coolify application (Coolify
-   accepts multiple domains per service) — e.g. `https://TRAINER-DOMAIN` — pointed at
-   the same DNS, and set the env var `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN`. The
-   one process then serves the journal on `YOUR-DOMAIN` and the trainer on
-   `TRAINER-DOMAIN`, each with its own root OAuth.
-5. Your MCP URLs are `https://YOUR-DOMAIN/mcp` (journal + notes) and
-   `https://TRAINER-DOMAIN/mcp` (training).
-6. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste a
-   URL. Add the journal one for sure; add the trainer one as a SECOND connector if you
-   want training in its own project. (With auth on, the trainer needs its own redirect
-   URI in Google — see below.) Then enable each per-conversation via the "+" menu on
-   your phone.
+   The trainer's OAuth state lives there too — see "Staying logged in" below.
+3. Give it a domain (`YOUR-DOMAIN`) for the web app; Coolify provisions HTTPS.
+4. **Add a second domain** on the SAME Coolify application for the trainer — e.g.
+   `https://TRAINER-DOMAIN` — and set `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN`. The
+   one process then routes that host to the trainer at its root, with its own OAuth.
+5. At claude.ai → Customize → Connectors → Add custom connector →
+   `https://TRAINER-DOMAIN/mcp`. Put it in its own Project; enable it per conversation
+   via the "+" menu on your phone.
 
-**Roll it out in two stages.** First deploy as-is (no auth) and connect it with only
-**dummy data** to confirm the Claude-to-Coolify pipe works end to end. Do **not** put
-real journal entries in until auth is on — the endpoint is public.
+Without `TRAINER_PUBLIC_URL` (local/authless) the trainer is at
+`https://YOUR-DOMAIN/trainer/mcp` instead — dummy data only; the endpoint is public.
 
 ### Auth (required before real data)
 
-Single-user app, so you don't need user management — just "only your Google account
-gets in." The server uses FastMCP's `GoogleProvider`, which acts as a full OAuth 2.1
-authorization server (with PKCE + Dynamic Client Registration) that proxies Google.
-Claude discovers it automatically and self-registers, so you just paste the URL — no
-client ID/secret in Claude's connector settings.
+Single-user, so just "only your Google account gets in." The trainer uses FastMCP's
+`GoogleProvider`, a full OAuth 2.1 authorization server (PKCE + Dynamic Client
+Registration) that proxies Google; Claude discovers it and self-registers, so you just
+paste the URL. The web app has its own Google login.
 
 **1. Create a Google OAuth client** (Google Cloud Console → APIs & Services →
-Credentials → Create OAuth client ID → Web application). Add these authorized redirect
-URIs (one client serves both hosts):
+Credentials → Create OAuth client ID → Web application) with these redirect URIs:
 
 ```
-https://YOUR-DOMAIN/auth/callback
-https://TRAINER-DOMAIN/auth/callback     # only if you run the trainer subdomain
+https://TRAINER-DOMAIN/auth/callback     # the trainer connector
+https://YOUR-DOMAIN/app/auth/callback    # the web app's login
 ```
 
 **2. Set these env vars in Coolify** (never in the image):
@@ -272,79 +185,29 @@ https://TRAINER-DOMAIN/auth/callback     # only if you run the trainer subdomain
 |---|---|
 | `GOOGLE_CLIENT_ID` | from the Google client |
 | `GOOGLE_CLIENT_SECRET` | from the Google client |
-| `PUBLIC_URL` | `https://YOUR-DOMAIN` (no trailing slash, no `/mcp`) |
+| `PUBLIC_URL` | `https://YOUR-DOMAIN` (no trailing slash) — the web app's origin |
 | `JOURNAL_ALLOWED_EMAILS` | your Gmail address (comma-separated for more than one) |
-| `TRAINER_PUBLIC_URL` | `https://TRAINER-DOMAIN` — enables the trainer on its own host (omit to skip the trainer / keep it at `/trainer/mcp` authless) |
-| `TEACHER_PUBLIC_URL` | `https://TEACHER-DOMAIN` — same for the teacher server (omit to keep it at `/teacher/mcp` authless) |
+| `TRAINER_PUBLIC_URL` | `https://TRAINER-DOMAIN` (no trailing slash, no `/mcp`) |
 
-With those set, the server flips from authless to protected on restart. Verified
-behavior: an unauthenticated request gets `401` with a `WWW-Authenticate` header
-pointing to the discovery metadata; the protected-resource metadata is served at
-`/.well-known/oauth-protected-resource/mcp`. After Google login, the allowlist
-middleware checks the email claim and rejects any account not in
-`JOURNAL_ALLOWED_EMAILS` — so a valid Google login alone is not enough.
-
-Leave the env vars unset to run authless for local/staging tests (dummy data only).
+With those set, the trainer flips from authless to protected on restart: an
+unauthenticated request gets `401` with a `WWW-Authenticate` header pointing to
+`/.well-known/oauth-protected-resource/mcp`, and after Google login the allowlist
+middleware rejects any account not in `JOURNAL_ALLOWED_EMAILS`.
 
 > If the allowlist ever rejects you after a correct login, confirm Google is returning
-> the `email` claim (the requested scopes include it); the check is in
-> `AllowlistMiddleware`.
+> the `email` claim; the check is in `AllowlistMiddleware`.
 
-**Staying logged in across redeploys.** `GoogleProvider` is its own OAuth server: it
-stores Claude's dynamically-registered client and your refresh tokens in an encrypted
-file store. By default that lives under FastMCP's home dir, which is *inside the
-container* and wiped on every push — so each deploy forces a fresh connector login. The
-Dockerfile sets `FASTMCP_HOME=/data/fastmcp` to move that store onto the persistent
-`/data` volume (same volume as `journal.db`), so registrations and tokens survive
-redeploys. The JWT signing key needs no special handling — it's derived deterministically
-from `GOOGLE_CLIENT_SECRET`, so it's stable as long as you don't rotate that secret. (The
-first deploy after adding this var still logs you in once, since the store starts empty
-at its new location.)
-
-
-## First deploy — checklist
-
-Two stages: prove the pipe works with no auth and fake data, then lock it down before
-real entries.
-
-**Stage 1 — authless smoke test**
-- [ ] In Coolify, create a new resource from this repo (Dockerfile build pack).
-- [ ] Add a persistent volume mounted at `/data`.
-- [ ] Assign a domain; let Coolify provision HTTPS. Leave all `GOOGLE_*` vars unset.
-- [ ] Deploy. Check `https://YOUR-DOMAIN/health` returns `{"status":"ok"}`.
-- [ ] At claude.ai (in a browser) → Customize → Connectors → Add custom connector →
-      paste `https://YOUR-DOMAIN/mcp`. It should connect with no login. (Authless, the
-      trainer is at `https://YOUR-DOMAIN/trainer/mcp`; on the trainer subdomain it's
-      `https://TRAINER-DOMAIN/mcp`.)
-- [ ] On your phone, enable the connector via the "+" menu and add one throwaway
-      entry about a fake person. Confirm it saves and reads back.
-- [ ] Clear the test data (delete `/data/journal.db`; it recreates on next call).
-
-**Stage 2 — turn on auth (before any real data)**
-- [ ] Google Cloud Console → create an OAuth client (Web application), redirect URI
-      `https://YOUR-DOMAIN/auth/callback`.
-- [ ] In Coolify set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-      `PUBLIC_URL=https://YOUR-DOMAIN`, `JOURNAL_ALLOWED_EMAILS=you@gmail.com`. Redeploy.
-- [ ] Confirm `/mcp` now returns 401 to an anonymous request, while `/health` still 200.
-- [ ] In Claude, remove and re-add the connector; this time it sends you through Google
-      sign-in. Log in with your allowlisted account.
-- [ ] Add a real entry from your phone. You're live.
-
-**Stage 3 — turn on the trainer (its own subdomain)**
-- [ ] DNS: point `TRAINER-DOMAIN` at the same server as `YOUR-DOMAIN`.
-- [ ] Coolify: add `https://TRAINER-DOMAIN` as a second domain on the SAME application;
-      let it provision HTTPS.
-- [ ] Google Cloud Console → add redirect URI `https://TRAINER-DOMAIN/auth/callback` to
-      the SAME OAuth client.
-- [ ] In Coolify set `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN`. Redeploy.
-- [ ] Confirm `https://TRAINER-DOMAIN/mcp` returns 401 anonymously and
-      `https://TRAINER-DOMAIN/.well-known/oauth-protected-resource/mcp` returns 200.
-- [ ] In Claude, add a second custom connector `https://TRAINER-DOMAIN/mcp`, sign in,
-      give it its own Project with the trainer posture as instructions.
+**Staying logged in across redeploys.** `GoogleProvider` stores Claude's
+dynamically-registered client and your refresh tokens in an encrypted file store under
+FastMCP's home dir, which by default is *inside the container* and wiped on every push.
+The Dockerfile sets `FASTMCP_HOME=/data/fastmcp` to keep it on the persistent volume.
+The JWT signing key is derived from `GOOGLE_CLIENT_SECRET`, so it's stable as long as
+you don't rotate that secret.
 
 If the connector shows "disconnected" after adding Google: usually the redirect URI in
-Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
-`TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
+Google doesn't exactly match `https://TRAINER-DOMAIN/auth/callback`, or
+`TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp`. `https://YOUR-DOMAIN/health`
+should return `{"status":"ok"}` regardless of auth.
 
 ## Backup & restore
 
@@ -457,7 +320,7 @@ Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 uppercase `tracking-widest` labels, stat-tile grids.
 
 Pages: journal (+ `?q=` search, + AI chat panel) · water & protein (`/food`) ·
-entry detail · workouts · graphs · people · person detail · collections · learn.
+entry detail · workouts · graphs · people · person detail · weight.
 
 ### In-app AI chat — toolset-scoped
 
@@ -498,108 +361,39 @@ drops — and stale-while-revalidates the static icons; bump `VERSION` in the
 worker to retire old caches. Both the manifest and worker are unauthenticated
 (they carry no journal data) so install works before sign-in.
 
-**Same process as the MCP server.** In production one container runs both:
-`webapp/combined.py` mounts the MCP app at the origin root (so `/mcp` and its
-root-level OAuth — `/.well-known/*`, `/auth/callback` — are unchanged) and the UI under
-**`/app`**. The UI's own login callback is therefore `/app/auth/callback`, distinct from
-the MCP's. The UI honors a mount prefix via the ASGI `root_path`, so the same templates
-also work when run standalone at the root (below).
+**Same process as the trainer MCP server.** In production one container runs both:
+`webapp/combined.py` serves the UI under **`/app`** (the root redirects there), `/health`,
+and the trainer — on its own host, or at `/trainer/mcp` when authless. The UI's login
+callback is `/app/auth/callback`. The UI honors a mount prefix via the ASGI
+`root_path`, so the same templates also work when run standalone at the root (below).
 
 **Run the UI standalone, locally** (authless — for local/dummy data only):
 
 ```bash
-.venv/bin/pip install -r webapp/requirements.txt   # web deps; also uses server.py's deps
 JOURNAL_DB=./journal.db .venv/bin/python webapp/app.py     # http://localhost:8001/
 ```
 
-**Run exactly like production** (MCP + UI in one process):
+**Run exactly like production** (trainer + UI in one process):
 
 ```bash
 JOURNAL_DB=./journal.db MCP_TRANSPORT=http PORT=8000 .venv/bin/python webapp/combined.py
-# connector: http://localhost:8000/mcp   ·   UI: http://localhost:8000/app
+# trainer: http://localhost:8000/trainer/mcp   ·   UI: http://localhost:8000/app
 ```
 
 UI env vars: `SESSION_SECRET` (set a random value in prod), `WEB_BASE_URL` (public
-origin — used to build the OAuth redirect; **defaults to `PUBLIC_URL`** since that's the
-same bare origin, so you usually don't set it), `JOURNAL_ALLOWED_EMAILS`,
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`. With the `GOOGLE_*` vars unset the UI runs
-authless; set them to gate it behind Google sign-in + the email allowlist (the *same*
-allowlist the MCP server uses). Standalone-only: `PORT` (default 8001), `WEB_HOST`.
-
-**Deploy (Coolify) — no new service needed.** The existing MCP service already builds the
-root `Dockerfile`, which now installs the web deps and runs `webapp/combined.py`. To turn
-the UI on after redeploying:
-
-- Google Cloud Console → add **one** redirect URI to your existing OAuth client:
-  `https://YOUR-DOMAIN/app/auth/callback` (the MCP's `https://YOUR-DOMAIN/auth/callback`
-  stays as-is).
-- On the service, add just a random `SESSION_SECRET`. `GOOGLE_CLIENT_ID/SECRET`,
-  `JOURNAL_ALLOWED_EMAILS` and `PUBLIC_URL` are already set for the MCP server and are
-  reused (the UI's `WEB_BASE_URL` defaults to `PUBLIC_URL`).
-- Redeploy. The connector keeps working at `/mcp`; the journal UI is at
-  `https://YOUR-DOMAIN/app` and bounces anonymous visitors to `/app/login`.
-
-Note `WEB_BASE_URL` (not `PUBLIC_URL`) — the webapp uses standard browser OAuth, separate
-from the MCP server's OAuth-provider flow, so its env vars don't collide if you run both
-in one Coolify project.
-
-## Places on a map
-
-A collection whose items carry a `location` field can be laid out as a **map** — a
-fourth option in the collection page's Display popover, next to list / table / cards.
-It's offered only when there's a location field to plot, and refused server-side
-otherwise. Pins are the items; clicking one opens its title, address and a link to the
-item page. Grouping and sorting don't apply to it (a map has no rows to band).
-
-Two things worth knowing:
-
-- **This is the only part of the app that needs the internet to draw.** Everything
-  else — fonts, styles, `marked`, uPlot — is self-hosted on purpose. The map's
-  [Leaflet](https://leafletjs.com) is vendored into `webapp/static/vendor/` like the
-  rest, but its **tiles** come over the network. Free, no key, no account; offline
-  the pane just sits empty while the rest of the page renders.
-- **The style is deliberately plain.** The basemap is CARTO Positron (OpenStreetMap
-  data) rather than OSM's own tiles: near-white land and gray line work instead of
-  beige-and-blue, English labels worldwide instead of each country's own name, and
-  country borders that actually render. A `grayscale(1)` takes the last blue out of
-  the water, dark mode swaps to the same map's dark build, and labels are a separate
-  layer that only switches on at zoom 5 — so the wide view is pure line drawing and
-  the words arrive when they're street names. Country outlines are drawn on top from
-  a vendored Natural Earth boundary file (77KB, public domain), because the
-  basemap's own fade out exactly where you need them.
-- **A `location` value requires coordinates.** `{label, address}` alone can't be put
-  anywhere, so `lat`/`lng` are now mandatory on the field. The model usually knows
-  them; when it doesn't, **`notes_geocode`** asks OpenStreetMap's Nominatim and returns
-  *candidates* for the model to choose from — the same "server shortlists, model
-  decides" split as person matching. It's the one tool with `openWorldHint: true`, and
-  it never writes: the model passes the numbers it picked to `notes_save`/`notes_file`.
-
-Values saved before this rule keep their address and no coordinates. They still
-render everywhere else; the map lists them under itself as "Not on the map", and
-they re-validate (i.e. start failing with an actionable error) the next time their
-item is written — which is the prompt to geocode them.
-
-Nominatim is keyless but asks for an identifying User-Agent and at most one request a
-second; the server throttles itself and sends a generic one you can override with
-`GEOCODE_USER_AGENT`. Nothing here costs money.
+origin — used to build the OAuth redirect; **defaults to `PUBLIC_URL`**),
+`JOURNAL_ALLOWED_EMAILS`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`. With the
+`GOOGLE_*` vars unset the UI runs authless; set them to gate it behind Google sign-in +
+the email allowlist (the *same* allowlist the trainer uses). Standalone-only: `PORT`
+(default 8001), `WEB_HOST`.
 
 ## Tools
 
-Split across three connectors and the app's own chat. The **teacher** server
-(`TEACHER-DOMAIN/mcp`, or `/teacher/mcp` authless) carries the learning log —
-`next_card`/`check`/`record` and friends; see "Learning" above and the tool docstrings
-in `server.py`. The **journal** server
-(`YOUR-DOMAIN/mcp`) exposes to MCP clients only the notes-&-collections tools
-(`notes_*`, `collections_*`) — every name carries its domain as a prefix, so a
-client's tool list groups itself. The journal-capture tools (`add_journal_entry` through
-`journal_delete_entry` below) are hidden from connectors by `HiddenToolsMiddleware`
-(neither listed nor callable), because journal capture happens in the app's own
-chat, which drives the full tool set in-process and isn't affected. The **trainer**
-server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the main origin when authless)
-carries the tools below (including the water/protein log), plus its own
-`delete_record` scoped to `workout`/`set`/`intake`. Both hit the same DB. (The
-notes-&-collections tools — `notes_save`, `collections_list`, `notes_search`, … — are
-newer than this table; see CLAUDE.md's `collections` section for the full contract.)
+Two surfaces. The **journal** tools (`add_journal_entry` through `get_briefing` below)
+are driven only by the web app's own chat, in-process — there is no journal connector.
+The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the main origin when
+authless) carries the rest, including the water/protein log, plus its own
+`delete_record` scoped to `workout`/`set`/`intake`. Both hit the same DB.
 
 | Tool | Purpose |
 |---|---|
@@ -635,7 +429,7 @@ newer than this table; see CLAUDE.md's `collections` section for the full contra
 | `import_weigh_ins` | Load rows from the scale app's export (attached to the conversation); idempotent on the reading's timestamp |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
 | `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight + today's water/protein (`intake_today`) + `upcoming` (sessions already planned, not yet done) |
-| `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set`/`intake` (weigh-ins are import-only and not deletable here) — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `notes_delete`, `collections_delete`) |
+| `delete_record` | *(trainer)* Delete one record by `kind` + `id` — `workout`/`set`/`intake` (weigh-ins are import-only and not deletable here) — irreversible, cascades/renumbers as needed. The journal's delete is its own narrow tool, `journal_delete_entry` |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps

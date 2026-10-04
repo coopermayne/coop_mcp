@@ -21,14 +21,8 @@ The system prompt and tool definitions are not hand-written: they're lifted
 straight from the live server — each instance's `instructions` is the system
 prompt, and each tool's docstring + signature become the Anthropic tool schema via
 `list_tools()`. Change a docstring in `server.py` and the chat updates with it.
-The one exception is the journal surface's system prompt, and it comes out of the
-journal instance carrying TWO surfaces at once. Its own `instructions` are the
-CONNECTOR half — notes/collections, with the people/entry tools hidden
-from MCP clients by HiddenToolsMiddleware. This panel is the OTHER half: it drives
-the instance in-process (bypassing that middleware) but narrows the tool list to
-exactly the hidden names, so the two surfaces partition the instance rather than
-overlapping. Its prompt is `server.JOURNAL_CHAT_INSTRUCTIONS`, the journal contract
-alone — which is why it can't be lifted from `instructions`.
+The journal instance is not served as an MCP endpoint at all — this panel is the
+only thing that drives it — so its `instructions` ARE the panel's system prompt.
 
 Disabled unless ANTHROPIC_API_KEY is set; model defaults to Sonnet 4.6
 (CHAT_MODEL overrides). Conversations live in memory, keyed by (agent, session) —
@@ -38,7 +32,6 @@ single-user app, lost on restart, which is fine for v1.
 import asyncio
 import json
 import os
-from urllib.parse import quote
 
 import server  # the FastMCP instances + the tool functions they wrap
 
@@ -72,21 +65,11 @@ _TRAINER_BLURB = (
 
 # The agent registry. A server-bound entry binds a chat surface to one FastMCP instance
 # and narrows its tool list: `exclude` drops names, `include` keeps ONLY those names.
-# An `instructions` key overrides the instance's own (the journal instance's are
-# connector-facing — see the module docstring). A webapp-defined entry may instead
-# carry its own `instructions` + a `tools` builder (none does today).
+# An `instructions` key overrides the instance's own. A webapp-defined entry may
+# instead carry its own `instructions` + a `tools` builder (none does today).
 # Extend, don't special-case.
-#
-# The journal panel's `include` is CONNECTOR_HIDDEN_TOOLS — the two surfaces are exact
-# COMPLEMENTS over the one journal instance, and saying it that way is what keeps them
-# from drifting. The connector carries notes/collections and hides the people/entry
-# tools; this panel carries the people/entry tools and nothing else, because that is
-# the split in how the app is actually used (journal here, saved notes in Claude).
-# Adding a journal tool means adding its name to that frozenset — already the rule —
-# and it lands on both sides at once; adding a notes tool needs no change here.
 _AGENTS = {
-    "journal":  {"server": server.mcp, "instructions": server.JOURNAL_CHAT_INSTRUCTIONS,
-                 "include": server.CONNECTOR_HIDDEN_TOOLS, "blurb": _JOURNAL_BLURB},
+    "journal":  {"server": server.mcp, "blurb": _JOURNAL_BLURB},
     "trainer":  {"server": server.trainer_mcp, "exclude": set(), "blurb": _TRAINER_BLURB},
 }
 

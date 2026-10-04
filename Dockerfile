@@ -7,19 +7,14 @@ COPY requirements.txt ./requirements-base.txt
 COPY webapp/requirements.txt ./requirements-web.txt
 RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 
-# server.py imports `icons` at module level — a missing icons.py is an import-time crash,
-# not a degraded feature, so it ships with the server.
-COPY server.py icons.py ./
-# The teacher server's logic — server.py imports `learning` at module level, so like
-# icons.py it ships or the container dies at import.
-COPY learning ./learning
+COPY server.py ./
 COPY webapp ./webapp
 # Maintenance/seed scripts — run inside the container against the mounted DB.
 COPY scripts ./scripts
 
 # Remote mode. DB lives on a mounted volume so it survives redeploys. One process serves
-# the journal MCP (+ read-only UI at /app) on PUBLIC_URL and, when TRAINER_PUBLIC_URL is
-# set, the trainer MCP on that second host (each with its own root OAuth).
+# the web UI at /app on PUBLIC_URL and the trainer MCP — on its own host (with its own
+# root OAuth) when TRAINER_PUBLIC_URL is set, else at /trainer/mcp.
 # FASTMCP_HOME is load-bearing for redeploys. FastMCP's OAuth proxy keeps its client
 # registrations and upstream token sets in an encrypted file store under
 # `settings.home`, which defaults to a per-user data dir INSIDE the container — wiped

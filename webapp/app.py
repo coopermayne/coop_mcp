@@ -236,13 +236,6 @@ for _name, _fn in [
 # a target saved in the popover shows on the next render.
 templates.env.globals["nutrient_targets"] = data.nutrient_targets
 
-# Collection icons: the vendored Lucide subset (icons.py, generated). A global
-# so any template can draw one by name — the shapes only, since each site picks
-# its own size/stroke, exactly like the hand-written nav icons.
-templates.env.globals["icon_paths"] = server.icon_set.ICON_PATHS
-templates.env.globals["default_icon"] = server.icon_set.DEFAULT_ICON
-
-
 def link_people_md(body: str, people: list[dict], base: str) -> str:
     """Return the entry body as Markdown with each resolved person's name turned into
     a Markdown link to their page (link title = "Name · role"). The body is already
@@ -1355,27 +1348,6 @@ async def weight_import(request: Request):
 # weigh-in lives on /weight — see that section.
 # --------------------------------------------------------------------------- #
 
-@app.get("/learn")
-async def learn(request: Request):
-    """The learning log (see learning/) — subjects grouped by type, the same
-    stats roll-up the model sees. Deliberately NOT in LOCK_PATHS (like /food:
-    glancing at what's due shouldn't need the knock) and carries no chat panel:
-    the log is worked through the teacher MCP connector, this page only reads."""
-    q = (request.query_params.get("q") or "").strip()
-    archived = request.query_params.get("archived") == "1"
-    return page(request, "learn.html", active="learn", q=q, archived=archived,
-                **data.learn_overview(q or None, archived))
-
-
-@app.get("/learn/{subject_id}")
-async def learn_subject(request: Request, subject_id: str):
-    subj = data.learn_subject(subject_id)
-    if subj is None:
-        return page(request, "notfound.html", active="learn",
-                    status_code=404, what="subject")
-    return page(request, "learn_subject.html", active="learn", s=subj)
-
-
 @app.get("/graphs")
 async def graphs(request: Request):
     return page(request, "graphs.html", active="graphs", graph=data.graph_data())
@@ -1502,64 +1474,6 @@ def _chat_context(body: dict):
         return chat.person_context(int(pid))
     except (TypeError, ValueError):
         return None
-
-
-# Notes & collections — the flexible layer's browse pages. Like /food these sit
-# OUTSIDE the journal lock (recipes and trip ideas are glanceable; the knock
-# guards the journal's prose) and are strictly read-only for CONTENT: the MCP
-# tools are the one write path for items, so the browser only renders what
-# conversation has filed. The one thing the browser does write is PRESENTATION —
-# the Display popover below.
-@app.get("/collections")
-async def collections(request: Request):
-    """The collections index — or, with ?q=, a title search across every
-    collection AND the inbox (one bar for the whole flexible layer, since
-    "which collection is that in" is the question you're asking when you
-    can't find something)."""
-    q = (request.query_params.get("q") or "").strip()
-    return page(request, "collections.html", active="collections", q=q,
-                hits=data.search_item_titles(q) if q else None,
-                **data.collections_overview())
-
-
-@app.get("/collections/{name}")
-async def collection(request: Request, name: str):
-    c = data.collection_page(name)
-    if c is None:
-        return page(request, "notfound.html", active="collections",
-                    status_code=404, what="collection")
-    return page(request, "collection.html", active="collections", c=c)
-
-
-@app.post("/collections/{name}/display")
-async def collection_display(request: Request, name: str):
-    """Save the collection page's Display popover: the view, which
-    declared fields show, how the items are grouped/sorted, and the list view's
-    extras. A website-only write path through server.set_collection_display
-    (never a FastMCP tool — the model proposes a collection's shape at creation;
-    what renders is the user's call). Body: {view?, hidden_fields?,
-    group_by?, sort_by?, sort_dir?, show_body?, show_updated?, image_size?}."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    res = server.set_collection_display(
-        name,
-        view=body.get("view"),
-        hidden_fields=body.get("hidden_fields"),
-        group_by=body.get("group_by"), sort_by=body.get("sort_by"),
-        sort_dir=body.get("sort_dir"),
-        show_body=body.get("show_body"),
-        show_updated=body.get("show_updated"), image_size=body.get("image_size"))
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-@app.get("/item/{item_id}")
-async def item(request: Request, item_id: int):
-    it = data.item_page(item_id)
-    if it is None:
-        return page(request, "notfound.html", active="collections",
-                    status_code=404, what="item")
-    return page(request, "item.html", active="collections", it=it)
 
 
 @app.get("/people")

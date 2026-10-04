@@ -4,27 +4,23 @@ Orientation for working in this repo with Claude Code. Read this first.
 
 ## What this is
 
-A single-user **conversational journal** exposed to Claude as an **MCP server**. The
-user talks about their day; Claude captures entries and resolves *who* they mean to
-stable person records, so later "everything about Tom my father" is an exact lookup
-that never pulls in the other Tom. Runs locally over stdio (Claude Desktop) or as a
-remote HTTP server behind Google auth (phone access via claude.ai connectors).
+A single-user **journal web app plus a trainer MCP server**, one process, one SQLite
+DB. The user writes the journal by talking to the web app's own chat; Claude captures
+entries and resolves *who* they mean to stable person records, so later "everything
+about Tom my father" is an exact lookup that never pulls in the other Tom. Training
+(and a small daily water/protein log) is done entirely through the **trainer
+connector** in Claude.
 
-**Three MCP servers, one process, one DB.** The training feature is a *second* FastMCP
-instance — `trainer_mcp`, exposed at its own endpoint `/trainer/mcp` — separate from
-the journal+notes server (`mcp` at `/mcp`); the learning feature is a *third*,
-`teacher_mcp` at `/teacher/mcp` (a spaced-repetition log, ported from the standalone
-`teacher` repo — its logic lives in the `learning/` package, only the thin
-`@teacher_mcp.tool()` wrappers live in `server.py`; see the `subjects`/`facets` row in
-the data model). The trainer also carries the small daily **water/protein log** (see
-`intake_items`) — it used to be a full food tracker on the journal connector and was
-cut down and moved there. All live in `server.py` and share the
-same SQLite DB; each has its OWN Google auth provider (providers are single-resource —
-see the auth section). Each is its own connector → its own Claude project, so a
-conversation loads only that slice's tools (smaller tool surface = less latency, the
-reason for the split). It's purely an MCP-layer division: the webapp still imports this
-module's functions unchanged. `webapp/combined.py` composes the endpoints onto one
-origin (a secondary server moves to its own host when its `*_PUBLIC_URL` is set).
+**One MCP server, one in-process tool registry.** `trainer_mcp` is the only MCP
+endpoint — at `/trainer/mcp` on the main origin when authless, or on its own host
+(`TRAINER_PUBLIC_URL`) with its own Google OAuth. The journal's people/entry tools live
+on a second FastMCP instance, `mcp`, that is NOT served at all: it exists so
+`webapp/chat.py` can lift tool schemas from the docstrings and call the functions
+in-process. (There used to be a journal connector at `/mcp` — first carrying the
+eating log and notes/collections, with the journal tools hidden — and a third
+`teacher_mcp` learning server; the connector, the eating log beyond water/protein,
+notes & collections, and the teacher were all removed. Their tables stay in existing
+DBs, dormant.) `webapp/combined.py` composes the trainer and the UI onto one origin.
 
 **The trainer is MCP-only now; the app is legacy for it.** The user trains entirely
 through the trainer connector in Claude (planning the week, reporting sets between
@@ -43,29 +39,6 @@ table, ids never shown, short mid-session replies). The trainer also carries the
 water/protein log (see `intake_items`). The `/trainer`, `/workouts`,
 `/weight` pages still work and still read the same DB; don't build new trainer UI there.
 
-**The journal connector is notes & collections only.** The user does all journal
-capture through the app's own chat, so the journal server's people/entry tools
-(`add_journal_entry` … `get_briefing`; the `CONNECTOR_HIDDEN_TOOLS` set) are hidden
-from MCP clients by `HiddenToolsMiddleware` — dropped from `tools/list`, rejected on
-`tools/call`. **The app chat is the exact COMPLEMENT of that, not a superset.** It
-bypasses the middleware (so it *could* see everything) and then narrows its tool list
-to `CONNECTOR_HIDDEN_TOOLS` itself (`_AGENTS["journal"]["include"]`): the connector
-gets notes/collections, the panel gets people + entries, neither gets the other's.
-That mirrors how the app is used — the journal is written in the app's chat, saved
-notes are captured in Claude — and it's stated as the complement of one frozenset so
-the halves can't drift: adding a journal tool means adding its name there (already
-the rule) and it lands on both sides at once, while a notes tool needs no chat change
-at all. Deleting an entry needs no special gate — it's its own tool
-(`journal_delete_entry`), hidden like the rest, rather than a `kind` on a shared
-delete. Same split for the model-facing prose: the `mcp` instance's `instructions`
-are the CONNECTOR text (collections), while the chat's journal agent takes
-`JOURNAL_CHAT_INSTRUCTIONS`, the journal contract alone (it drops the collections
-block and adds `_JOURNAL_ONLY_BLOCK`, which tells the model a meal or a lift
-mentioned in passing is part of the ENTRY — write it down, don't offer to log it
-somewhere this panel can't reach) — shared blocks are composed into both strings so
-the surfaces can't drift. Adding a journal tool = adding its name to
-`CONNECTOR_HIDDEN_TOOLS` too.
-
 ## The one architectural rule
 
 **There is no LLM inside the server, and there must never be one.** The server is a
@@ -77,30 +50,10 @@ the model decides. Don't add model calls, embeddings services, or NER inside the
 The rule is about `server.py`, not the whole repo. The **webapp does contain an LLM** —
 `webapp/chat.py` is the web app acting as an *MCP client*, driving the same
 `@mcp.tool()` functions over the Anthropic API (in-process, no transport) so the
-phone/browser gets conversational capture for the journal proper — the people/entry
-tools the MCP connector hides, and only those (see `HiddenToolsMiddleware` above). That preserves
+phone/browser gets conversational capture for the journal proper. That preserves
 the split rather than breaking it: the model still does the judgment, `server.py` stays
 the deterministic data layer with no LLM inside it. So `anthropic` in
 `webapp/requirements.txt` is expected — it lives on the client side of the line.
-
-**One tool leaves the machine, and it's still the same split.** `notes_geocode`
-asks OpenStreetMap's Nominatim what an address is at, because a `location` field
-now REQUIRES coordinates (the map view can't plot an address) and the model
-doesn't always know them. It fits the rule rather than bending it: it returns
-CANDIDATES and never picks — exactly `find_candidates` for people and
-`_match_exercises` for lifts — and it never writes, so the model passes the
-numbers it chose to `notes_save`/`notes_file` itself. Two deliberate limits.
-It is NOT on the write path: geocoding inside `_bad_location` would put someone
-else's server between the user and a saved note, and capture must never block on
-that; a failed lookup is a returned `{"error": …}` the model works around with
-coordinates it knows. And it's the ONE tool with `openWorldHint: True`
-(`READ_EXTERNAL`) — flagged honestly, because a client can't tell a local lookup
-from a remote one by reading prose. Nominatim is free and keyless; the policy
-(identifying User-Agent, ≤1 req/sec) is why `_geocode_wait` throttles and
-`GEOCODE_USER_AGENT` is settable. TLS trust goes through `certifi` when it's
-importable — a stock macOS python has no CA bundle wired into `ssl`, so without
-it dev fails `CERTIFICATE_VERIFY_FAILED` while the Docker image works, a
-difference that only ever shows up on the machine the code is written on.
 
 The same split governs the **trainer** (and its water/protein log): the server stores
 workouts and intake and computes deterministic aggregates (muscle recency, day totals),
@@ -159,8 +112,8 @@ There is no exercise-selection or progression logic in the server either.
   timestamp, not a user date) — but a UTC stamp that gets SHOWN has to be converted,
   and `pacific_day()` is the one way to do it. Slicing `ts[:10]` off a stored
   timestamp looks like the same thing and isn't: it yields the UTC day, which is
-  already tomorrow for the seven or eight hours after Pacific 4/5pm, so every
-  collection item saved in the evening rendered (and sorted) a day ahead. Anything
+  already tomorrow for the seven or eight hours after Pacific 4/5pm, so anything
+  saved in the evening rendered (and sorted) a day ahead. Anything
   turning `created_at`/`updated_at` into a date the user reads goes through the
   helper. Both briefings return `now` (`current_clock()`) — which
   precomputes `date`/`yesterday`/`tomorrow` so the model uses those exact strings rather
@@ -196,78 +149,43 @@ There is no exercise-selection or progression logic in the server either.
   annotation sets — `READ_ONLY`, `WRITE`, `WRITE_IDEMPOTENT`, `DESTRUCTIVE` — so a client
   can tell `get_briefing` from `delete_record` without reading prose. This matters because
   the MCP default for `destructiveHint` is TRUE: an unannotated tool looks dangerous.
-  `openWorldHint` is False everywhere but one (one local SQLite file, no network — the
-  no-LLM rule showing up in the protocol); the exception is `notes_geocode`, which wears
-  a fifth set, `READ_EXTERNAL`, because it asks OpenStreetMap (see the architectural-rule
-  section). They're advisory metadata; the real guard is
+  `openWorldHint` is False everywhere (one local SQLite file, no network — the no-LLM
+  rule showing up in the protocol). They're advisory metadata; the real guard is
   `AllowlistMiddleware`.
-- **Connector tool names are `domain_verb`, and the domain prefix is load-bearing.**
-  Every tool the journal connector advertises is prefixed `notes_*` or
-  `collections_*` (`notes_search`, `collections_save`, …): a single note vs. the
-  collection it's filed in. Clients render `tools/list` in name order, so the prefix
-  makes the list group itself by domain. (It mattered more when the connector also
-  carried the eating log — an intake item and a collection item were easy to confuse;
-  that log now lives on the trainer, unprefixed.) The MCP name is set with
-  `@mcp.tool(name=…)` and the PYTHON function keeps its original name — the webapp
-  calls these functions directly, so renaming only the wire name keeps that surface
-  untouched. Note the one asymmetry: `webapp/chat.py` dispatches by the MCP name (it
-  lifts tools from `list_tools`), so its `_WRITE_TOOLS` set and `_tool_chip` branches
-  key off the wire names. The trainer server is a single domain on its own connector
-  and needs no prefix. Adding a connector tool = giving it a domain prefix.
-- **Destructive tools are narrow, not kind-scoped — on the journal side.** The journal
-  server has three deletes (`journal_delete_entry`, `notes_delete`,
-  `collections_delete`) rather than one `delete_record(kind=…)`. A `kind` string is a
-  thing the model can get wrong on an irreversible call, and it forced the awkward
-  case where ONE kind (`entry`) had to be blocked on the connector while the others
-  stayed — which was a special case inside `HiddenToolsMiddleware.on_call_tool`. As
-  separate tools, hiding the journal delete is just its name in
-  `CONNECTOR_HIDDEN_TOOLS`, like every other journal tool. They all still call the
-  shared `_delete_record` helper, so the table mapping and the set-renumbering live in
-  one place. The TRAINER keeps its kind-scoped `delete_record`
-  (`workout`/`set`/`intake`): one connector, kinds that don't overlap. Weigh-ins used
-  to be a kind there and no longer are — they're import-only now (see `body_weight`).
-- **A write says where the thing now lives.** Capture happens in a Claude conversation;
-  the data is READ in the web app — two different screens, which is the standing
-  awkwardness of the whole setup. So the connector's write tools return a `url`
-  (`_app_url`: `PUBLIC_URL` + the `/app` mount, per `webapp/combined.py`) —
-  `notes_save`/`notes_file` → `/item/{id}`, `collections_save` → the collection page,
-  and the trainer's `log_intake` → `/food` — and one tap replaces a context switch.
-  `PUBLIC_URL` unset (stdio, dev) OMITS the key rather than emitting a dead link. Two deliberate limits: the
-  policy line lives in `_APP_LINK_BLOCK`, composed into the CONNECTOR `instructions`
-  ONLY — the in-app chat gets the same `url` back but already renders its own local
-  chip, and pointing the user at the page they're standing on is noise — and the links
-  sit on capture paths, not corrections (`update_intake` returns totals, no url), since
-  the returns are tuned token-compact and a link per call is exactly the bloat that
-  warning is about.
+- **Destructive tools.** The journal has one narrow delete, `journal_delete_entry`;
+  the TRAINER has a kind-scoped `delete_record` (`workout`/`set`/`intake`) — one
+  connector, kinds that don't overlap. Both call the shared `_delete_record` helper,
+  so the table mapping and the set-renumbering live in one place. Weigh-ins are not a
+  kind — they're import-only (see `body_weight`).
+- **A write says where the thing now lives.** Training happens in a Claude
+  conversation while the data is READ in the web app, so `log_intake` returns a `url`
+  (`_app_url`: `PUBLIC_URL` + the `/app` mount, per `webapp/combined.py`) → `/food`.
+  `PUBLIC_URL` unset (stdio, dev) OMITS the key rather than emitting a dead link, and
+  corrections (`update_intake`) return totals, no url — the returns are tuned
+  token-compact.
 
 ## Files
 
-- `server.py` — everything: schema, matching, all three FastMCP instances (`mcp` =
-  journal+notes, `trainer_mcp` = training + water/protein, `teacher_mcp`), all tools,
-  shared auth wiring, the shared `_delete_record` helper (the trainer exposes it as a
-  kind-scoped `delete_record`; the journal splits it into three narrow tools — see the
-  naming convention above),
-  and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
+- `server.py` — everything: schema, matching, both FastMCP instances (`trainer_mcp` =
+  training + water/protein, the one served MCP; `mcp` = the journal tools, an
+  in-process registry for the web chat), all tools, the trainer's auth wiring, the
+  shared `_delete_record` helper, and the stdio/http entrypoint (runs the trainer).
 - `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): serves the
-  journal MCP + browser UI (`/app`) on the main origin, and the trainer MCP either on
-  its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host` routing) or grafted at
-  `/trainer/mcp` on the main origin (authless fallback).
+  browser UI (`/app`, with `/` redirecting there) and `/health` on the main origin, and
+  the trainer MCP either on its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host`
+  routing) or grafted at `/trainer/mcp` on the main origin (authless fallback).
 - `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
   read-only browse pages, plus the
   handful of website-only write carve-outs (`/food/targets`, `/weight` and its `/{id}`
-  edit + delete, `/graphs/goal`, `/trainer/profile`, a collection's `/display`) and the
+  edit + delete, `/graphs/goal`, `/trainer/profile`) and the
   `/chat` panel mount).
 - `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
   `app.py` thin). Read-only — writes go through `server.py`'s tools.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
   architectural-rule note). Server-bound agents (`journal`, `trainer`) lift their system
   prompt + tool schemas live from a FastMCP instance's `instructions` + tool docstrings,
-  so changing a docstring updates the chat. (Exception: the journal agent's system
-  prompt is `server.JOURNAL_CHAT_INSTRUCTIONS`, not the instance's `instructions` —
-  those are the connector-facing HALF, and this panel is the other one; see the
-  hidden-tools note above. A server-bound agent narrows its lifted tools with
-  `exclude` (drop these) or `include` (keep only these SET of names) — the journal
-  panel passes the frozenset.) (The webapp-defined `exercise` agent that backed the
+  so changing a docstring updates the chat. (A server-bound agent can narrow its
+  lifted tools with `exclude` or `include`; neither uses one today.) (The webapp-defined `exercise` agent that backed the
   library's add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is
   set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
@@ -280,8 +198,7 @@ There is no exercise-selection or progression logic in the server either.
   **THEME is two attributes on `<html>`, and the split is the design.**
   `data-theme-choice` is what the user PICKED (`system|light|dark`, stored in
   `localStorage` under `theme-choice`); `data-theme` is what that RESOLVES to
-  right now (`light|dark`) and is what every dark rule keys off — including the
-  map's MutationObserver. The picker is an explicit THREE-way in the nav menu
+  right now (`light|dark`) and is what every dark rule keys off. The picker is an explicit THREE-way in the nav menu
   because a two-state toggle cannot store one: a toggle can only say "not the
   OS", so it has to GUESS whether a tap meant "dark right now" or "dark from now
   on". Guessing wrong is what left the app sitting white on a Mac that had gone
@@ -291,8 +208,8 @@ There is no exercise-selection or progression logic in the server either.
   leaning. And the old `theme` key is DROPPED on read rather than migrated —
   written by that toggle, its value records no intent that can be read back, and
   a bare `"light"` in it is indistinguishable from a deliberate one. `static/vendor/`
-  holds the third-party JS/CSS, self-hosted rather than CDN'd: `marked`, uPlot,
-  and `leaflet.min.js`/`.css` (loaded ONLY on a collection's map view). Styles are COMPILED
+  holds the third-party JS/CSS, self-hosted rather than CDN'd: `marked`, DOMPurify and
+  uPlot. Styles are COMPILED
   Tailwind (`static/tailwind.css`, checked in — no CDN, the app styles itself
   offline); after adding/removing classes in templates or static JS, rebuild:
   `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
@@ -301,27 +218,8 @@ There is no exercise-selection or progression logic in the server either.
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.
-- `icons.py` — GENERATED (`scripts/build_icon_set.py`): the collection icon set, a
-  curated ~130-name subset of **Lucide** vendored as raw SVG shapes, plus its
-  grouping. The pack matters because the MODEL picks the name: `collections_list_icons()` ships
-  the set over MCP and `_bad_icon` rejects anything else with the closest matches, so
-  it can't invent a Lucide name the app doesn't carry. Lucide because the nav bar's
-  hand-written icons already are Lucide strokes. Re-run the script (needs npm once)
-  only to add names or move Lucide versions — nothing fetches at runtime.
-- `learning/` — the teacher server's logic (spaced-repetition store, FSRS wrapper,
-  SQLite layer, facet templates), ported near-verbatim from the standalone `teacher`
-  repo. **Edit it like a vendored library**: it has NO tests, and scheduling
-  correctness is the one property you can't check by using it (a wrong interval looks
-  right until the card comes back months later) — so changes beyond the three port
-  seams (JOURNAL_DB path, Pacific `day_start()`, the `learn_fts` rename) need a reason.
-  It keeps its OWN idempotent schema + migrations in `learning/db.py` (run from
-  `init_db()` and on first connect) rather than folding into `SCHEMA` — the
-  attempts-table rebuild migration stays with the code that owns it. `server.py` wraps
-  its store as `teacher_mcp`'s tools; `webapp/data.py` reads it for `/learn`.
-- `scripts/` — `import_teacher.py` (one-shot, idempotent copy of a standalone
-  teacher repo's DB into the journal DB — ids and FSRS state preserved),
-  `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
-  the PWA icon set), and `build_icon_set.py` (regenerate `icons.py`, above).
+- `scripts/` — `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
+  the PWA icon set), `swiftbar/` (the menu-bar water/protein plugin), `backup/`.
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
@@ -338,30 +236,25 @@ There is no exercise-selection or progression logic in the server either.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-# local (Claude Desktop, stdio) — stdio runs ONE server; pick it with MCP_SERVER:
-.venv/bin/python server.py                       # journal+notes (default)
-MCP_SERVER=trainer .venv/bin/python server.py    # trainer
-MCP_SERVER=teacher .venv/bin/python server.py    # teacher (the learning log)
-# remote, all endpoints in one process (this is what the Dockerfile runs):
+# local trainer over stdio (Claude Desktop):
+.venv/bin/python server.py
+# remote, trainer + UI in one process (this is what the Dockerfile runs):
 MCP_TRANSPORT=http PORT=8000 JOURNAL_DB=./journal.db .venv/bin/python webapp/combined.py
-#   journal: /mcp   ·   trainer: /trainer/mcp   ·   teacher: /teacher/mcp   ·   UI: /app
+#   trainer: /trainer/mcp (or its own host)   ·   UI: /app   ·   /health
 ```
 
-Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `MCP_SERVER`
-(`journal`|`trainer`|`teacher`, stdio only — which server a bare `server.py` launch runs),
-`PORT`, `MCP_HOST`. Auth (set all to protect; unset = authless for dev/staging only):
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_URL` (bare origin, no trailing
-slash, no `/mcp`), `JOURNAL_ALLOWED_EMAILS` (comma-separated; normally just yours), and
-`TRAINER_PUBLIC_URL` (bare origin of the trainer's own host — enables the trainer on its
-own subdomain; unset = trainer falls back to `/trainer/mcp` on the main origin, authless
-only), and `TEACHER_PUBLIC_URL` (same, for the teacher server / `/teacher/mcp`).
-Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, per secondary host that is
-set, `<TRAINER_PUBLIC_URL>/auth/callback` / `<TEACHER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
+Env vars: `JOURNAL_DB` (path), `MCP_TRANSPORT` (`stdio`|`http`), `PORT`, `MCP_HOST`.
+Trainer auth (set all to protect; unset = authless for dev/staging only):
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JOURNAL_ALLOWED_EMAILS` (comma-separated;
+normally just yours), and `TRAINER_PUBLIC_URL` (bare origin of the trainer's own host,
+no trailing slash, no `/mcp` — enables the trainer on its own subdomain; unset =
+trainer falls back to `/trainer/mcp` on the main origin, authless only). Google
+redirect URIs: `<TRAINER_PUBLIC_URL>/auth/callback` for the trainer and
+`<PUBLIC_URL>/app/auth/callback` for the web app's own login. `PUBLIC_URL` is the web
+app's bare origin (also used for the `url` that `log_intake` returns). Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
-(show the logout control in the UI), `GEOCODE_USER_AGENT` (the User-Agent
-`notes_geocode` sends to Nominatim; a generic default, override to identify your
-deploy), and `BACKUP_TOKEN` (strong random token that unlocks
+(show the logout control in the UI), and `BACKUP_TOKEN` (strong random token that unlocks
 the headless backup download at `GET /export/journal.db` for a cron `curl` — bearer /
 `X-Backup-Token` / `?token=`; unset = browser-session-only; see README "Backup &
 restore"), and `WIDGET_TOKEN` (unlocks `GET /api/today.json` — today's water/protein
@@ -390,12 +283,11 @@ PY
 ```
 
 Smoke-test HTTP boot + handshake: start `webapp/combined.py` with `MCP_TRANSPORT=http`.
-Authless, POST an `initialize` JSON-RPC call to `/mcp` and `/trainer/mcp` (Accept:
-`application/json, text/event-stream`) and expect `200`. With auth on (and
-`TRAINER_PUBLIC_URL` set), the trainer moves to its own host — send `Host:
-<trainer-host>` to `/mcp`; both hosts should `401` with a `WWW-Authenticate` whose
-`resource_metadata` pointer resolves to `200` at THAT host's root. `/health` should be
-`200` regardless of auth.
+Authless, POST an `initialize` JSON-RPC call to `/trainer/mcp` (Accept:
+`application/json, text/event-stream`) and expect `200`. With `TRAINER_PUBLIC_URL` set,
+the trainer moves to its own host — send `Host: <trainer-host>` to `/mcp`; with auth on
+it should `401` with a `WWW-Authenticate` whose `resource_metadata` pointer resolves to
+`200` at that host's root. `/health` should be `200` regardless of auth.
 
 If a feature changes the schema, add a migration in `init_db()` (it runs `CREATE TABLE
 IF NOT EXISTS` then `ALTER TABLE ADD COLUMN` for new columns) — existing DBs must keep
@@ -440,9 +332,9 @@ working.
   not a search. `_fts_query` tokenizes and quotes each term into a literal (terms
   ANDed); `raw_query=True` opts back into real FTS5 syntax (OR/NEAR/prefix*) and
   returns any syntax error as a correctable `{"error": …}` rather than raising.
-  Each literal is a PREFIX query (`"term"*`) — shared by `search_entries` and
-  `notes_search`. The load-bearing reason is CJK: unicode61 tokenizes a run of
-  Chinese as ONE token, so a recipe titled 宫保鸡丁 was reachable only by typing
+  Each literal is a PREFIX query (`"term"*`). The load-bearing reason is CJK:
+  unicode61 tokenizes a run of Chinese as ONE token, so a title like 宫保鸡丁 was
+  reachable only by typing
   the whole name (`宫保` matched nothing), and the same character fixes the
   everyday English case (`doubanji` → doubanjiang). It is NOT substring matching —
   a word's TAIL still misses; that needs the trigram tokenizer and an FTS rebuild.
@@ -704,317 +596,10 @@ working.
   here, which is the accepted cost of one door. The per-session "Weight:" line on
   `/workouts` stays — it's a same-day join (`data.workouts_full`), so it reads as what
   you weighed that morning.
-- `collections` + `items` — the FLEXIBLE layer (design: `plan-2026-08-13-collections.md`):
-  everything the user wants kept that doesn't need bespoke schema (recipes, trip
-  ideas, …). An item with `collection_id` NULL is an **inbox note** — the capture
-  default; a collection is model-proposed, user-approved (`collections_save` blocks
-  near-duplicate names with "did you mean?" candidates unless `force=True`), wears an
-  `icon` (a name from the vendored Lucide set — see `icons.py`; NULL draws the default
-  folder — written ONLY by `collections_save`: the glyph is part of what a collection IS,
-  so it's the model's like `fields`, not a rendering pref the Display popover touches), and
-  carries its shape as METADATA: `fields` (JSON `[{key,label,type,options?,unit?}]`,
-  types text|number|date|select|url|bool|rating|multiselect|location. A field's
-  type is SEMANTIC — it says what the value MEANS, and the app renders it as that
-  thing: a `url` as its host (a real link on the item page), a `bool` as a checked
-  label ("✓ Cooked" — the one type whose value can't speak without its name), a
-  `rating` as stars (0-5 in halves, no configurable max), a `multiselect` as one
-  badge per value, a `location` as a pin that opens a maps app (showing its
-  short label in lists and cards, but the FULL STREET ADDRESS on the item
-  page — where the pin is the one thing on screen and a label alone won't
-  say where it goes; the label still leads when the address doesn't already
-  contain it). The five beyond
-  the original four extend the SHAPE axis the model already owns rather than
-  adding a collection-level "kind": a kind would fight both existing axes and
-  make a collection state its shape twice — this is the same move `unit` on a
-  number already made. A location is `{label?, address?, lat, lng}` and the
-  COORDINATES ARE REQUIRED (`_bad_location`), because a collection of places
-  renders as a MAP (the fourth `display.view` — see the map-view row below) and
-  an address alone is a place with nowhere to go. The model supplies them from
-  its own knowledge, or from `notes_geocode` (below). Values written before that
-  rule keep an address and no numbers: they render everywhere else, the map
-  names them under itself as unplottable (`data._item_pins` returns them rather
-  than dropping them silently), and they re-validate — i.e. start failing with
-  an actionable error — the next time their item is written. There is no
-  back-fill UPDATE and no boot-time geocode: fixing one is a model call, not a
-  migration.
-  Which types can be arranged by lives in `GROUPABLE_TYPES`/`SORTABLE_TYPES`,
-  once, read by both the `set_collection_display` gate and the Display popover's
-  two selects (`data.groupable_fields`/`sortable_fields`) so the UI can't offer
-  an arrangement the save then refuses: `url` and `location` are NEITHER (a
-  bucket per URL is a bucket per item; a coordinate pair has no order), and
-  `multiselect` groups but doesn't sort — it fans an item into one bucket per
-  value, the single place an item appears twice on a page, which is exactly why
-  there's no one value to sort it by. A `select` MUST carry a non-empty,
-  duplicate-free
-  `options` list, since `_bad_data` can only constrain a value when options exist
-  and the webapp groups in their declared order: an optionless select silently
-  degraded into a text field that merely CLAIMED to be a closed set (a
-  `multiselect` is that same closed set with several values, so it shares the
-  branch); a `unit`
-  ("min", "nights") is NUMBER-ONLY and rejected elsewhere, because its whole job
-  is letting the renderer drop the label — a figure with a unit says what it is
-  ("240 min"), a bare one has to be introduced ("Time: 240"), and on a type with
-  no figure there'd be nowhere to put it). Because
-  `fields` REPLACES the list, an edit that forgets a field un-declares it and
-  STRANDS its values on every item — invisible (only declared fields render) and
-  blocking (`notes_file` validates the whole merged blob). `collections_save`
-  doesn't delete those values, but it now reports them as `stranded`
-  {key: item count} with the fix, since silence is exactly how the
-  `featured_image` orphans survived 16 items unnoticed. Keeping a field but
-  RETYPING it fails the same way one step over — the values sit there and
-  quietly stop validating, on a page that still renders them fine — so those
-  come back as `mistyped` {key: item count} (`_mistyped_keys`, one key at a time
-  since `_bad_data` stops at the first error). Both are advisory, never
-  blocking, like `unfilled_fields`; and `macros.field_text` prints an
-  impossible-for-its-type value rather than raising, because after a retype it
-  meets them as a matter of course. Shape is the model's; LAYOUT is not — the legacy
-  `display_hint` column is dormant, the view lives in the webapp-only `display`
-  JSON (see the popover below). Items hold markdown `body` (the prose), a `featured_image_url` (the
-  FEATURED IMAGE — a first-class items COLUMN, not a declared field, so every
-  item carries one whether or not it's filed and no collection has to declare
-  an image field; http/https only, since the webapp drops it straight into an
-  `<img src>`, and `""` clears it via `notes_update`. Rendered as a thumbnail on
-  every item row — collection page (at that collection's `image_size`, see the
-  popover below), inbox, search — each with `onerror="this.remove()"` so a dead
-  URL leaves nothing rather than a broken-image box. On the ITEM page it's a
-  tile too (`.item-hero`), not the full-width hero it started as: a recipe's
-  photos were pushing the method a screen down, so the page reads as prose with
-  pictures in it rather than an image with prose under it. Every prose image
-  (`.chat-md img`, so the journal feed and the chat transcript get it too) is
-  likewise a uniform tile — fixed box + `object-fit`, several per row like a
-  contact sheet whatever their native aspect — and the full picture is one
-  click away in the `#lightbox` overlay (base.html: ONE delegated listener in
-  the CAPTURE phase, so it also covers images `marked` renders after load, and
-  it stops the click as well as preventing it — an image can sit inside a link
-  (the person page's entry_card), and expanding one must not navigate). Collections predating the column DECLARED their own
-  "featured image" field, so the URL rendered as a badge with the link spelled
-  out — `_fold_image_fields` (runs every boot, idempotent) lifts those values
-  onto the column, un-declares the field, and `_norm_fields` now REFUSES an
-  image-ish field so it can't come back. The fold sweeps image-ish keys found
-  in the BLOB, not just still-DECLARED ones, because the two come apart: drop
-  the declaration by hand and the values STRAND — invisible (the app renders
-  only declared fields) and poisonous (`notes_file` validates the whole merged
-  blob and rejects the unknown key), on exactly the collection a
-  declaration-keyed sweep would skip. `_bad_data` checks the null-drop BEFORE
-  the unknown-key check for the same reason: a null asks to REMOVE a key, which
-  is the one thing a stranded orphan needs), a `data` JSON blob validated
-  against the collection's fields (unknown key / bad type / bad select value come back
-  as actionable errors — facts with no field stay in the body). An item had `tags`
-  too, and they're GONE: a third way to structure a thing, next to the collection
-  it sits in and that collection's fields, but nothing ever filtered by one — they
-  rendered as inert badges and their only real job was padding the FTS mirror with
-  words the title and body already carried. Dropped rather than made filterable
-  (`init_db` drops the column and rebuilds `items_fts`, which names its columns);
-  "fields stay few" argues the same way for tags. Promotion
-  (note → collection item) is `notes_file`: pure data movement, reversible,
-  NO DDL — the bespoke-table rung of the ladder stays a deliberate human+code
-  migration in `init_db()`, never an MCP call. `items_fts` (title/body, same
-  trigger pattern as `entries_fts`) backs `notes_search`, through `_fts_query` so
-  punctuation is safe. `notes_update` merges `data` per key (null drops) but replaces
-  the body wholesale (read-before-write via `notes_get`). Deletes are two tools:
-  `notes_delete` (gone for good) and `collections_delete` (shell only — FK is ON DELETE
-  SET NULL, so its items demote to inbox notes). Collections are addressed by NAME
-  everywhere else (`notes_save`, `notes_file`), so `collections_list` and
-  `collections_save` both return the `id` that this one kind needs — without it a
-  collection was undeletable over MCP — reachable by name but not by handle.
-  The write returns carry three FRAMES, for the capture-here/read-there split. `notes_save`/`notes_file` report `unfilled_fields`
-  (`_unfilled_fields`) — declared fields the item has no value for, the exact mirror
-  of `stranded` (values with no field) and reported for the same reason: the return
-  said only where the item landed, so nothing ever mentioned that a collection wanted
-  a cook time. Advisory, NEVER an error — fields are optional and capture must not
-  block on them. And a save that lands in the INBOX reports `inbox_count`: capture-
-  first-file-second makes the inbox the default, so it grows invisibly and filing
-  happens only if the user thinks to look. It is the inbox's `day_totals`.
-  The third is `featured_image` (`_missing_image_note`), on a FILED item with an
-  empty picture slot — the same advisory shape one axis over: the featured image
-  is the field every collection has without declaring one, so `unfilled_fields`
-  never mentioned it and items were landing picture-less by default, on pages
-  (rows, thumbnails, the cards view) that are mostly picture. It carries the
-  collection's own COVERAGE ("1 of 8 others here have one") rather than a flat
-  scold, because whether a picture belongs in THIS collection is a fact about the
-  collection and the server doesn't get a vote — nine of eleven says one thing,
-  nought of eleven says the opposite, and the model reads it the way it reads
-  candidates. Inbox notes are exempt (a scrap like "call the dentist" has no
-  picture and nagging on every one is how an advisory stops being read), and it's
-  advisory like the others — capture never blocks on an image. The prose pushes
-  the same way from two homes: `_COLLECTIONS_BLOCK`'s fourth rule (items are meant
-  to have pictures) and the `notes_save`/`notes_file` docstrings, both of which
-  pair the encouragement with its one hard limit — NEVER invent a URL. A guessed
-  image URL renders as nothing (`onerror="this.remove()"`), so a plausible fake is
-  strictly worse than an empty slot: say the picture is missing, or ask for a link.
-  `notes_file` grew a `featured_image_url=` for this — promotion is the moment
-  you've just read the note and have its source in hand, and it would otherwise
-  take a second `notes_update` call; passing None there leaves the existing
-  picture alone, the same "None means unchanged" as `notes_update`.
-  The webapp browses it at
-  `/collections` (+ per-collection and per-item pages, rendered generically from the
-  collection's own fields + view prefs — no per-domain view code), OUTSIDE the
-  journal lock like `/food`, strictly read-only for CONTENT like everything else.
-  Collections are a PRIMARY section: the fourth icon on the nav strip (so the number
-  shortcuts run 1-4 in nav order, then 5 graphs / 6 trainer), and `/collections` is a
-  GRID of icon cards rather than a list — the icon is what you aim at, and a stack of
-  near-identical text rows made every collection look alike.
-  A collection's NAME is stored exactly as written and rendered with no
-  text-transform anywhere; only the LOOKUP lowercases (`_resolve_collection`,
-  `lower(name)=?`). Folding the case at the door instead — which is what
-  `collections_save` used to do — threw the capitalization away and left the two
-  read surfaces to invent their own: the grid title-cased with CSS (so "Trip ideas"
-  came back "Trip Ideas", capitalizing a word nobody wrote) while the collection
-  page printed the stored lowercase, and one collection wore two spellings
-  depending on which page you were standing on. Re-saving with new capitalization
-  RE-CASES the row, which is the migration path for anything created earlier.
-  A declared field renders as its VALUE, not `LABEL: value` — inside a collection
-  the value almost always names its own field ("ITALIAN" under a chef-hat called
-  Recipes), and the prefix wrapped a badge row onto two lines to say nothing. The
-  label moves to the `title` tooltip. Two exceptions, both fields whose value
-  can't speak for itself: a bare NUMBER, which keeps its label unless the field
-  declares a `unit` — which says it shorter — and a BOOL, which IS its label
-  ("✓ Cooked", muted when false). `macros.field_badge`/`field_text` own those
-  rules plus date formatting and every semantic type's rendering, so all three
-  views and the item page agree. `field_badge(linkify=…)` is OFF by default and
-  that's structural, not a preference: list rows and cards wrap the whole item in
-  an `<a>` to `/item/{id}`, and an anchor inside an anchor is illegal HTML — so
-  only `item.html`, whose rows aren't links, passes True, and it's the only page
-  where a url or a location is clickable.
-  The one thing the browser writes is PRESENTATION: each collection page has a
-  **Display** popover (`view` = list|table|cards|map, webapp-only: it was a model-written
-  `display_hint` column until that guess proved worthless — the first popover
-  visit overwrote it, so one concern had two homes and only the browser's ever
-  won. `init_db` folds the old column into the JSON once and it's dormant after,
-  kept not dropped; which declared fields show as table
-  columns / list badges; `group_by`/`sort_by`/`sort_dir`; and the row extras —
-  notes-preview, updated (default OFF: a collection is usually saved in a batch,
-  so the stamp repeats identically down every row and spends a line per item
-  saying nothing that tells them apart), and `image_size` (`off|small|medium|large`, the
-  featured image's thumbnail edge, a step smaller in the denser table view —
-  and in `cards`, where the picture is the card's whole top edge rather than a
-  tile beside the text, the same pref sizes the CARD (the grid's minimum column)
-  instead;
-  it replaced a `show_image` BOOLEAN, folded in by `init_db`, because a size
-  and a visibility flag ask the same question twice and can disagree — "off"
-  is just the small end. The px values live in `collection.html` as an inline
-  style, not Tailwind size classes: the size is stored DATA, and a class per
-  option would make the compiled stylesheet carry every one)) saved
-  to a webapp-only `display` JSON column via `POST /collections/{name}/display` →
-  `server.set_collection_display` — a NON-tool, website-only path like
-  `set_archived`, invisible to the model and to tool returns. Those prefs are
-  PER-COLLECTION and persist in the DB, so a collection stays arranged the way the
-  user left it, on every device — no ARRANGEMENT lives in the browser (folding,
-  below, is the one thing that does, and deliberately). Arrangement is
-  resolved in `data.collection_page`, which always hands the template `groups`
-  (one unlabeled bucket when ungrouped), each bucket pre-sorted, so every view
-  just loops; a bucket for items MISSING the grouped value sorts last, and a
-  `select` field groups in its own declared `options` order. Two things about
-  grouping are decided THERE rather than per view, and they're joined on purpose.
-  A bucketing where EVERY bucket holds one item collapses back to ungrouped: six
-  trip ideas grouped by region gave six bands, each ~90px of heading introducing a
-  single row, so the page became mostly furniture. And when the bands DO survive,
-  the grouped field stops rendering per item — the band already says "California",
-  so a `REGION: CALIFORNIA` badge under it, or a Status column repeating its
-  heading down the whole table, is the same word twice. The field is dropped ONLY
-  when a band is there to carry it, which is why one rule can't move without the
-  other: apply the hiding to a degenerate grouping and the value vanishes entirely.
-  A labelled group's
-  band is a TOGGLE — the stack folds away — in all three views, since the point
-  of naming buckets is being able to put the ones you're not reading away.
-  Which labels are folded is the ONE piece of collection view state kept in
-  `localStorage` rather than the `display` JSON, and the split is by tempo, not
-  by accident: the stored prefs say how the collection is ARRANGED (worth
-  syncing to every device), while a fold is where you are in a scan right now,
-  flipped several times a minute — a POST per chevron is the wrong tempo. Keyed
-  by label, so a fold survives a re-sort. The table view pays for it in markup:
-  collapsing means hiding a run of `<tr>`s, so each group there is its own pair
-  of `<tbody>`s (band, then rows) — valid HTML, columns still aligned. A wide
-  table scrolls INSIDE itself so the page never scrolls sideways, which is right
-  and was also silent: on a phone the trailing columns simply weren't there, with
-  nothing to say a swipe would reach them (measured at 430px, a five-column table
-  hid 37% of its width). The `.hscroll`/`.hscroll-cue` pair in `base.html` fades
-  the right edge while content remains past it — so it doubles as the "that's the
-  end" signal — and any page can opt in by wrapping a scroller and dropping the
-  span in.
-  The fourth view, `map`, is the only one a collection can be INELIGIBLE for:
-  it needs a `location` field to have anything to plot, so the popover offers it
-  only when `data.can_map` (and `set_collection_display` refuses it otherwise —
-  the same one-rule-two-users pairing as `groupable_fields`/`sortable_fields`,
-  with a third `and c.can_map` in the template so a collection whose location
-  field is later dropped falls back to the list rather than rendering an empty
-  world). It's the app's ONE network dependency: **Leaflet** is vendored into
-  `static/vendor/` like `marked` and uPlot, but the TILES come over the wire —
-  free, keyless, and the one thing on any page that won't draw offline (the
-  rest of the page still does). Loaded only on the map view, since it's 145KB
-  no other view has a use for. Pins are `L.circleMarker`s, not Leaflet's
-  default teardrop: the default is a PNG pair that would have to be vendored
-  and recolored, while an SVG circle is styled like everything else.
-
-  The basemap is **CARTO Positron** (OSM data, CARTO's style) rather than OSM's
-  own standard tiles, and all three reasons came out of looking at the same
-  view in both. It's already the page's palette — near-white land, gray line
-  work — where the standard style is beige-and-blue and only goes gray under a
-  filter that muddies it. Its labels are ENGLISH worldwide (CHINA, JAPAN,
-  GERMANY) where the standard style prints each country's own name (中国, 日本,
-  Deutschland), which is right for a world map and wrong for one person's list
-  of places. And it draws country borders at all. Dark mode swaps to the same
-  map's DARK build, not an `invert()` of the light one — inverting turns the
-  water muddy brown and the labels grey-on-grey. A `grayscale(1)` takes the
-  last blue out of the water; it must NOT be paired with a contrast boost,
-  since the borders are LIGHT gray and more contrast pushes them to white,
-  erasing the very thing the zoomed-out view is short of.
-
-  Two layers, not one: the LABELS are a separate tile layer that switches on at
-  zoom 5. Zoomed out, Positron's text is neither ours nor English — continents
-  come through in mixed scripts (亚洲, AMÉRICA, "AMÉRICA DO SUL;AMÉRICA DEL
-  SUR" as a single label) — and none of it is what this map is for. So the wide
-  view is pure line drawing and the words arrive at the zoom where they start
-  being country and street names. Drawing country names OURSELVES at the wide
-  zooms was tried and removed: Natural Earth ships label points and its own
-  per-country `MIN_LABEL`, so the names were English and progressively
-  disclosed for free — but a point that doesn't know what else is on the map
-  collides with the thing the map is FOR, and the labels landed on top of pins
-  and half off the edge of the pane. Real label placement means measuring boxes
-  and resolving overlaps against the pins on every pan, which is a lot of
-  machinery for names the reader already knows.
-
-  Country borders are OUR line drawing on top, not the basemap's, because the
-  basemap's fade as you zoom OUT — exactly the view where an outline is the
-  only thing saying what you're looking at. Natural Earth's 110m LAND
-  boundaries (public domain), stripped of every property and rounded to 3
-  decimals: 77KB, 20KB over the wire, vendored like everything else. Land
-  borders only — coastlines are the basemap's job, and drawing our own over
-  them would double every shoreline. Fetched (so it caches across collections)
-  and added before the pins so markers sit on top; a failed fetch is silent on
-  purpose, since the map is usable without the outlines and a missing
-  decoration must not take the pins down with it.
-
-  The borders have to answer the dateline normalization above. A raster layer
-  wraps ITSELF, so the tiles never noticed; a vector layer is drawn once,
-  exactly where you put it — so with
-  the view centered past 180 for a Pacific-spanning collection, the Americas
-  lost their outlines while Asia kept its. So the borders are built as three
-  copies of the world (a lap west, home, a lap east — enough for any view a
-  minZoom-2 map can show), on a CANVAS renderer, since 331 features times three
-  is a thousand paths: a lot of SVG nodes for a decoration and nothing at all
-  for a canvas. The theme is watched with a
-  MutationObserver rather than read once at load: the nav's toggle flips
-  `data-theme` live, and a map that read it at startup would sit white on a
-  dark page until reload. GROUPING IS IGNORED here and that's structural, not a gap — a
-  band is a horizontal rule with a stack under it, and a map has no stacks; the
-  popover still shows the arrangement controls because they're what the other
-  three views will use when you switch back. Pins are built from the FLAT item
-  list, never the groups, since a multiselect grouping fans one item into
-  several buckets and the same restaurant twice on a map is just a thicker dot.
-  A `checklist` hint
-  was dropped (it rendered exactly like `list`, and an item has no done-state to
-  check), migrated to `list` in `init_db`; `cards` earns its place the way that
-  one didn't — it's the one view where the IMAGE leads instead of accompanying
-  (a grid of picture-on-top cards, auto-fill columns), so a collection that gets
-  LOOKED at rather than read reads as a contact sheet. An item with no featured
-  image still draws a placeholder tile wearing the collection's icon: skipping
-  the box would sit that card short and ragged its row.
-  `/collections` also carries a title-only search across every collection AND the
-  inbox (`data.search_item_titles`, plain LIKE) — a "where did I file that"
-  lookup, deliberately not the model's FTS `notes_search`. The three
-  judgment rules (capture first/file second; structure proposed, never imposed;
-  fields stay few) live in the journal server `instructions`.
+- `collections` + `items` (+ `items_fts`) — DORMANT. The notes & collections layer
+  (an inbox of notes promotable into model-defined collections, with list/table/
+  cards/map views) was removed with the journal connector; existing DBs keep the
+  tables and rows, nothing reads or writes them, and `SCHEMA` no longer creates them.
 - `settings` — generic JSON KV; holds `profile` (`goals`, `split`, `session`,
   `injuries`, `coaching`, free-form beyond those) merged via `update_profile` and surfaced by `get_fitness_briefing`,
   and `eating_profile`, whose one live key is `targets` — the flat {nutrient: number}
@@ -1046,38 +631,9 @@ working.
   still has two doors onto one copy: `update_profile` (the model, when the user asks
   in so many words) and `server.set_trainer_profile` (the /trainer page's legacy
   **Coaching** popover); `update_profile` drops a key sent as null.
-- `subjects` + `facets` + `attempts` + `learn_fts` — the LEARNING log (the teacher
-  server; logic in `learning/`, schema owned by `learning/db.py`, not `SCHEMA`). A
-  *subject* is a thing being learned (a myth, a word, a case); a *facet* is one
-  recallable aspect of it and the unit of FSRS scheduling, because facets fail
-  independently. Facets grade in one of three modes (`recall`/`list`/`open`), are
-  STAGED on capture and released a few per Pacific day (`TEACHER_NEW_PER_DAY`), and
-  `scheduled=0` marks background context that is never quizzed. `attempts` is the
-  audit trail — every prompt, the user's VERBATIM answer, the grade, and the FSRS
-  card as it stood before (`prev_card`, what makes `undo_last` possible); `kind`
-  separates graded reviews from being taught (`study`) and from conversational
-  `encounter`s, and only reviews count toward retention. The same architectural
-  split as everywhere: the server schedules and records; composing questions and
-  judging answers is the model's, at review time — reference answers are deliberately
-  withheld from `next_card`/`due` so they can't leak into question wording.
-  A subject can also carry an `article` — model-written background reading
-  (markdown, hotlinked images) for the webapp's subject page. It is a SEPARATE
-  LAYER from the facets on purpose: the article is where detail and big picture
-  live, the facets stay the few tested key points — and it follows the same
-  answer-withholding rule as everything else (never returned by `next_card`/
-  `due`/`at_risk`; `get_subject` returns it in full, everything else carries a
-  `has_article` flag so returns stay compact). Written via
-  `update_subject(article=…)` (wholesale replace, "" clears) or at `capture`;
-  indexed into `learn_fts`; the contract (engaging wiki-style prose, real image
-  URLs only — never guessed, Wikimedia preferred) lives in the teacher
-  `instructions` ARTICLES block.
-  The webapp reads it at `/learn` (nav menu, shortcut 7) — subjects grouped by type,
-  and a per-subject wiki page showing the article (rendered via the shared
-  `data-md`/marked pipeline, so images get the uniform tiles + lightbox), the
-  facets under a Key-points band, schedule state, and recent
-  attempts. Read-only like `/food`, outside the journal lock, no chat panel: the ONE
-  write path is the teacher connector's tools. `scripts/import_teacher.py` folds a
-  standalone teacher repo's DB in (idempotent, preserves ids + FSRS state).
+- `subjects` + `facets` + `attempts` + `learn_fts` — DORMANT. The teacher server's
+  spaced-repetition log was removed (it lives on as a separate project); existing DBs
+  keep the tables, nothing reads them.
 
 ## Matching (in `find_candidates` / `score_surface_against_alias`)
 
@@ -1088,47 +644,34 @@ top scorer per person. The emergent "who's talked about together" graph
 
 ## Auth flow (when enabled)
 
-`GoogleProvider` makes the server its own OAuth 2.1 authorization server (PKCE + Dynamic
-Client Registration) that proxies Google; Claude discovers it via the 401's
+`GoogleProvider` makes the trainer its own OAuth 2.1 authorization server (PKCE +
+Dynamic Client Registration) that proxies Google; Claude discovers it via the 401's
 `resource_metadata` pointer and self-registers, so no client ID/secret is entered in
-Claude's connector UI. `AllowlistMiddleware.on_call_tool` then rejects any authenticated
-account whose email isn't in `JOURNAL_ALLOWED_EMAILS` — a valid Google login alone is
-not enough. Google redirect URI is `<PUBLIC_URL>/auth/callback`.
+Claude's connector UI. `AllowlistMiddleware` then rejects any authenticated account
+whose email isn't in `JOURNAL_ALLOWED_EMAILS` — a valid Google login alone is not
+enough.
 
-**Two endpoints, a provider EACH (never shared).** A `GoogleProvider` is single-
-resource: building its HTTP app calls `set_mcp_path()`, which writes `_resource_url`
-*onto the provider instance*, and that is what incoming tokens are validated against. If
-both servers share one provider object, building the second app overwrites the first's
-`_resource_url`, and the first endpoint then rejects all of its own tokens ("auth
-failed / server configuration issue"). So `server.py` builds a fresh provider per server
-(`_build_auth()` called twice) — journal keeps `_resource_url=/mcp`, trainer keeps
-`/trainer/mcp`. Each advertises its own protected-resource metadata (`.../mcp`,
-`.../trainer/mcp`), both resolving at the root because `combined.py` builds each MCP app
-at the root (NOT as a Starlette sub-mount, which would prefix the discovery docs).
+The trainer runs on its **own host**: set `TRAINER_PUBLIC_URL=https://<trainer-host>`,
+its provider takes that base_url, and `combined.py` routes that hostname (Starlette
+`Host(...)`, which dispatches by Host header WITHOUT prefixing paths, unlike `Mount`) to
+the trainer app at its root — a complete OAuth server at its own origin (`/mcp`,
+`/.well-known/*`, `/authorize`, `/auth/callback`). The Google client needs
+`<trainer-host>/auth/callback` as a redirect URI. (Build the MCP app at the root, never
+as a sub-mount, which would prefix the discovery docs.) A `GoogleProvider` is
+single-resource — building its app writes `_resource_url` onto the instance — so if a
+second MCP server is ever added, give it its own `_build_auth()` and its own host; two
+full OAuth servers can't share an origin.
 
-**Two full OAuth servers can't share one origin** — their `/authorize`, `/token`,
-`/auth/callback` paths collide, and a same-origin token-reuse hack does NOT work in
-practice (verified: the trainer connector fails to authenticate that way). So the
-trainer runs on its **own host**: set `TRAINER_PUBLIC_URL=https://<trainer-host>`, give
-its provider that base_url, and `combined.py` routes that hostname (Starlette `Host(...)`,
-which dispatches by Host header WITHOUT prefixing paths, unlike `Mount`) to the trainer
-app at its root. The trainer then has a complete, isolated OAuth server at its own origin
-(`/mcp`, `/.well-known/*`, `/authorize`, `/auth/callback`). The Google client just needs
-`<trainer-host>/auth/callback` added as a redirect URI. The journal host is untouched.
+With `TRAINER_PUBLIC_URL` unset (local/authless), `combined.py` grafts the trainer's
+`/trainer/mcp` endpoint + its protected-resource metadata onto the main origin.
 
-With `TRAINER_PUBLIC_URL` unset (local/authless), `combined.py` falls back to grafting
-the trainer's `/trainer/mcp` endpoint + its protected-resource metadata onto the main
-origin — fine when there's no OAuth, so the collision is moot.
-
-The teacher server is the same story a third time: its own provider
-(`_build_auth(TEACHER_PUBLIC_URL)`), its own host when `TEACHER_PUBLIC_URL` is set
-(redirect URI `<teacher-host>/auth/callback`), authless `/teacher/mcp` graft otherwise
-— `combined.py`'s `_secondary_routes` is the one place that pattern lives now.
+The web app's own login is separate (authlib, `<PUBLIC_URL>/app/auth/callback`).
 
 ## Gotchas
 
 - Use the standalone `fastmcp`, not `mcp.server.fastmcp` — the auth providers live in v3.
-- `PUBLIC_URL` must be the bare origin. A trailing slash or `/mcp` breaks OAuth discovery.
+- `PUBLIC_URL` / `TRAINER_PUBLIC_URL` must be bare origins. A trailing slash or `/mcp`
+  breaks OAuth discovery.
 - Claude Desktop launches configs with a minimal PATH — point its config at the venv
   python by absolute path, not `python`.
 - The allowlist reads the `email` claim; if it rejects after a correct login, verify the
