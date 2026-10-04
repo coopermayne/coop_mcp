@@ -625,8 +625,8 @@ EXACT strings for "today"/"yesterday"/"tomorrow" rather than computing or shifti
 dates yourself, and resolve any bare day reference against them before defaulting or
 saving.
 
-Start a training conversation with get_fitness_briefing to load the profile (injuries,
-split, goals, coaching), per-muscle recency, recent sessions (with their notes), the
+Start a training conversation with get_fitness_briefing to load the profile (see THE
+USER'S PROFILE below), per-muscle recency, recent sessions (with their notes), the
 week's already-planned sessions, and the latest bodyweight before recommending work.
 Recent-session notes are durable context — read them so a "left shoulder twinge" last
 time shapes what you program next. When the user tells you something like that during
@@ -648,8 +648,7 @@ Two ways to record training:
     from the user's active `exercises` — progress what was easy (low RPE), hold/deload what was
     hard, and keep staple lifts so the tracked data stays comparable. How BIG a session
     should be, how much it should vary from the last one, and how the week's sessions
-    divide their exercises up are all the USER'S call, not defaults of yours — they're in
-    the profile's `coaching` (see below).
+    divide their exercises up are the USER'S call, read from their profile.
   - POST-HOC (log what already happened): log_workout records a finished session (or
     appends to one) in a single call — use it when the user just tells you what they
     did rather than working a plan live. If what they did matches a plan that's still
@@ -714,13 +713,24 @@ read it and pass every row to import_weigh_ins (it skips what's already on file)
 number they merely mention is not a reading — don't log it; the briefing's `bodyweight`
 is the trend to coach from.
 
-The profile's `coaching` key is the USER'S OWN standing instructions to you, delivered
-with every get_fitness_briefing: how big a session should be, what to nudge them about,
-what tone to take, what to leave alone. Read it as instruction, not background — it is
-where their preferences about HOW you coach live, and it outranks any habit of yours.
-What it CANNOT do is loosen the rules above: the active set stays theirs to curate. It's theirs to edit, and they edit it by
-telling you — so change it with update_profile only when they ask you to in so many
-words, never from a passing remark.""")
+THE USER'S PROFILE is the ONE place everything about them lives — this text holds the
+rules of the system, the profile holds the person. It comes back with every
+get_fitness_briefing and is written with update_profile. Its keys are free-form, but
+keep these: `goals`, `split` (how the week divides up, and which days they train),
+`session` (how long / how big a session should be), `injuries` (and lifts to avoid),
+and `coaching` — their own standing instructions about HOW you coach (tone, what to
+push, what to nudge about, what to leave alone). Read all of it as instruction, not
+background: it outranks any habit of yours. What it cannot do is loosen the rules
+above (the active set stays theirs to curate; a mentioned weight isn't a weigh-in).
+  - SETUP: if any of goals / split / session / coaching is missing, ask about the
+    missing ones before you plan anything — a few plain questions, not a form — then
+    save the answers and show them what you saved. Until they answer, program
+    conservatively and say you're working without their preferences.
+  - KEEPING IT CURRENT: a durable fact they state ("my knee's fine now", "I can only
+    do three days this month") goes into the right key, told back in a line. Their
+    `coaching` text changes only when they ask you to change how you coach, in so many
+    words — never from a passing remark — and you write the whole new text and show it.
+""")
 if _trainer_auth is not None:
     trainer_mcp.add_middleware(AllowlistMiddleware())
 
@@ -3188,49 +3198,9 @@ def _exercise_brief(conn: sqlite3.Connection, r) -> dict:
             "equipment": r["equipment"], "muscles": _muscles_for(conn, r["id"])}
 
 
-# The trainer profile's `coaching` key when the user hasn't written their own — the
-# same defaults-plus-override shape data.nutrient_targets() uses for the rings. This
-# text used to sit in trainer_mcp's `instructions`, which is the wrong home for it:
-# it's PREFERENCE (how long a session, how the week divides up, what to nag about),
-# the part of the prompt the user wants to tune as they train, and `instructions`
-# only reaches a connector at its initialize handshake — an edit there needs a
-# redeploy. Delivered through get_fitness_briefing instead, a change lands on the
-# next session, on both the connector and the in-app chat, with nothing to restart.
-# Written in the first person because the user edits this text directly (/trainer's
-# Coaching popover), and deliberately light on NUMBERS: a default is what's left
-# when they clear the box, so it should hold a shape they can fill rather than
-# figures that quietly contradict the ones they'd just deleted.
-DEFAULT_COACHING = (
-    "Think in weeks, not single sessions: divide my exercises into a few routines so "
-    "each one works different muscle groups and every group gets rest before it "
-    "comes round again. The split is yours to propose — tell me what it is and why, "
-    "and save it to my profile's `split` once we agree, so the next conversation "
-    "knows which routine is due.\n"
-    "Each session should be substantial: 2-4 sets per exercise, more on compounds "
-    "and fewer on isolation. Say what you're aiming for before you build it.\n"
-    "Across any week, no muscle group should go untrained.\n"
-    "Weigh-ins are a MORNING habit and a connected scale records them; every so "
-    "often I attach its export here for you to import. Never offer to log a number "
-    "I mention; read the trend, and if the readings have gone quiet for a stretch "
-    "(an export is overdue) say so once and move on."
-)
-
-
 def _get_profile(conn: sqlite3.Connection) -> dict:
     row = conn.execute("SELECT value FROM settings WHERE key='profile'").fetchone()
     return json.loads(row["value"]) if row else {}
-
-
-def _resolved_profile(conn: sqlite3.Connection) -> dict:
-    """The stored profile with `coaching` resolved — the user's text if they've
-    written one, DEFAULT_COACHING otherwise. The one read path the model sees, so a
-    profile that has never been touched still coaches the way it always did. An
-    empty save DROPS the key rather than storing "", which is what makes handing the
-    default back possible (set_trainer_profile)."""
-    profile = _get_profile(conn)
-    if not str(profile.get("coaching") or "").strip():
-        profile["coaching"] = DEFAULT_COACHING
-    return profile
 
 
 # --------------------------------------------------------------------------- #
@@ -6403,9 +6373,8 @@ def import_weigh_ins(readings: list[ScaleReading]) -> dict:
 
 @trainer_mcp.tool(annotations=READ_ONLY)
 def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) -> dict:
-    """One-call trainer context. Returns the stored profile (injuries, split, goals,
-    and `coaching` — the user's OWN standing instructions about how to coach them,
-    read it as instruction, not background),
+    """One-call trainer context. Returns the stored `profile` (goals, split, session,
+    injuries, coaching — see this server's instructions; read it as instruction),
     per-muscle recency (days since each muscle was last trained + sets in the last 7
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
     in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
@@ -6435,7 +6404,7 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
         return err
     week_ago = date.fromordinal(date.fromisoformat(ref).toordinal() - 6).isoformat()
     with db() as conn:
-        profile = _resolved_profile(conn)
+        profile = _get_profile(conn)
         mrows = conn.execute(
             """SELECT em.muscle,
                       MAX(w.workout_date) AS last_date,
@@ -6546,23 +6515,18 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
 
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
 def update_profile(profile: dict) -> dict:
-    """Merge fields into the stored trainer profile (JSON). Pass only the keys you
-    want to change; existing keys are preserved. Use it to keep durable training
-    facts current — e.g. {"injuries": "left shoulder, avoid overhead pressing"},
-    {"split": {"mon": "arms", "wed": "legs", "fri": "full body"}},
-    {"goals": ["build strength", "lose weight"], "experience": "beginner"}.
-    These are surfaced by get_fitness_briefing so you coach within them.
-
-    One key is NOT yours to maintain: `coaching`, the user's own standing
-    instructions about how you coach (session size, tone, what to nudge). They edit
-    it by telling you to, and it's the one part of the prompt they steer — rewriting
-    it from a passing remark takes that away. Only write it when the user asks you to
-    change it in so many words, and write the whole text (this merge replaces a key
-    wholesale), so read it back first from the briefing and show them the new text.
-    Setting it to "" hands the built-in default back."""
+    """Merge keys into the user's profile — the one place their goals, split,
+    session size, injuries and coaching preferences live (which keys, and when
+    `coaching` may change, is in this server's instructions). Pass only the keys you're
+    changing; each one REPLACES its old value wholesale, so to edit a key, read it from
+    the briefing and send the whole new value. A key set to null is removed. E.g.
+    {"injuries": "left shoulder: no overhead pressing"},
+    {"split": "Mon upper / Wed lower / Fri full body"},
+    {"session": "about an hour, 5-6 exercises"}. Returns the full profile."""
     with db() as conn:
         current = _get_profile(conn)
         current.update(profile)
+        current = {k: v for k, v in current.items() if v is not None}
         conn.execute(
             """INSERT INTO settings(key, value) VALUES ('profile', ?)
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
@@ -6583,8 +6547,8 @@ def set_trainer_profile(coaching: Optional[str]) -> dict:
     notice the coaching is off, and the alternative was editing a Python string and
     redeploying.
 
-    Blank DROPS the key, handing the default (DEFAULT_COACHING) back rather than
-    storing an empty instruction — the same gesture a cleared target input makes.
+    Blank DROPS the key rather than storing an empty instruction (the trainer then
+    asks about coaching preferences next time, per its instructions).
     Nothing else in the profile (injury, split, goals) is touched. There is no
     validation beyond that: it's prose for a model to read, and the one thing a
     guard could check — that the user meant it — is exactly what typing it means."""

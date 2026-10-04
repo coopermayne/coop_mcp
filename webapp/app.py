@@ -1182,10 +1182,7 @@ async def trainer(request: Request, workout_id: int):
                     status_code=404, what="workout plan")
     return page(request, "trainer.html", active="trainer",
                 plan=plan,
-                # The Coaching popover wants the two apart: what the user actually
-                # WROTE goes in the textarea, the default is only a placeholder.
-                coaching=data.stored_coaching(),
-                coaching_default=server.DEFAULT_COACHING)
+                coaching=data.stored_coaching())
 
 
 @app.post("/trainer/profile")

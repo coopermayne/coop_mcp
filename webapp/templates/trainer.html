@@ -28,15 +28,11 @@
     <div id="coach-pop" hidden
          class="absolute right-0 top-7 z-20 w-80 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-3">How to coach me</p>
-      {# Placeholder, not value: the default has to read differently from a line you
-         wrote, and clearing the box has to hand it back rather than silence the
-         trainer. #}
       <textarea id="coach-text" rows="9"
-                placeholder="{{ coaching_default }}"
+                placeholder="Tone, what to push, what to nudge you about. Goals, split and injuries live in your profile too — easiest to tell the trainer in chat."
                 class="w-full border border-gray-200 rounded-[4px] px-2 py-1.5 text-[13px] leading-snug text-gray-700">{{ coaching }}</textarea>
       <p class="text-[11px] text-gray-400 mt-2 mb-3 leading-snug">
-        Read at the start of every session. Blank falls back to the default shown.
-        Preferences only — which exercises are active stays your call either way.
+        Read at the start of every session. Blank means the trainer will ask.
       </p>
       <p id="coach-err" hidden class="text-[11px] text-red-600 mb-3 leading-snug"></p>
       <button id="coach-apply" type="button"

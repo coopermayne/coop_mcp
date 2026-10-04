@@ -230,15 +230,13 @@ and big picture; the facets stay the tested key points.
   The latest reading + 30-day change ride along in `get_fitness_briefing`, and `/graphs`
   plots the trend against the goal.
 
-Suggested posture for the **trainer project's** custom instructions (the drinking lines
-belong with the journaling project, since the eating tools are on the
-journal connector):
-
-> The server's own instructions carry the training contract, so this can stay short.
-> Start every training conversation with `get_fitness_briefing`. Plan from my active
-> exercises; check `list_exercises` (the archive) before suggesting anything new. Show
-> plans as a table, keep mid-session replies short, and log what I report with
-> `complete_sets`. Put anything I say about how it went in the session notes.
+**Where the trainer's instructions live — two places, nothing else.** The RULES (how the
+tools work, what to call when) are the server's own instructions, in code. Everything
+about YOU (goals, split, session size, injuries, how you like to be coached) is your
+profile in the database, which Claude reads at the start of every training conversation
+and updates when you tell it something. If the profile is empty, Claude asks before it
+plans anything. So leave the Claude project's custom instructions blank; anything you'd
+put there belongs in your profile, where you change it by just saying so.
 
 ## Remote deployment — phone access via Coolify
 
