@@ -333,9 +333,9 @@ def main() -> None:
         # the two figures already say where the day stands.
         print(f"{line} | font=Menlo size=12")
     print("---")
-    # The menu shows macros, so it links to the food log (its own page since the
-    # journal/food split) — not the journal, which is entries-only now.
-    print(f"Open food log | href={JOURNAL_URL}/app/food")
+    # The web app has no water/protein page any more (the trainer connector is
+    # where it's logged and read), so this just opens the app.
+    print(f"Open journal | href={JOURNAL_URL}/app/journal")
     print("Refresh | refresh=true")
 
 

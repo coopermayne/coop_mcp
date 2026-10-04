@@ -19,12 +19,10 @@ Design contract:
     recurring transcription error) auto-matches strongly next time.
 """
 
-import io
 import json
 import os
 import re
 import sqlite3
-import zipfile
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
@@ -441,8 +439,8 @@ drinking water or eating something with protein, call log_intake (water in fl oz
 protein in grams — estimate protein from the food when they don't give a number, and
 say what you assumed). Day totals are SUMMED by the server, so answer "how's my water"
 from log_intake's `day_totals` or get_fitness_briefing's `intake_today`, never from a
-tally you've kept in conversation; read them against `targets`, which the user sets on
-the app's /food page and you only read. Fix an item with update_intake, remove one
+tally you've kept in conversation; read them against `targets`. Change a target only
+when the user asks (set_intake_targets). Fix an item with update_intake, remove one
 with delete_record(kind="intake"), look back over days with get_intake.
 
 THE USER'S PROFILE is the ONE place everything about them lives — this text holds the
@@ -727,7 +725,7 @@ CREATE INDEX IF NOT EXISTS idx_sets_exercise ON sets(exercise_id);
 -- (the latest is "the" weight for that day); a day with no row simply wasn't weighed.
 --
 -- Readings arrive by IMPORT, not by hand: a connected scale writes them to its own
--- app and the user uploads that app's export (see import_bodyweight). `source_key`
+-- app and the trainer imports that app's export (see import_weigh_ins). `source_key`
 -- is the reading's identity IN THAT EXPORT — its full local timestamp — and it's
 -- what makes re-uploading an overlapping export a no-op. UNIQUE, but nullable, so
 -- the hand-entered rows that predate the scale (all NULL) don't collide: SQLite
@@ -1100,18 +1098,6 @@ def pacific_day(ts: Optional[str]) -> str:
     return dt.astimezone(PACIFIC).strftime("%Y-%m-%d")
 
 
-def _app_url(path: str) -> Optional[str]:
-    """Absolute URL of a browser page, for handing back on a WRITE — the capture
-    surface (a Claude conversation) and the viewing surface (the web app) are
-    different places, so a write that names where the thing now lives closes that
-    loop in one tap instead of a context switch. The UI is mounted at /app (see
-    webapp/combined.py); PUBLIC_URL is the bare origin. Returns None when
-    PUBLIC_URL is unset (stdio/dev) — callers OMIT the key rather than emitting a
-    dead one."""
-    base = (os.environ.get("PUBLIC_URL") or "").rstrip("/")
-    return f"{base}/app{path}" if base else None
-
-
 def current_clock() -> dict:
     """Current Pacific date/time, broken out for surfacing to the model so it
     always knows what 'today'/'now' means before it defaults or computes dates.
@@ -1481,9 +1467,8 @@ def link_mentions(links: list[MentionLink]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Website-only mention resolution (NOT MCP tools — like set_nutrient_targets /
-# import_bodyweight, these are reachable only by the authenticated user through the
-# webapp, never by the journal connector). Claude resolves mentions in chat via
+# Website-only mention resolution (NOT MCP tools — these are reachable only by the
+# authenticated user through the webapp). Claude resolves mentions in chat via
 # link_mentions / save_person; these back the browse pages' inline resolver so the
 # user can also pin people straight from the pending queue or an entry.
 # --------------------------------------------------------------------------- #
@@ -2609,8 +2594,8 @@ def log_intake(protein_g: Optional[float] = None, water_oz: Optional[float] = No
 
     The returned `day_totals` are where the day ACTUALLY stands — read them back
     instead of keeping your own running tally (the app or another conversation may
-    have logged the same day). `targets` holds the user's daily goals, set on the
-    app's /food page, so read a total against its target rather than reporting a
+    have logged the same day). `targets` holds the user's daily goals (see
+    set_intake_targets), so read a total against its target rather than reporting a
     bare number.
 
     Water is in fluid ounces (128 = a gallon; a "glass" is ~12-16oz, a typical
@@ -2649,10 +2634,7 @@ def log_intake(protein_g: Optional[float] = None, water_oz: Optional[float] = No
             (d, nxt, item or None, note, *(nutrients[m] for m in NUTRIENTS), now()),
         ).lastrowid
         row = conn.execute("SELECT * FROM intake_items WHERE id=?", (rid,)).fetchone()
-        out = _with_totals(_item_row(row), conn, d)
-    if url := _app_url("/food"):
-        out["url"] = url
-    return out
+        return _with_totals(_item_row(row), conn, d)
 
 
 @trainer_mcp.tool(name="get_intake", annotations=READ_ONLY)
@@ -2776,18 +2758,21 @@ def _get_eating_profile(conn: sqlite3.Connection) -> dict:
     return json.loads(row["value"]) if row else {}
 
 
+# Default daily targets, used until the user sets their own with set_intake_targets.
+INTAKE_TARGET_DEFAULTS = {"protein_g": 130, "water_oz": 88}
+
+
 def _day_targets(conn: sqlite3.Connection) -> dict:
-    """The stored daily targets (settings → eating_profile → targets), written from
-    the /food page's Targets popover. Malformed entries — and targets for nutrients
-    no longer tracked — are SKIPPED, exactly as the webapp's nutrient_targets() skips
-    them: _bad_targets guards the write, but an old blob shouldn't fail a log call.
+    """The daily targets in effect: INTAKE_TARGET_DEFAULTS overridden by whatever the
+    user set (settings → eating_profile → targets, written by set_intake_targets).
+    Malformed stored entries — and targets for nutrients no longer tracked — are
+    SKIPPED: _bad_targets guards the write, but an old blob shouldn't fail a log call.
     A target is just a target; there's no ceiling/floor direction anywhere."""
     t = _get_eating_profile(conn).get("targets")
-    if not isinstance(t, dict):
-        return {}
-    return {k: v for k, v in t.items()
-            if k in NUTRIENTS and not isinstance(v, bool)
-            and isinstance(v, (int, float)) and v > 0}
+    stored = {k: v for k, v in t.items()
+              if k in NUTRIENTS and not isinstance(v, bool)
+              and isinstance(v, (int, float)) and v > 0} if isinstance(t, dict) else {}
+    return {**INTAKE_TARGET_DEFAULTS, **stored}
 
 
 def _bad_targets(targets) -> Optional[str]:
@@ -2812,28 +2797,33 @@ def _bad_targets(targets) -> Optional[str]:
     return None
 
 
-def set_nutrient_targets(targets: dict) -> dict:
-    """Set the daily water/protein targets from the WEBSITE — the /food page's
-    Targets popover. A NON-tool, website-only path like set_trainer_profile and
-    import_bodyweight: never a FastMCP tool, so this is the one door onto the goals, and
-    the model only ever reads them (log_intake/get_intake/get_fitness_briefing).
+@trainer_mcp.tool(name="set_intake_targets", annotations=WRITE_IDEMPOTENT)
+def set_intake_targets(protein_g: Optional[float] = None,
+                       water_oz: Optional[float] = None) -> dict:
+    """Set the user's daily protein and/or water target — only when they ask to
+    change a goal ("make my water goal 100oz"). Omit an argument to leave that
+    target alone; pass 0 to drop the user's own number and fall back to the default.
+    Returns the targets now in effect (the same `targets` every intake return
+    carries).
 
-    Merges per NUTRIENT, and a key set to None DROPS that override, falling back to
-    the webapp's default — so a blank input hands a goal back rather than zeroing it.
-    Only the numbers being SET are validated; an unknown key paired with None pops
-    harmlessly, since removing junk from the blob is the one thing it can do. The
-    rest of the stored eating profile (legacy prose from the food-tracker days) is
-    left untouched."""
-    if not isinstance(targets, dict):
-        return {"error": f"targets must be a {{nutrient: number}} dict, got {targets!r}"}
-    if (err := _bad_targets({k: v for k, v in targets.items() if v is not None})):
+    Args:
+        protein_g: Daily protein target in grams.
+        water_oz: Daily water target in fluid ounces (128 = a gallon).
+    """
+    asked = {k: v for k, v in (("protein_g", protein_g), ("water_oz", water_oz))
+             if v is not None}
+    if not asked:
+        return {"error": "pass protein_g and/or water_oz"}
+    if any(v < 0 for v in asked.values()):
+        return {"error": "a target can't be negative — pass 0 to go back to the default"}
+    if (err := _bad_targets({k: v for k, v in asked.items() if v > 0})):
         return {"error": err}
     with db() as conn:
         profile = _get_eating_profile(conn)
         cur = profile.get("targets")
         cur = dict(cur) if isinstance(cur, dict) else {}
-        for k, v in targets.items():
-            if v is None:
+        for k, v in asked.items():
+            if v == 0:
                 cur.pop(k, None)
             else:
                 cur[k] = v
@@ -2846,7 +2836,7 @@ def set_nutrient_targets(targets: dict) -> dict:
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
             (json.dumps(profile),),
         )
-    return {"targets": {k: v for k, v in cur.items() if k in NUTRIENTS}}
+        return {"targets": _day_targets(conn)}
 
 
 # --------------------------------------------------------------------------- #
@@ -3234,65 +3224,9 @@ def get_personal_records(exercise_id: Optional[int] = None,
     return out
 
 
-def pr_for_set(set_id: int) -> Optional[dict]:
-    """Is this just-logged set a personal best for its exercise? A plain helper, NOT an
-    MCP tool: the model already reads bests through get_personal_records, while this
-    answers the one question the /trainer card asks after a tap — so the page can throw
-    confetti at the chip. Website-only, like clear_plan_set and set_archived. Returns
-    {set_id, exercise_id, weight_lbs, reps} when it IS a best, else None.
-
-    The rule, stated once, here: a set is a best when its weight EXCEEDS the heaviest
-    ever logged for that movement, or TIES that weight and beats the most reps ever done
-    at it. No e1rm — a formula's estimate isn't a thing that happened. `weight_lbs` is
-    SIGNED, so plain `>` is right for assisted work too (a pull-up at -10 beats one at
-    -20). Cardio never counts: a set with a NULL weight or NULL reps can't be a best
-    here, and distance/duration bests live in get_personal_records. Neither does the
-    FIRST weighted set of a movement — there was nothing to beat.
-
-    `id<>?` is what makes this "was it a best BEFORE this set": the row is already
-    written by the time we ask. Every OTHER done set counts, including earlier sets of
-    the session in progress (matching get_personal_records, which doesn't filter on
-    workout status), so the third set at the day's top weight doesn't re-announce the
-    record the first one set. A set that isn't 'done' returns None, so the blank-reps
-    path (clear_plan_set) can never celebrate.
-
-    The caller dedupes: correcting a set re-asks this question and gets the same honest
-    answer, so the browser is what remembers it already celebrated (see trainer.js).
-    """
-    with db() as conn:
-        r = conn.execute(
-            "SELECT exercise_id, status, weight_lbs, reps FROM sets WHERE id=?",
-            (set_id,),
-        ).fetchone()
-        if not r or r["status"] != "done":
-            return None
-        w, reps, eid = r["weight_lbs"], r["reps"], r["exercise_id"]
-        if w is None or reps is None:
-            return None
-        hit = {"set_id": set_id, "exercise_id": eid, "weight_lbs": w, "reps": reps}
-        best = conn.execute(
-            """SELECT MAX(weight_lbs) AS w FROM sets
-               WHERE exercise_id=? AND status='done' AND id<>?
-                 AND weight_lbs IS NOT NULL AND reps IS NOT NULL""",
-            (eid, set_id),
-        ).fetchone()["w"]
-        if best is None:
-            return None
-        if w > best:
-            return hit
-        if w < best:
-            return None
-        best_reps = conn.execute(
-            """SELECT MAX(reps) AS r FROM sets
-               WHERE exercise_id=? AND status='done' AND id<>? AND weight_lbs=?
-                 AND reps IS NOT NULL""",
-            (eid, set_id, w),
-        ).fetchone()["r"]
-        return hit if (best_reps is not None and reps > best_reps) else None
-
-
 def _new_bests(conn: sqlite3.Connection, set_ids: list[int]) -> list[dict]:
-    """pr_for_set's rule, applied to a BATCH of just-written sets: per exercise, the
+    """The personal-best rule (weight EXCEEDS the heaviest ever for that movement, or
+    TIES it with more reps), applied to a BATCH of just-written sets: per exercise, the
     batch's top set (heaviest, then most reps at that weight) is a best when it beats
     every done set OUTSIDE the batch. Excluding the whole batch rather than one row is
     the difference that matters here — two sets at a new top weight would otherwise
@@ -3592,9 +3526,7 @@ def _plan_payload(conn: sqlite3.Connection, wid: int,
 
 def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> dict:
     """Drop one exercise from the active plan entirely — every set of it, planned or
-    already done. Backs the /trainer page's per-exercise "..." menu (Delete option); the
-    model substitutes via swap_exercise instead, so this stays a plain helper, not an MCP
-    tool. Returns the updated plan."""
+    already done. Backs the remove_from_plan tool. Returns the updated plan."""
     with db() as conn:
         w = _plan_row(conn, workout_id)
         if not w:
@@ -3604,27 +3536,11 @@ def remove_plan_exercise(exercise_id: int, workout_id: Optional[int] = None) -> 
         return _plan_payload(conn, w["id"])
 
 
-def discard_plan(workout_id: Optional[int] = None) -> dict:
-    """Delete the active workout plan outright — the session row and every set on it
-    (planned or already logged), via the sets table's ON DELETE CASCADE. Backs the
-    /trainer card's plan-level "..." menu (Delete plan): a routine built by mistake (or
-    one the user just doesn't want) leaves no trace. Unlike finish_workout this keeps
-    nothing and writes no history. The model never needs it (it rebuilds via
-    start_workout_plan), so it stays a plain helper, not an MCP tool. Returns the
-    empty-plan state."""
-    with db() as conn:
-        w = _plan_row(conn, workout_id)
-        if not w:
-            return {"error": "no active workout plan"}
-        conn.execute("DELETE FROM workouts WHERE id=?", (w["id"],))
-        return {"active": False, "discarded": True, "workout_id": w["id"]}
-
-
 def reorder_plan_exercises(order: list[int], workout_id: Optional[int] = None) -> dict:
     """Set the order of exercises in the active plan from a list of exercise_ids. Each
     exercise's sets get an `ex_position` matching its slot in `order`; exercises not named
-    keep ex_position NULL and fall in after (in insertion order). Backs the /trainer page's
-    "reorder" UX (the ↑/↓ arrows) and the reorder_plan tool. Returns the updated plan."""
+    keep ex_position NULL and fall in after (in insertion order). Backs the reorder_plan
+    tool. Returns the updated plan."""
     with db() as conn:
         w = _plan_row(conn, workout_id)
         if not w:
@@ -3633,36 +3549,6 @@ def reorder_plan_exercises(order: list[int], workout_id: Optional[int] = None) -
             conn.execute("UPDATE sets SET ex_position=? WHERE workout_id=? AND exercise_id=?",
                          (pos, w["id"], int(eid)))
         return _plan_payload(conn, w["id"])
-
-
-def clear_plan_set(set_id: int) -> dict:
-    """Clear a logged set from the /trainer plan card (the card's gesture: save with
-    reps blank). A PLANNED set (one carrying a target) reverts to 'pending' — its actuals
-    are blanked so it's a to-do again, the target kept; an ad-hoc set with no target is
-    deleted outright. A plain helper, not an MCP tool — the model corrects sets with
-    update_set / delete_record. Returns the updated plan."""
-    with db() as conn:
-        r = conn.execute(
-            "SELECT workout_id, target_weight_lbs, target_reps FROM sets WHERE id=?",
-            (set_id,),
-        ).fetchone()
-        if not r:
-            return {"error": f"no set with id {set_id}"}
-        wid = r["workout_id"]
-        if r["target_weight_lbs"] is not None or r["target_reps"] is not None:
-            conn.execute(
-                """UPDATE sets SET weight_lbs=NULL, reps=NULL, rpe=NULL,
-                   duration_seconds=NULL, distance_miles=NULL, note=NULL,
-                   status='pending' WHERE id=?""",
-                (set_id,),
-            )
-            return _plan_payload(conn, wid)
-    # No target — an ad-hoc logged set; remove the row entirely (renumbers the rest).
-    res = _delete_record("set", set_id)
-    if isinstance(res, dict) and res.get("error"):
-        return res
-    with db() as conn:
-        return _plan_payload(conn, wid)
 
 
 @trainer_mcp.tool(annotations=DESTRUCTIVE)
@@ -3764,29 +3650,6 @@ def get_workout_plan(workout_id: Optional[int] = None) -> dict:
     with db() as conn:
         w = _plan_row(conn, workout_id)
         return _plan_payload(conn, w["id"]) if w else {"active": False}
-
-
-def complete_set(set_id: int, weight_lbs: Optional[float] = None,
-                 reps: Optional[int] = None, rpe: Optional[float] = None,
-                 note: Optional[str] = None) -> dict:
-    """Mark one planned set done — the legacy web card's one-tap path, a plain helper
-    now, not an MCP tool: in a conversation the user reports a whole exercise (or a
-    whole session) at once, which is complete_sets. Omitted `weight_lbs`/`reps` default
-    to the set's targets. Flips the set to 'done' and returns the updated plan."""
-    with db() as conn:
-        r = conn.execute("SELECT * FROM sets WHERE id=?", (set_id,)).fetchone()
-        if not r:
-            return {"error": f"no set with id {set_id}"}
-        w = weight_lbs if weight_lbs is not None else r["target_weight_lbs"]
-        rp = reps if reps is not None else r["target_reps"]
-        if reason := _bad_set({"weight_lbs": w, "reps": rp, "rpe": rpe}):
-            return {"error": reason}
-        conn.execute(
-            """UPDATE sets SET weight_lbs=?, reps=?, rpe=?, note=COALESCE(?, note),
-               status='done' WHERE id=?""",
-            (w, rp, rpe, note, set_id),
-        )
-        return _plan_payload(conn, r["workout_id"])
 
 
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
@@ -4003,8 +3866,8 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
 
 # Bodyweight readings are IMPORTED, never typed. The user weighs in every morning on
 # a connected scale, which writes to the scale vendor's own app; every so often that app
-# exports a spreadsheet and the user uploads it on /weight. There is deliberately no
-# other door — no form, no MCP write tool, no correcting a row by id — because a reading
+# exports a spreadsheet whose rows the trainer imports with import_weigh_ins. There is
+# deliberately no other door — no form, no correcting a row by id — because a reading
 # is now a fact produced by a device, and a second way to state it is a second version
 # of the truth. To fix a bad reading, fix it at the scale's app and re-export.
 #
@@ -4016,12 +3879,6 @@ def finish_workout(workout_id: Optional[int] = None, feeling: Optional[str] = No
 
 SCALE_EXPORT_SOURCE = "wyze"
 
-# Column headers the export may carry, matched case-insensitively by PREFIX so a
-# trailing unit ("Weight(lb)") or a vendor's spacing doesn't have to be guessed exactly.
-_SCALE_DATE_HEADERS = ("date and time", "date/time", "date")
-_SCALE_LB_HEADERS = ("weight(lb", "weight (lb")
-_SCALE_KG_HEADERS = ("weight(kg", "weight (kg")
-
 # "2026.08.22 06:39 AM" is what the export writes; the others are cheap insurance
 # against a locale or a vendor update, since a stamp we can't parse costs the row.
 _SCALE_TIME_FORMATS = (
@@ -4030,129 +3887,6 @@ _SCALE_TIME_FORMATS = (
     "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M",
     "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",      # a spreadsheet tool's ISO rendering
 )
-
-_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
-
-
-def _xlsx_rows(blob: bytes) -> list[list[str]]:
-    """Every cell of an .xlsx's first worksheet, as strings, row by row.
-
-    Hand-rolled on zipfile + the stdlib XML parser rather than pulling in openpyxl: the
-    file is one small sheet of text, and this repo's whole shape is stdlib + three pins.
-    Handles the two ways a string reaches a cell (an inline `<is>`, which is what the
-    scale export writes, and a `<v>` index into sharedStrings, which most other writers
-    use) and pads short rows out to their column letter, so a blank cell doesn't shift
-    every value after it one column left.
-    """
-    import xml.etree.ElementTree as ET
-
-    NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-    with zipfile.ZipFile(io.BytesIO(blob)) as z:
-        names = z.namelist()
-        sheet = next((n for n in names if n.startswith("xl/worksheets/sheet")), None)
-        if sheet is None:
-            raise ValueError("no worksheet in this file")
-        shared: list[str] = []
-        if "xl/sharedStrings.xml" in names:
-            for si in ET.fromstring(z.read("xl/sharedStrings.xml")):
-                shared.append("".join(t.text or "" for t in si.iter(f"{NS}t")))
-        root = ET.fromstring(z.read(sheet))
-
-    def col_index(ref: str) -> int:
-        n = 0
-        for ch in ref:
-            if not ch.isalpha():
-                break
-            n = n * 26 + (ord(ch.upper()) - 64)
-        return n - 1
-
-    rows: list[list[str]] = []
-    for row in root.iter(f"{NS}row"):
-        cells: list[str] = []
-        for c in row.iter(f"{NS}c"):
-            i = col_index(c.get("r") or "")
-            if i < 0:
-                i = len(cells)
-            while len(cells) <= i:
-                cells.append("")
-            if c.get("t") == "s":                       # sharedStrings index
-                v = c.find(f"{NS}v")
-                idx = int(v.text) if v is not None and v.text else -1
-                cells[i] = shared[idx] if 0 <= idx < len(shared) else ""
-            else:                                        # inline string or plain value
-                cells[i] = "".join(t.text or "" for t in c.iter(f"{NS}t")) or \
-                           "".join(v.text or "" for v in c.iter(f"{NS}v"))
-        rows.append(cells)
-    return rows
-
-
-def _parse_scale_export(blob: bytes) -> list[dict] | dict:
-    """A connected-scale export → [{source_key, weigh_date, weight_lbs, at}], newest last.
-
-    Header-DRIVEN rather than positional: the export leads with a merged title row, and a
-    vendor that adds a body-composition column would silently shift a positional read onto
-    the wrong number. So the header row is located by the one label that must be there
-    (a date column), and weight is taken from whichever unit column exists — pounds when
-    offered, kilograms converted when not, since a metric export is still a weigh-in.
-
-    Everything past those two columns is DROPPED. The scale measures body fat, muscle
-    mass, BMR and a dozen more, and none of them have anywhere to live here: `body_weight`
-    is a weight log, the graph plots weight, and storing a column nothing reads is the
-    dormant-data trap this repo has been bitten by before (see the `drinks` table).
-    """
-    try:
-        rows = _xlsx_rows(blob)
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception:
-        return {"error": "could not read that file — it doesn't look like an .xlsx export"}
-
-    head_i = date_i = lb_i = kg_i = None
-    for i, row in enumerate(rows[:20]):
-        cells = [(c or "").strip().lower() for c in row]
-        d = next((j for j, c in enumerate(cells) if c in _SCALE_DATE_HEADERS), None)
-        if d is None:
-            continue
-        head_i, date_i = i, d
-        lb_i = next((j for j, c in enumerate(cells)
-                     if c.startswith(_SCALE_LB_HEADERS)), None)
-        kg_i = next((j for j, c in enumerate(cells)
-                     if c.startswith(_SCALE_KG_HEADERS)), None)
-        break
-    if head_i is None:
-        return {"error": "no 'Date and Time' column found — is this a scale export?"}
-    if lb_i is None and kg_i is None:
-        return {"error": "no weight column found (expected 'Weight(lb)' or 'Weight(kg)')"}
-
-    out, seen = [], set()
-    for row in rows[head_i + 1:]:
-        stamp = (row[date_i] if date_i < len(row) else "").strip()
-        raw = ""
-        if lb_i is not None and lb_i < len(row):
-            raw = (row[lb_i] or "").strip()
-        to_lbs = 1.0
-        if not raw and kg_i is not None and kg_i < len(row):
-            raw, to_lbs = (row[kg_i] or "").strip(), 2.20462
-        if not stamp or not raw:
-            continue
-        m = _NUM_RE.search(raw)                      # "185.4lb" → 185.4
-        at = _parse_scale_stamp(stamp)
-        if m is None or at is None:
-            continue
-        lbs = round(float(m.group()) * to_lbs, 1)
-        if lbs <= 0:
-            continue
-        key = f"{SCALE_EXPORT_SOURCE}:{stamp}"
-        if key in seen:                              # a file that repeats a stamp
-            continue
-        seen.add(key)
-        # The stamp is the scale app's LOCAL time, which is the user's own — so its
-        # calendar day IS the Pacific day, with no conversion to do or to get wrong.
-        out.append({"source_key": key, "weigh_date": at.strftime("%Y-%m-%d"),
-                    "weight_lbs": lbs, "at": at})
-    out.sort(key=lambda r: r["at"])
-    return out
-
 
 def _parse_scale_stamp(value: str) -> Optional[datetime]:
     """The export's local timestamp → datetime, or None if no known format fits (that
@@ -4164,26 +3898,6 @@ def _parse_scale_stamp(value: str) -> Optional[datetime]:
         except ValueError:
             continue
     return None
-
-
-def import_bodyweight(blob: bytes) -> dict:
-    """Load a connected-scale export into the weigh-in log. A plain helper, NOT an MCP
-    tool — website-only, like set_nutrient_targets and set_archived: the user uploads a
-    file on /weight, and the model has no file to hand and no business inventing one.
-
-    Idempotent by `source_key`, so overlapping exports are the expected case rather than
-    a hazard: re-uploading last month's file inserts nothing and says so. Returns
-    `imported`/`skipped` counts, the date span of what landed, the latest reading, and
-    `new_low` when one of the NEW readings beats every reading that was already there —
-    the page's confetti cue, and the one fact the browser cannot derive from the rows it
-    is about to re-render, since it never sees the all-time minimum.
-    """
-    parsed = _parse_scale_export(blob)
-    if isinstance(parsed, dict):
-        return parsed
-    if not parsed:
-        return {"error": "no readings found in that file"}
-    return _insert_readings(parsed)
 
 
 def _insert_readings(parsed: list[dict]) -> dict:
@@ -4437,39 +4151,6 @@ def update_profile(profile: dict) -> dict:
             (json.dumps(current),),
         )
     return {"profile": current}
-
-
-def set_trainer_profile(coaching: Optional[str]) -> dict:
-    """Set the trainer's `coaching` text from the WEBSITE — /trainer's Coaching
-    popover. A NON-tool, website-only path like set_nutrient_targets and
-    import_bodyweight: never a FastMCP tool, so no connector can reach it.
-
-    It writes the SAME place update_profile does (settings → `profile` →
-    `coaching`), because the point is one text feeding both connectors and the
-    in-app chat — a second door onto it, not a second copy. It's a door worth
-    having for the same reason the Targets popover is: this is the screen where you
-    notice the coaching is off, and the alternative was editing a Python string and
-    redeploying.
-
-    Blank DROPS the key rather than storing an empty instruction (the trainer then
-    asks about coaching preferences next time, per its instructions).
-    Nothing else in the profile (injury, split, goals) is touched. There is no
-    validation beyond that: it's prose for a model to read, and the one thing a
-    guard could check — that the user meant it — is exactly what typing it means."""
-    if coaching is not None and not isinstance(coaching, str):
-        return {"error": f"coaching must be text, got {coaching!r}"}
-    with db() as conn:
-        profile = _get_profile(conn)
-        if (coaching or "").strip():
-            profile["coaching"] = coaching.strip()
-        else:
-            profile.pop("coaching", None)
-        conn.execute(
-            """INSERT INTO settings(key, value) VALUES ('profile', ?)
-               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-            (json.dumps(profile),),
-        )
-    return {"coaching": profile.get("coaching", "")}
 
 
 @trainer_mcp.tool(name="delete_record", annotations=DESTRUCTIVE)

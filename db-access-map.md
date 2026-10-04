@@ -6,7 +6,7 @@ Two lanes, each with one front door. Checked against `server.py`,
 | Lane | Where I do it | Behind the tap-lock? |
 |---|---|---|
 | **Journal** — entries, people | Web UI → journal chat | ✅ yes |
-| **Training** — workouts, exercises, weigh-ins, water & protein | **Claude, over the trainer connector** (the web trainer pages still work, legacy) | ❌ no |
+| **Training** — workouts, exercises, weigh-ins, water & protein | **Claude, over the trainer connector** — no web UI | n/a |
 
 ---
 
@@ -43,11 +43,10 @@ from it: `server.trainer_mcp` is a different instance with no journal tool on it
   `update_set` · `start_workout_plan` · `get_workout_plan` · `complete_sets` ·
   `remove_from_plan` · `swap_exercise` · `add_to_plan` · `reorder_plan` ·
   `finish_workout` · `import_weigh_ins` · `get_fitness_briefing` ·
-  `update_profile` · `delete_record(workout|set|intake)`
-- **Web carve-outs (website-only writes)** — the `/trainer` Coaching popover
-  (`set_trainer_profile`), the `/food` Targets popover (`set_nutrient_targets` →
-  `settings.eating_profile.targets`), the `/weight` scale-export upload
-  (`import_bodyweight`), the `/graphs` weight goal.
+  `update_profile` · `set_intake_targets` · `delete_record(workout|set|intake)`
+- **Web** — none. The `/workouts`, `/trainer`, `/weight`, `/graphs` and `/food` pages
+  and the trainer chat panel were removed; the one leftover read is
+  `/api/today.json` (today's water/protein + targets) for the SwiftBar widget.
 
 Tables: `workouts` · `sets` · `exercises` · `exercise_muscles` ·
 `exercise_aliases` · `body_weight` · `intake_items` (water_oz, protein_g) ·
@@ -57,10 +56,7 @@ Tables: `workouts` · `sets` · `exercises` · `exercise_muscles` ·
 
 ## Other
 
-1. **Reading on the website.** Training and water/protein are captured in
-   Claude but *read* on `/workouts`, `/food`, `/graphs`, `/weight` —
-   capture-here/read-there is why `log_intake` returns a `url`.
-2. **Backups.** `GET /export/journal.db` (`snapshot_db`), pulled by the launchd
+1. **Backups.** `GET /export/journal.db` (`snapshot_db`), pulled by the launchd
    cron job.
 
 ---
@@ -69,7 +65,8 @@ Tables: `workouts` · `sets` · `exercises` · `exercise_muscles` ·
 
 The journal connector at `/mcp` (it last carried only notes & collections), the
 notes & collections layer itself, the full food tracker (now just water +
-protein, on the trainer), the teacher learning server, and the Telegram bots.
+protein, on the trainer), the teacher learning server, the Telegram bots, and every
+non-journal web page (training, weight, graphs, water & protein).
 
 ## Dormant — reachable by nothing
 

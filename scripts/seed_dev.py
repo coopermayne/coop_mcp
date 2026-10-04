@@ -345,7 +345,7 @@ WEIGHTS = [
     ("2026-05-18", 194.9), ("2026-05-28", 193.4), ("2026-05-31", 192.8),
 ]
 # Inserted directly: there is no write TOOL for a weigh-in any more — readings come
-# from a connected scale's export (server.import_bodyweight), and faking an .xlsx here
+# from a connected scale's export (the trainer's import_weigh_ins), and faking an .xlsx here
 # to seed six numbers would be ceremony. Each gets a source_key in the shape the
 # importer writes, so a later real import can't collide with the seeds.
 with server.db() as _conn:

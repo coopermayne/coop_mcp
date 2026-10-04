@@ -23,7 +23,7 @@ import sys
 import time
 from typing import Optional
 from urllib.parse import quote
-from datetime import datetime, date as date_cls
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -104,8 +104,7 @@ WIDGET_TOKEN = (os.environ.get("WIDGET_TOKEN") or "").strip()
 # Google auth keeps strangers OUT; this keeps someone who picks up the ALREADY
 # signed-in device (the classic "my wife grabs my phone") from scrolling the
 # journal. It guards ONLY the journal surface (entries / people / pending /
-# groups + the journal chat) — the trainer, food and graphs pages stay open,
-# they aren't private. It's deliberately
+# groups + the journal chat). It's deliberately
 # low-security: the only person who can even reach these routes is the
 # authenticated owner, so the gate's job is to stop casual reading, not a
 # determined attacker.
@@ -183,58 +182,11 @@ def weekday(d):
     return dt.strftime("%a") if dt else ""
 
 
-def num(x):
-    if x is None:
-        return ""
-    return f"{x:g}"
-
-
-def dur_label(seconds):
-    """Compact duration: '45m', '1h05m', '30s'."""
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, sec = divmod(rem, 60)
-    if h:
-        return f"{h}h{m:02d}m"
-    if m:
-        return f"{m}m"
-    return f"{sec}s"
-
-
-def set_label(s):
-    w, r = s.get("weight_lbs"), s.get("reps")
-    rpe = s.get("rpe")
-    dur, dist = s.get("duration_seconds"), s.get("distance_miles")
-    if w is not None and r is not None:
-        base = f"{num(w)} × {r}"
-    elif r is not None:
-        base = f"{r} rep" + ("" if r == 1 else "s")
-    elif w is not None:
-        base = f"{num(w)} lb"
-    elif dist is not None or dur is not None:
-        # Cardio: distance and/or time, whichever is recorded.
-        parts = []
-        if dist is not None:
-            parts.append(f"{num(dist)} mi")
-        if dur is not None:
-            parts.append(dur_label(dur))
-        base = " · ".join(parts)
-    else:
-        base = "—"
-    if rpe is not None:
-        base += f"  @{num(rpe)}"
-    return base
-
-
 for _name, _fn in [
     ("long_date", long_date), ("short_date", short_date), ("weekday", weekday),
-    ("num", num), ("set_label", set_label),
 ]:
     templates.env.filters[_name] = _fn
 
-# The intake block's rings read targets through this; a FUNCTION, not the dict, so
-# a target saved in the popover shows on the next render.
-templates.env.globals["nutrient_targets"] = data.nutrient_targets
 
 def link_people_md(body: str, people: list[dict], base: str) -> str:
     """Return the entry body as Markdown with each resolved person's name turned into
@@ -585,9 +537,7 @@ async def lock_page(request: Request):
         return RedirectResponse(base + nxt)   # already in; nothing to do here
     else:
         mode = "unlock"
-    # active="journal" so base.html renders the nav: the lock only covers the journal,
-    # so the rest of the app (trainer, training) stays reachable
-    # from the lock screen without unlocking.
+    # active="journal" so base.html renders the nav.
     # `has_knock`/`has_chord` only ever reach the SETUP screen (the template gates on
     # mode), so the unlock screen still gives nothing away about which gestures work.
     return page(request, "lock.html", active="journal", next=nxt, mode=mode,
@@ -731,19 +681,16 @@ async def today_json(request: Request):
     """Today's nutrient sums, for an ambient display (SwiftBar plugin, phone widget).
 
     Read-only and scoped to ONE day: no entries, no people, no items — just the
-    figures the journal page's rings already show, so the token that ends up on a
+    two figures the trainer tracks, so the token that ends up on a
     laptop or phone can't be turned into a data exfil. Auth is a session or
     WIDGET_TOKEN (see `_widget_authorized`).
 
     Returns each tracked figure (water_oz, protein_g) as {total, target}. `total`
-    is null when nothing logged carries it — the SAME distinction the rings draw
-    between "0 so far" and "not logged". Targets ride along from
-    `data.nutrient_targets()`, the same merge the rings read, so the widget always
-    agrees with the page and with what the trainer reads.
+    is null when nothing logged carries it ("not logged" rather than a claimed 0).
+    Targets are the same ones the trainer reads (server._day_targets — defaults
+    overridden by set_intake_targets), so the widget and the coaching agree.
 
-    UNITS are deliberately NOT here. They're a rendering choice that already lives in
-    `macros.html`, and duplicating them server-side is how the two copies drift; a
-    client that wants "92g" formats it from `protein_g` itself.
+    Units aren't included — the client formats them (the SwiftBar plugin does).
     """
     from fastapi.responses import JSONResponse
     if not _widget_authorized(request):
@@ -755,7 +702,8 @@ async def today_json(request: Request):
     totals = next((d["totals"] for d in intake["days"] if d["food_date"] == day), {})
     # Keyed off server.NUTRIENTS, not the targets dict, so an untargeted figure
     # still reports its total with target=null.
-    targets = data.nutrient_targets()
+    with server.db() as conn:
+        targets = server._day_targets(conn)
     return JSONResponse({
         "date": day,
         "nutrients": {
@@ -841,7 +789,7 @@ async def manifest(request: Request):
 # Tailwind, Inter, marked — no CDNs), so it's all precached and the app styles
 # itself offline. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v9';
+const VERSION = 'v10';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [
@@ -851,7 +799,6 @@ const PRECACHE = [
   BASE + '/static/fonts/inter-latin.woff2',
   BASE + '/static/vendor/marked.min.js',
   BASE + '/static/vendor/purify.min.js',
-  BASE + '/static/body-symbols.svg',
   BASE + '/manifest.webmanifest',
 ];
 const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">`
@@ -988,35 +935,6 @@ async def journal(request: Request, q: str = "", since: str = "", kind: str = ""
                 has_more=res["has_more"], next_since=res["next_since"])
 
 
-@app.get("/food")
-async def food(request: Request, since: str = ""):
-    # The water/protein log's own page. Deliberately NOT in LOCK_PATHS (glancing
-    # at it shouldn't need the knock) and carries no chat panel: intake is logged
-    # through the trainer's tools (connector or the trainer chat); this page reads.
-    res = data.food_days(since=(since or "").strip() or None)
-    return page(request, "food.html", active="food",
-                days=res["days"], count=res["total"],
-                has_more=res["has_more"], next_since=res["next_since"],
-                # The Targets popover wants the two apart: what's actually SET
-                # goes in the inputs, the defaults are only placeholders.
-                defaults=data.NUTRIENT_TARGETS, stored=data.stored_targets())
-
-
-@app.post("/food/targets")
-async def food_targets(request: Request):
-    """Save the /food page's Targets popover — the daily water/protein goals the
-    rings are read against. A website-only write path through
-    server.set_nutrient_targets (never a FastMCP tool), and the ONLY thing this page
-    writes: intake CONTENT enters through the trainer's tools alone.
-    Body: {targets: {nutrient: number|null}} — null hands a goal back to its
-    default. Outside the journal lock, like the page itself."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    res = server.set_nutrient_targets(body.get("targets"))
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
 @app.get("/pending")
 async def pending(request: Request):
     items = data.pending_mentions()
@@ -1094,304 +1012,9 @@ async def entry(request: Request, entry_id: int):
     return page(request, "entry.html", active="journal", e=e)
 
 
-@app.get("/workouts")
-async def workouts(request: Request, since: str = ""):
-    since = (since or "").strip() or None
-    res = data.workouts_full(limit=20, since=since)
-    brief = server.get_fitness_briefing(recent_workouts=1)
-    # Calendar marks EVERY completed session's date, not just the loaded page's —
-    # the all_entry_dates pattern from /journal.
-    months = data.calendar_months(data.all_workout_dates(), today=server.today())
-    return page(request, "workouts.html", active="workouts",
-                sessions=res["sessions"],
-                has_more=res["has_more"], next_since=res["next_since"],
-                upcoming=data.upcoming_plans(),
-                profile=brief.get("profile", {}),
-                months=months)
-
-
-@app.get("/trainer")
-async def trainer_current(request: Request):
-    """Bare /trainer — the keyboard shortcut and any old link. Sends you to the session
-    you'd actually be doing (the next-due plan), or to the Training page when nothing is
-    planned, since that's where a session gets planned now."""
-    from fastapi.responses import RedirectResponse
-    plan = data.active_plan()
-    dest = f"/trainer/{plan['workout_id']}" if plan.get("active") else "/workouts"
-    return RedirectResponse(request.scope.get("root_path", "") + dest, status_code=307)
-
-
-@app.get("/trainer/{workout_id:int}")
-async def trainer(request: Request, workout_id: int):
-    """One planned session: the tap-to-complete plan card plus the AI chat panel that
-    adjusts it. The card is rendered client-side from the bootstrapped JSON so chat-driven
-    and tap-driven changes share one render path (static/trainer.js). The id is in the URL
-    because a whole week can be planned at once — the Training page lists the upcoming
-    sessions and each links here."""
-    plan = data.active_plan(workout_id)
-    if not plan.get("active"):
-        return page(request, "notfound.html", active="workouts",
-                    status_code=404, what="workout plan")
-    return page(request, "trainer.html", active="trainer",
-                plan=plan,
-                coaching=data.stored_coaching())
-
-
-@app.post("/trainer/profile")
-async def trainer_profile(request: Request):
-    """Save the /trainer page's Coaching popover — the user's own standing
-    instructions to the trainer (session size, tone, what to nudge). A website-only
-    write path through server.set_trainer_profile (never a FastMCP tool), the twin
-    of /food/targets: it writes the same settings.profile the model reads through
-    get_fitness_briefing, so what's typed here is what coaches the next session, on
-    the connector and the in-app chat alike, with nothing to redeploy.
-    Body: {coaching: str} — blank hands the default back."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    res = server.set_trainer_profile(body.get("coaching"))
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-def _num(v):
-    """Coerce a JSON value to float|None ('' / null -> None)."""
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _with_pr(plan: dict, set_id: int) -> dict:
-    """Flag the set just logged as a personal best, so the /trainer card can throw
-    confetti at its chip. A webapp-only enrichment of a server payload, for the
-    reason CLAUDE.md gives: `_plan_payload` is the return of complete_set /
-    get_workout_plan / start_workout_plan / swap_exercise / reorder_plan, so a key added
-    there would ride along on every model-facing plan return, where a browser animation
-    cue means nothing (the model has get_personal_records). The FACT is the server's
-    (server.pr_for_set); celebrating it is the page's."""
-    if isinstance(plan, dict) and not plan.get("error"):
-        if hit := server.pr_for_set(set_id):
-            plan["celebrate"] = {"kind": "pr", "set_id": set_id,
-                                 "weight_lbs": hit["weight_lbs"], "reps": hit["reps"]}
-    return plan
-
-
-@app.get("/trainer/{workout_id:int}/plan.json")
-async def trainer_plan(request: Request, workout_id: int):
-    from fastapi.responses import JSONResponse
-    return JSONResponse(data.active_plan(workout_id))
-
-
-@app.post("/trainer/set/{set_id}/complete")
-async def trainer_complete_set(request: Request, set_id: int):
-    """Tap-to-complete one planned set. Body: {weight_lbs?, reps?, rpe?, note?} —
-    omitted numbers fall back to the set's targets server-side. Returns the updated
-    plan so the card re-renders without a reload."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    reps = _num(body.get("reps"))
-    res = server.complete_set(
-        set_id,
-        weight_lbs=_num(body.get("weight_lbs")),
-        reps=int(reps) if reps is not None else None,
-        rpe=_num(body.get("rpe")),
-        note=(body.get("note") or "").strip() or None,
-    )
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(_with_pr(res, set_id))
-
-
-@app.post("/trainer/{workout_id:int}/finish")
-async def trainer_finish(request: Request, workout_id: int):
-    """Close out this session. Body (optional): {feeling?, notes?}."""
-    from fastapi.responses import JSONResponse
-    raw = await request.body()
-    body = json.loads(raw) if raw else {}
-    res = server.finish_workout(
-        workout_id=workout_id,
-        feeling=(body.get("feeling") or "").strip() or None,
-        notes=(body.get("notes") or "").strip() or None,
-    )
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-@app.post("/trainer/set/{set_id}/update")
-async def trainer_update_set(request: Request, set_id: int):
-    """Correct an already-logged ('done') set from the plan card — fix a data-entry
-    error without un-logging it. Body: {weight_lbs?, reps?, rpe?}. Saving with reps BLANK
-    clears the set instead (revert a planned set to pending, or drop an ad-hoc one), since
-    update_set can't blank a field to NULL. server.update_set returns just the touched
-    set, so we hand back the fresh plan for the card to re-render off one render path."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    reps = _num(body.get("reps"))
-    if reps is None:  # blank reps == clear the set
-        res = server.clear_plan_set(set_id)
-        code = 400 if isinstance(res, dict) and res.get("error") else 200
-        return JSONResponse(res, status_code=code)
-    res = server.update_set(
-        set_id,
-        weight_lbs=_num(body.get("weight_lbs")),
-        reps=int(reps),
-        rpe=_num(body.get("rpe")),
-    )
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(_with_pr(server.get_workout_plan(
-        workout_id=res.get("workout_id")), set_id))
-
-
-@app.post("/trainer/{workout_id:int}/exercise/{exercise_id}/remove")
-async def trainer_remove_exercise(request: Request, workout_id: int, exercise_id: int):
-    """Delete one exercise from this plan (the "..." menu's Delete option). All its sets
-    go. Returns the updated plan."""
-    from fastapi.responses import JSONResponse
-    res = server.remove_plan_exercise(exercise_id, workout_id=workout_id)
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(res)
-
-
-@app.post("/trainer/{workout_id:int}/reorder")
-async def trainer_reorder(request: Request, workout_id: int):
-    """Set the exercise order of this plan from the /trainer card's reorder UX (the
-    ↑/↓ arrows). Body: {"order": [exercise_id, ...]} in the desired sequence. Writes
-    through server.reorder_plan_exercises and returns the updated plan so the card
-    re-renders off one render path."""
-    from fastapi.responses import JSONResponse
-    body = await request.json()
-    order = body.get("order") or []
-    try:
-        ids = [int(x) for x in order]
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "order must be a list of exercise ids"}, status_code=400)
-    res = server.reorder_plan_exercises(ids, workout_id=workout_id)
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(res)
-
-
-@app.post("/trainer/{workout_id:int}/discard")
-async def trainer_discard_plan(request: Request, workout_id: int):
-    """Delete this plan outright (the /trainer card's plan-level "..." menu →
-    Delete plan). Drops the session and all its sets through server.discard_plan and
-    returns the empty-plan state so the card re-renders to its no-active-plan view."""
-    from fastapi.responses import JSONResponse
-    res = server.discard_plan(workout_id=workout_id)
-    if isinstance(res, dict) and res.get("error"):
-        return JSONResponse(res, status_code=400)
-    return JSONResponse(res)
-
-
 # --------------------------------------------------------------------------- #
-# Weigh-ins — the bodyweight log's own page: an upload box at the top, every
-# reading below.
-#
-# Its own PAGE rather than a strip on /graphs, because a weigh-in is a daily
-# habit and the thing you do with a habit is a first-class destination, not a
-# widget above someone else's chart. It's also the second move in the same
-# direction as taking the box off the /trainer plan card: the reading is neither
-# a gym artifact nor a footnote to the trend line — it's the record itself, and
-# the trend is what's DERIVED from it. /graphs keeps the chart and the goal.
-#
-# The page is READ-ONLY apart from the import. A connected scale writes every
-# morning's reading to its vendor's app; the only thing the browser does is hand
-# that app's export to server.import_bodyweight. No form, no ✎, no × — the whole
-# hand-entry path is gone, on both this page and the trainer connector, because a
-# device-produced fact with a second way to state it has two versions of the truth.
-# --------------------------------------------------------------------------- #
-
-@app.get("/weight")
-async def weight_page(request: Request):
-    """Every weigh-in, newest first, with the import box on top."""
-    return page(request, "weight.html", active="weight",
-                weights=data.bodyweight_log())
-
-
-@app.post("/weight/import")
-async def weight_import(request: Request):
-    """Load a connected-scale export (.xlsx) into the log. The file is the RAW request
-    body, not a multipart form — this is the app's one upload, and a `fetch(url, {body:
-    file})` costs nothing on the browser side while multipart would add python-multipart
-    to the deps for a single route.
-
-    Hands server.import_bodyweight's return straight back: the page needs `imported`/
-    `skipped` to say what landed and `new_low` to throw confetti. Re-uploading an
-    overlapping export is expected and reports 0 imported rather than erroring — the
-    user is not tracking which days they already uploaded."""
-    from fastapi.responses import JSONResponse
-    blob = await request.body()
-    if not blob:
-        return JSONResponse({"error": "no file uploaded"}, status_code=400)
-    # A scale export is a few KB. The ceiling guards against a mis-picked file (a video,
-    # a DB backup) being read into memory; it is not a limit on how many readings fit.
-    if len(blob) > 5_000_000:
-        return JSONResponse({"error": "that file is too large to be a scale export"},
-                            status_code=400)
-    res = server.import_bodyweight(blob)
-    code = 400 if isinstance(res, dict) and res.get("error") else 200
-    return JSONResponse(res, status_code=code)
-
-
-# --------------------------------------------------------------------------- #
-# Graphs — one page of line charts over the trends the app already stores
-# (bodyweight, per-exercise strength progress). The whole history is
-# bootstrapped into the page as JSON (single-user data is small) and
-# filtered/toggled client-side by static/graphs.js.
-#
-# It writes one thing, the goals-not-content carve-out /food's Targets popover
-# already makes: the bodyweight GOAL the chart is read against. Entering a
-# weigh-in lives on /weight — see that section.
-# --------------------------------------------------------------------------- #
-
-@app.get("/graphs")
-async def graphs(request: Request):
-    return page(request, "graphs.html", active="graphs", graph=data.graph_data())
-
-
-@app.post("/graphs/goal")
-async def graphs_goal(request: Request):
-    """Set or clear the bodyweight goal from the graphs page (PRG). Stored as
-    `weight_goal` in the trainer profile blob via server.update_profile — the
-    same profile get_fitness_briefing surfaces, so the trainer model coaches
-    within the goal without any new plumbing. The latest weigh-in at save time
-    is captured as the fixed anchor the chart draws the pace line from."""
-    form = await request.form()
-    base = base_path(request)
-    if (form.get("action") or "") == "clear":
-        server.update_profile(profile={"weight_goal": None})
-        return RedirectResponse(base + "/graphs", status_code=303)
-    try:
-        target = float((form.get("target_lbs") or "").strip())
-    except ValueError:
-        return RedirectResponse(base + "/graphs", status_code=303)
-    target_date = (form.get("target_date") or "").strip() or None
-    if target_date:
-        try:
-            date_cls.fromisoformat(target_date)
-        except ValueError:
-            target_date = None
-    goal = {"target_lbs": target, "target_date": target_date, "set_on": server.today(),
-            "start_lbs": None, "start_date": None}
-    with server.db() as conn:
-        r = conn.execute(
-            "SELECT weigh_date, weight_lbs FROM body_weight "
-            "ORDER BY weigh_date DESC, id DESC LIMIT 1").fetchone()
-    if r:
-        goal["start_lbs"], goal["start_date"] = r["weight_lbs"], r["weigh_date"]
-    server.update_profile(profile={"weight_goal": goal})
-    return RedirectResponse(base + "/graphs", status_code=303)
-
-
-# --------------------------------------------------------------------------- #
-# AI chat — a write path for prose (the journal). Browse pages above stay
-# read-only apart from the two goal/weigh-in carve-outs. Each surface is scoped to
-# one toolset: the `journal` panel (journal page) and the `trainer` page get
-# different tools. Gated by RequireAuth (these paths aren't in PUBLIC_PATHS).
+# AI chat — the write path for the journal. Browse pages above stay read-only.
+# Gated by RequireAuth (these paths aren't in PUBLIC_PATHS).
 # --------------------------------------------------------------------------- #
 
 def _chat_id(request: Request) -> str:

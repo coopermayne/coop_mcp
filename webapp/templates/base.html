@@ -97,16 +97,6 @@
       background: linear-gradient(to right, rgba(255,255,255,0), #fff);
     }
     .hscroll[data-more] .hscroll-cue { opacity: 1; }
-    /* Eating-block progress rings (macros.nutrient_ring). The only color in an
-       otherwise monochrome UI, so the hue is desaturated to sit quietly next to
-       the gray text. ONE fill for every nutrient: a target is just a target, and
-       a second "past it" color would need a ceiling/floor flag that the model
-       reading these same numbers can't see. The track is a hair darker than a
-       hairline border so a barely-started ring still reads as a ring. */
-    .ring-track { stroke: #ececea; }
-    /* The short name under the figure — quieter than the number it labels. */
-    .ring-sublabel { fill: #9ca3af; text-transform: uppercase; letter-spacing: .06em; }
-    .ring-fill  { stroke: #8ba58f; }
     button.badge { cursor: pointer; }
     button.badge:hover { border-color: #000; color: #000; }
     /* Inline person reference inside journal prose — present but quiet: a faint
@@ -217,9 +207,6 @@
     html[data-theme="dark"] .set-pill   { border-color: #262626; }
     /* Rings: the track drops to the dark border tone; the hues lift slightly so
        they hold against #0a0a0a without gaining saturation. */
-    html[data-theme="dark"] .ring-track { stroke: #262626; }
-    html[data-theme="dark"] .ring-sublabel { fill: #737373; }
-    html[data-theme="dark"] .ring-fill  { stroke: #7d9a83; }
     html[data-theme="dark"] .hscroll-cue { background: linear-gradient(to right, rgba(10,10,10,0), #0a0a0a); }
     html[data-theme="dark"] .person-link              { text-decoration-color: #404040; }
     html[data-theme="dark"] .person-link:hover        { color: #fafafa; text-decoration-color: #fafafa; }
@@ -289,53 +276,29 @@
     #lightbox[data-open] { display: flex; }
     #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
 
-    /* Confetti overlay (static/confetti.js) — one fixed, pointer-transparent canvas
-       shared by every burst on any page. Above #lightbox (60) and the chat panels so a
-       celebration is never clipped, and pointer-events:none so it can never eat the tap
-       that earned it. The motion is requestAnimationFrame, not a CSS animation, because
-       iOS Safari pauses CSS animations in Low Power Mode. Hidden until a burst is
-       running; the JS honors prefers-reduced-motion by never starting one, and the rule
-       below makes that belt-and-braces. */
-    #confetti-canvas { position: fixed; inset: 0; z-index: 70; pointer-events: none; display: none; }
-    #confetti-canvas[data-on] { display: block; }
-    @media (prefers-reduced-motion: reduce) { #confetti-canvas { display: none !important; } }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen bg-white text-black">
   {% if active %}
   <header class="border-b border-gray-100 sticky top-0 bg-white/90 backdrop-blur z-10">
-    {# Icon-only nav: the primary sections (journal · water & protein · training)
-       sit on the strip — the trainer has no strip icon of its own,
-       it's reached from the Training page header (and the "6" shortcut), and
-       People from the Journal page header; everything secondary (graphs, theme toggle,
-       logout) collapses behind a hamburger that opens a dropdown. Icons are inline
+    {# Icon-only nav: the journal on the strip (People is reached from the Journal
+       page header); everything secondary (theme, logout) collapses behind a hamburger that opens a dropdown. Icons are inline
        Lucide-style strokes inheriting currentColor; active page firms to black
        (white in dark). aria-label/title carry the names for a11y + tooltips. #}
     <nav class="max-w-3xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between text-gray-400">
       <a href="{{ base }}/journal" aria-label="Journal" title="Journal" class="hover:text-black transition-colors {% if active in ('journal', 'people') %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       </a>
-      <a href="{{ base }}/food" aria-label="Water &amp; protein" title="Water &amp; protein" class="hover:text-black transition-colors {% if active == 'food' %}text-black{% endif %}">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
-      </a>
-      <a href="{{ base }}/workouts" aria-label="Training" title="Training" class="hover:text-black transition-colors {% if active in ('workouts', 'trainer') %}text-black{% endif %}">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="9" x2="3.5" y2="15"/><line x1="6.5" y1="6.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="20.5" y1="9" x2="20.5" y2="15"/><line x1="6.5" y1="12" x2="17.5" y2="12"/></svg>
-      </a>
-      {# Hamburger → dropdown of secondary actions. Firms to black when the
-         current page (graphs) lives inside the menu. The dropdown is a quiet
+      {# Hamburger → dropdown of secondary actions. The dropdown is a quiet
          popover anchored to the right under the button; the script below toggles
          [hidden] and closes it on outside-click / Escape. #}
       <div class="relative">
         <button type="button" data-menu-toggle aria-label="Menu" aria-haspopup="true" aria-expanded="false" title="Menu"
-                class="flex hover:text-black transition-colors {% if active == 'graphs' %}text-black{% endif %}">
+                class="flex hover:text-black transition-colors">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div data-menu hidden class="absolute right-0 top-full mt-2 w-44 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-20">
-          <a href="{{ base }}/graphs" class="flex items-center gap-3 px-3 py-2 text-sm hover:text-black transition-colors {% if active == 'graphs' %}text-black{% else %}text-gray-500{% endif %}">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
-            <span>Graphs</span>
-          </a>
           {# Theme: system · light · dark, as a segmented control rather than a
              toggle. Three states need three targets — a cycling single button
              hides two of them behind taps and never says what the current one
@@ -360,7 +323,7 @@
           </div>
           {% if lock_in_journal %}
           {# Journal lock controls — only while you're actually inside the unlocked
-             journal (never on the lock screen or the open trainer pages), so
+             journal (never on the lock screen), so
              neither secret can be changed without first proving you're in. Lock now, or
              re-record the knock / key combo (the change screen also re-checks the
              session, and records one gesture without disturbing the other). #}
@@ -528,10 +491,7 @@
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
     })();
   </script>
-  {# Global keyboard shortcuts: 1-3 follow the nav bar left-to-right (journal ·
-     water & protein · training), then 5/6 pick up the sections that aren't on it
-     (graphs, the active trainer card) — 4 and 7 were Collections and Learn, left
-     unassigned rather than renumbering muscle memory; "/" focuses the page's search box if it
+  {# Global keyboard shortcuts: 1 goes to the journal, 2 to People; "/" focuses the page's search box if it
      has one. Bare keys only — we bail when a modifier is held or when focus is
      in a text field (input/textarea/select/contenteditable) so the keys still
      reach search, the chat composer, and any other input. #}
@@ -539,10 +499,7 @@
     (function () {
       var dests = {
         '1': '{{ base }}/journal',
-        '2': '{{ base }}/food',
-        '3': '{{ base }}/workouts',
-        '5': '{{ base }}/graphs',
-        '6': '{{ base }}/trainer',
+        '2': '{{ base }}/people',
       };
       document.addEventListener('keydown', function (e) {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -609,11 +566,6 @@
      render (quiet inline underline) and send any other link out in a new tab. Exposed
      as window.renderJournalMd so the chat panel can re-render the feed it swaps in
      after a write. Falls back to plain wrapped text if `marked` hasn't loaded. #}
-  {# Confetti for a personal best or an all-time-low weigh-in. Loaded on every page
-     rather than only /trainer: it's ~3KB, costs nothing until something calls
-     window.Confetti.burst(el), and the next thing worth celebrating won't be on the
-     trainer card. #}
-  <script src="{{ base }}/static/confetti.js"></script>
   <script src="{{ base }}/static/vendor/marked.min.js"></script>
   {# DOMPurify sits between marked and innerHTML everywhere markdown renders (here
      and chat.js). marked passes raw inline HTML through untouched, and this prose is
