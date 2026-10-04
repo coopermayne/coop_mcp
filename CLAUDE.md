@@ -12,11 +12,13 @@ remote HTTP server behind Google auth (phone access via claude.ai connectors).
 
 **Three MCP servers, one process, one DB.** The training feature is a *second* FastMCP
 instance — `trainer_mcp`, exposed at its own endpoint `/trainer/mcp` — separate from
-the journal+eating server (`mcp` at `/mcp`); the learning feature is a *third*,
+the journal+notes server (`mcp` at `/mcp`); the learning feature is a *third*,
 `teacher_mcp` at `/teacher/mcp` (a spaced-repetition log, ported from the standalone
 `teacher` repo — its logic lives in the `learning/` package, only the thin
 `@teacher_mcp.tool()` wrappers live in `server.py`; see the `subjects`/`facets` row in
-the data model). All live in `server.py` and share the
+the data model). The trainer also carries the small daily **water/protein log** (see
+`intake_items`) — it used to be a full food tracker on the journal connector and was
+cut down and moved there. All live in `server.py` and share the
 same SQLite DB; each has its OWN Google auth provider (providers are single-resource —
 see the auth section). Each is its own connector → its own Claude project, so a
 conversation loads only that slice's tools (smaller tool surface = less latency, the
@@ -37,33 +39,31 @@ the card's plain helper), `remove_from_plan` (the card's per-exercise delete),
 `log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule applied per batch)
 because the confetti that used to announce a best has no screen to land on. The
 `trainer_mcp` instructions open by saying the conversation IS the interface (plan as a
-table, ids never shown, short mid-session replies). The `/trainer`, `/workouts`,
+table, ids never shown, short mid-session replies). The trainer also carries the
+water/protein log (see `intake_items`). The `/trainer`, `/workouts`,
 `/weight` pages still work and still read the same DB; don't build new trainer UI there.
 
-**The journal connector is intake + collections only.** The user does all journal
+**The journal connector is notes & collections only.** The user does all journal
 capture through the app's own chat, so the journal server's people/entry tools
 (`add_journal_entry` … `get_briefing`; the `CONNECTOR_HIDDEN_TOOLS` set) are hidden
 from MCP clients by `HiddenToolsMiddleware` — dropped from `tools/list`, rejected on
 `tools/call`. **The app chat is the exact COMPLEMENT of that, not a superset.** It
 bypasses the middleware (so it *could* see everything) and then narrows its tool list
 to `CONNECTOR_HIDDEN_TOOLS` itself (`_AGENTS["journal"]["include"]`): the connector
-gets eating + notes/collections, the panel gets people + entries, neither gets the
-other's. That mirrors how the app is used — the journal is written in the app's chat,
-food and saved notes are captured in Claude — and it's stated as the complement of one
-frozenset so the halves can't drift: adding a journal tool means adding its name there
-(already the rule) and it lands on both sides at once, while an intake/notes tool needs
-no chat change at all. Deleting an entry needs no special gate — it's its own tool
+gets notes/collections, the panel gets people + entries, neither gets the other's.
+That mirrors how the app is used — the journal is written in the app's chat, saved
+notes are captured in Claude — and it's stated as the complement of one frozenset so
+the halves can't drift: adding a journal tool means adding its name there (already
+the rule) and it lands on both sides at once, while a notes tool needs no chat change
+at all. Deleting an entry needs no special gate — it's its own tool
 (`journal_delete_entry`), hidden like the rest, rather than a `kind` on a shared
-delete. The app chat is untouched
-because it bypasses middleware (`list_tools(run_middleware=False)` + direct function
-calls). Same split for the model-facing prose: the `mcp` instance's `instructions`
-are the CONNECTOR text (intake + collections; `intake_summary` carries `now` since
-`get_briefing` is hidden there), while the chat's journal agent takes
-`JOURNAL_CHAT_INSTRUCTIONS`, the journal contract alone (it drops the intake and
-collections blocks and adds `_JOURNAL_ONLY_BLOCK`, which tells the model a meal
+delete. Same split for the model-facing prose: the `mcp` instance's `instructions`
+are the CONNECTOR text (collections), while the chat's journal agent takes
+`JOURNAL_CHAT_INSTRUCTIONS`, the journal contract alone (it drops the collections
+block and adds `_JOURNAL_ONLY_BLOCK`, which tells the model a meal or a lift
 mentioned in passing is part of the ENTRY — write it down, don't offer to log it
-somewhere this panel can't reach) — shared blocks are composed into
-both strings so the surfaces can't drift. Adding a journal tool = adding its name to
+somewhere this panel can't reach) — shared blocks are composed into both strings so
+the surfaces can't drift. Adding a journal tool = adding its name to
 `CONNECTOR_HIDDEN_TOOLS` too.
 
 ## The one architectural rule
@@ -102,8 +102,8 @@ importable — a stock macOS python has no CA bundle wired into `ssl`, so withou
 it dev fails `CERTIFICATE_VERIFY_FAILED` while the Docker image works, a
 difference that only ever shows up on the machine the code is written on.
 
-The same split governs the **trainer** and **drinking** features: the server stores
-workouts/drinks and computes deterministic aggregates (muscle recency, drink streaks),
+The same split governs the **trainer** (and its water/protein log): the server stores
+workouts and intake and computes deterministic aggregates (muscle recency, day totals),
 but deciding the next weight, what to rest, which exercises to program, and how to coach
 form is the *model's* job, done in conversation from the data the retrieval tools return.
 There is no exercise-selection or progression logic in the server either.
@@ -153,7 +153,7 @@ There is no exercise-selection or progression logic in the server either.
   surface form (including transcription errors) as a learned alias, so it auto-matches
   next time.
 - **All user-facing dates are Pacific.** The user lives on Pacific time, so `today()`
-  and every date default (`entry_date`, `drink_date`, `workout_date`) plus streak/recency
+  and every date default (`entry_date`, `food_date`, `workout_date`) plus recency
   math roll over at Pacific midnight, via `PACIFIC = ZoneInfo("America/Los_Angeles")` —
   never the server's UTC midnight. `created_at` stays UTC (an unambiguous storage
   timestamp, not a user date) — but a UTC stamp that gets SHOWN has to be converted,
@@ -202,23 +202,20 @@ There is no exercise-selection or progression logic in the server either.
   section). They're advisory metadata; the real guard is
   `AllowlistMiddleware`.
 - **Connector tool names are `domain_verb`, and the domain prefix is load-bearing.**
-  The journal connector carries two unrelated domains at once — the eating log and
-  the notes/collections layer — so every tool it advertises is prefixed `intake_*`,
-  `notes_*` or `collections_*` (`intake_log`, `notes_search`, `collections_save`, …).
-  Two reasons, both about the model rather than tidiness. First, **"item" was
-  ambiguous**: an intake item (a beer) and a collection item (a recipe) are different
-  things, and the old `find_past_items` (eating) sat in the tool list next to
-  `search_items` (notes) with nothing to tell them apart. Second, clients render
-  `tools/list` in name order, so the prefix makes the list group itself by domain.
-  The MCP name is set with `@mcp.tool(name=…)` and the PYTHON function keeps its
-  original name — the webapp calls these functions directly (`webapp/app.py`,
-  `webapp/chat.py`), so renaming only the wire name keeps that surface untouched.
-  Note the one asymmetry: `webapp/chat.py` dispatches by the MCP name (it lifts tools
-  from `list_tools`), so its `_WRITE_TOOLS` set and `_tool_chip` branches key off the
-  NEW names. The trainer server is a single domain on its own connector and needs no
-  prefix. Adding a connector tool = giving it a domain prefix.
+  Every tool the journal connector advertises is prefixed `notes_*` or
+  `collections_*` (`notes_search`, `collections_save`, …): a single note vs. the
+  collection it's filed in. Clients render `tools/list` in name order, so the prefix
+  makes the list group itself by domain. (It mattered more when the connector also
+  carried the eating log — an intake item and a collection item were easy to confuse;
+  that log now lives on the trainer, unprefixed.) The MCP name is set with
+  `@mcp.tool(name=…)` and the PYTHON function keeps its original name — the webapp
+  calls these functions directly, so renaming only the wire name keeps that surface
+  untouched. Note the one asymmetry: `webapp/chat.py` dispatches by the MCP name (it
+  lifts tools from `list_tools`), so its `_WRITE_TOOLS` set and `_tool_chip` branches
+  key off the wire names. The trainer server is a single domain on its own connector
+  and needs no prefix. Adding a connector tool = giving it a domain prefix.
 - **Destructive tools are narrow, not kind-scoped — on the journal side.** The journal
-  server has four deletes (`journal_delete_entry`, `intake_delete`, `notes_delete`,
+  server has three deletes (`journal_delete_entry`, `notes_delete`,
   `collections_delete`) rather than one `delete_record(kind=…)`. A `kind` string is a
   thing the model can get wrong on an irreversible call, and it forced the awkward
   case where ONE kind (`entry`) had to be blocked on the connector while the others
@@ -226,30 +223,30 @@ There is no exercise-selection or progression logic in the server either.
   separate tools, hiding the journal delete is just its name in
   `CONNECTOR_HIDDEN_TOOLS`, like every other journal tool. They all still call the
   shared `_delete_record` helper, so the table mapping and the set-renumbering live in
-  one place. The TRAINER keeps its kind-scoped `delete_record` (`workout`/`set`):
-  one domain, one connector, nothing to disambiguate. Weigh-ins used to be a third
-  kind there and no longer are — they're import-only now (see `body_weight`).
+  one place. The TRAINER keeps its kind-scoped `delete_record`
+  (`workout`/`set`/`intake`): one connector, kinds that don't overlap. Weigh-ins used
+  to be a kind there and no longer are — they're import-only now (see `body_weight`).
 - **A write says where the thing now lives.** Capture happens in a Claude conversation;
   the data is READ in the web app — two different screens, which is the standing
   awkwardness of the whole setup. So the connector's write tools return a `url`
-  (`_app_url`: `PUBLIC_URL` + the `/app` mount, per `webapp/combined.py`) — `intake_log`
-  → `/food`, `notes_save`/`notes_file` → `/item/{id}`, `collections_save` → the
-  collection page — and one tap replaces a context switch. `PUBLIC_URL` unset (stdio,
-  dev) OMITS the key rather than emitting a dead link. Two deliberate limits: the
+  (`_app_url`: `PUBLIC_URL` + the `/app` mount, per `webapp/combined.py`) —
+  `notes_save`/`notes_file` → `/item/{id}`, `collections_save` → the collection page,
+  and the trainer's `log_intake` → `/food` — and one tap replaces a context switch.
+  `PUBLIC_URL` unset (stdio, dev) OMITS the key rather than emitting a dead link. Two deliberate limits: the
   policy line lives in `_APP_LINK_BLOCK`, composed into the CONNECTOR `instructions`
   ONLY — the in-app chat gets the same `url` back but already renders its own local
   chip, and pointing the user at the page they're standing on is noise — and the links
-  sit on capture paths, not corrections (`intake_update` returns totals, no url), since
+  sit on capture paths, not corrections (`update_intake` returns totals, no url), since
   the returns are tuned token-compact and a link per call is exactly the bloat that
   warning is about.
 
 ## Files
 
-- `server.py` — everything: schema, matching, both FastMCP instances (`mcp` =
-  journal+eating, `trainer_mcp` = training), all tools, shared auth wiring, the
-  shared `_delete_record` helper (the trainer exposes it as a kind-scoped
-  `delete_record`; the journal splits it into four narrow tools — see the naming
-  convention below),
+- `server.py` — everything: schema, matching, all three FastMCP instances (`mcp` =
+  journal+notes, `trainer_mcp` = training + water/protein, `teacher_mcp`), all tools,
+  shared auth wiring, the shared `_delete_record` helper (the trainer exposes it as a
+  kind-scoped `delete_record`; the journal splits it into three narrow tools — see the
+  naming convention above),
   and the stdio/http entrypoint (`MCP_SERVER` picks which server stdio runs).
 - `webapp/combined.py` — single-process entrypoint (the Dockerfile's `CMD`): serves the
   journal MCP + browser UI (`/app`) on the main origin, and the trainer MCP either on
@@ -269,16 +266,10 @@ There is no exercise-selection or progression logic in the server either.
   prompt is `server.JOURNAL_CHAT_INSTRUCTIONS`, not the instance's `instructions` —
   those are the connector-facing HALF, and this panel is the other one; see the
   hidden-tools note above. A server-bound agent narrows its lifted tools with
-  `exclude` (drop these) or `include` (keep only these), and `include` is either a
-  SET of names or a PREDICATE over one — the journal panel passes the frozenset, the
-  Telegram intake/notes bots pass a domain-prefix predicate, which is what lets their
-  tool lists be derived rather than listed.) The four `tg_*` entries are the
-  Telegram bots (see `webapp/telegram.py`); they REUSE the servers and tools and
-  differ only in `blurb`, because the framing is the part that's surface-specific —
-  `_TRAINER_BLURB` talks about the plan card beside the chat, which doesn't exist in
-  a Telegram thread. (The webapp-defined `exercise` agent that backed the library's
-  add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is set; model
-  via `CHAT_MODEL`.
+  `exclude` (drop these) or `include` (keep only these SET of names) — the journal
+  panel passes the frozenset.) (The webapp-defined `exercise` agent that backed the
+  library's add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is
+  set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
   `chat.js`, manifest); the app is an installable PWA. `static/confetti.js` is the
   app's one celebratory flourish (`window.Confetti.burst(el)`, thrown at a lifting PR
@@ -307,58 +298,6 @@ There is no exercise-selection or progression logic in the server either.
   `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
   (config + why in `webapp/tailwind.config.js`). Inter and `marked` are
   self-hosted (`static/fonts/`, `static/vendor/`) for the same reason.
-- `webapp/telegram.py` — the **Telegram bots**: four handles (`journal`, `intake`,
-  `notes`, `trainer`), each a third front end on `chat.py`'s agent loop beside the
-  browser panel and the connectors. No new dependency (`httpx` was already here), no
-  schema change, no second process — a bot is a `BOTS` row binding a token env var to
-  a `tg_*` agent, and one whose token is unset simply doesn't start, so the four ship
-  one at a time. Off unless `TELEGRAM_MODE` is `webhook` (prod) or `polling` (dev —
-  the only mode that reaches a laptop's `journal_dev.db`).
-  **The bots' tool lists are DERIVED, not listed**: `CONNECTOR_HIDDEN_TOOLS` plus the
-  three domain prefixes partition `server.mcp`'s tools exactly, so this is the second
-  consumer of the fact that a domain prefix is load-bearing (see the naming
-  convention below), and a tool added tomorrow lands in the right bot with no edit
-  here. That derivation only holds while the partition is exact, so
-  `chat.assert_tool_partition()` FAILS THE BOOT otherwise — an unprefixed tool with no
-  hidden-set entry would be silently unreachable from every bot, which is the quiet
-  kind of wrong. The one genuinely new failure mode is CONCURRENCY: `run_turn` appends
-  to a shared list, so two messages seconds apart would interleave into an invalid
-  tool_use/tool_result pairing that the API then 400s on forever — hence a per-chat
-  `asyncio.Lock` held for the whole turn, and an `update_id` dedupe set, since the
-  webhook returns 200 BEFORE the work and Telegram retries anything slow (a retry is
-  how one burrito gets logged twice). Replies are `parse_mode=HTML`, never MarkdownV2
-  (18 characters to escape, and one stray `.` is a 400 that silently EATS the
-  reply). HTML needs only `&`/`<`/`>` handled, which `_html` does by
-  escape-then-restore over a tag whitelist — blanket-escaping would turn the
-  model's `<b>` into visible `&lt;b&gt;`, blanket-trusting means one "mac & cheese"
-  is a 400. It can still emit UNBALANCED tags, so `_send` retries once with tags
-  stripped: a rejected message is a LOST message, and worse-looking beats missing.
-  Polling REFUSES to start when the bot already has a webhook registered: a token
-  is the same string everywhere, Telegram refuses `getUpdates` while a webhook is
-  set, so a laptop started on a PRODUCTION token would unregister the deployment
-  and silently take delivery over — the failure mode being prod going quiet with
-  nothing in its own logs. Separate dev tokens are the real fix; the refusal is
-  the guard rail.
-  Replies RENDER rather than arrive as
-  prose: a table/heading/list/quote in the model's markdown is handed to
-  `sendRichMessage` as `rich_message.markdown` and Telegram parses it natively
-  (real tables, checkboxes, and `<details>` collapsibles for long read-backs),
-  while a one-line confirmation stays a plain message — the format earns its
-  place only when there are rows to render. Two API facts worth not
-  re-learning, both found by probing and both invisible until something renders
-  wrong: Telegram SILENTLY IGNORES unknown fields (so a probe that "accepts" a
-  parameter proves nothing — `parse_mode` on a rich block is accepted and
-  dropped, which is how literal `<b>` tags reached a chat), and `markdown` and
-  `blocks` are MUTUALLY EXCLUSIVE with blocks winning, which is why a map is its
-  own message rather than part of the reply above it.
-  **Nudges are the one thing this transport can do that the connectors and the PWA
-  can't — start the conversation** (`TELEGRAM_NUDGES=bot@HH:MM`, Pacific, opt-in).
-  A nudge is a real agent turn, not a canned string, so the usual split holds: the
-  server decides WHEN, the model decides WHETHER and WHAT and may reply `SKIP` to
-  send nothing — a reminder that fires regardless of whether it has anything to say
-  is one you turn off within a week. Anything already past at boot counts as fired,
-  since a 4pm nudge delivered at 6pm is worse than none and a crash-looping
-  container would otherwise nudge every boot.
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.
@@ -400,7 +339,7 @@ There is no exercise-selection or progression logic in the server either.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # local (Claude Desktop, stdio) — stdio runs ONE server; pick it with MCP_SERVER:
-.venv/bin/python server.py                       # journal+eating (default)
+.venv/bin/python server.py                       # journal+notes (default)
 MCP_SERVER=trainer .venv/bin/python server.py    # trainer
 MCP_SERVER=teacher .venv/bin/python server.py    # teacher (the learning log)
 # remote, all endpoints in one process (this is what the Dockerfile runs):
@@ -420,17 +359,13 @@ Google redirect URIs: `<PUBLIC_URL>/auth/callback` and, per secondary host that 
 set, `<TRAINER_PUBLIC_URL>/auth/callback` / `<TEACHER_PUBLIC_URL>/auth/callback`. See the auth section. Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
-(show the logout control in the UI), the `TELEGRAM_*` set (`TELEGRAM_MODE`,
-`TELEGRAM_TOKEN_{JOURNAL,INTAKE,NOTES,TRAINER}`, `TELEGRAM_ALLOWED_CHAT_IDS`,
-`TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_REPLY_TTL`; see README "Telegram" — note the
-allowlist FAILS CLOSED, the opposite of `JOURNAL_ALLOWED_EMAILS`, because it is the
-only identity gate on that path), `GEOCODE_USER_AGENT` (the User-Agent
+(show the logout control in the UI), `GEOCODE_USER_AGENT` (the User-Agent
 `notes_geocode` sends to Nominatim; a generic default, override to identify your
 deploy), and `BACKUP_TOKEN` (strong random token that unlocks
 the headless backup download at `GET /export/journal.db` for a cron `curl` — bearer /
 `X-Backup-Token` / `?token=`; unset = browser-session-only; see README "Backup &
-restore"), and `WIDGET_TOKEN` (unlocks `GET /api/today.json` — today's nutrient sums
-only — for an ambient display like the SwiftBar plugin in `scripts/swiftbar/`; a
+restore"), and `WIDGET_TOKEN` (unlocks `GET /api/today.json` — today's water/protein
+sums only — for an ambient display like the SwiftBar plugin in `scripts/swiftbar/`; a
 SEPARATE token from `BACKUP_TOKEN` on purpose, since it lives on every device that
 wants a glanceable figure while `BACKUP_TOKEN` downloads the whole journal; see README
 "Menu-bar macros"). The web app auto-loads `.env` (see `.env.example`); shell-exported
@@ -514,147 +449,48 @@ working.
 - `mentions` — one per reference in an entry; `surface_form`, `person_id` (NULL while
   pending), `status`, `context_snippet`.
 - `groups` + `person_groups` — explicit circles (family, colleagues, …), many-to-many.
-- `drinks` — LEGACY, dormant. Alcohol is an intake item now (see `intake_items`).
+- `drinks` — LEGACY, dormant. Alcohol was folded into `intake_items` and is no longer
+  tracked at all.
   The TABLE is kept as the fold-in migration's source and the one copy of the
   per-day `kind` ("beer, wine"), which the item rows have no column for; the
   CODE that read and wrote it (`log_drinks`/`get_drink_summary`/`update_drink`,
   and `_delete_record`'s `"drink"` kind) is DELETED. Dormant data costs nothing;
   dormant code is a trap — a live-looking reader of this table is what left the
   /graphs drinks series empty for months after the fold. Nothing reads it.
-- `intake_items` — the INTAKE log: **one row per thing consumed**. A sandwich is a
-  row, a beer is a row, a 12oz glass of water is a row — food, alcohol and water are
-  the same kind of fact, so they share one table, one tool path, and one set of
-  columns. There is no per-nutrient special case anywhere above this table.
-  `intake_log` inserts ONE item (the model calls it once per thing; `position` is the
-  server-assigned order within the day, the same append as entries' `day_position`);
-  there is deliberately NO time-of-day on an item — a day is a day, and `position`
-  already carries the sequence (a short-lived `at_time` column was tried and removed;
-  a DB that ran that version keeps the orphan column, which nothing reads — every
-  INSERT here names its columns, so it's inert either way);
-  `intake_update` edits one by id; `intake_delete` removes one.
-  **Day totals are DERIVED, never stored** (`SUM ... GROUP BY food_date`). That's the
-  load-bearing decision: a stored total drifts from the items it claims to summarize,
-  and correcting one item would mean re-deriving the day by hand — i.e. asking an LLM
-  to do arithmetic. With sums, "that bowl was 600, not 1100" is one UPDATE and every
-  total follows. The nutrient columns (`NUTRIENTS` — calories, protein/carbs/fat,
-  `sodium_mg`, `fiber_g`, `standard_drinks`, `water_oz`) are per-item and OPTIONAL,
-  staying NULL until filled in, so a day described only in words is "unestimated",
-  never a zero-calorie day; a nutrient no item carries is ABSENT from the day's
-  totals rather than 0. Range-checked by the shared `_bad_nutrients` (both
-  `intake_log` and `intake_update`, so the two can't drift): no negatives, and a
-  generous per-item ceiling (`NUTRIENT_MAX`) purely as a typo guard — since day
-  totals are DERIVED, one absurd row silently skews that day and every average
-  built on it, nowhere near the item that caused it. `intake_summary`'s averages are per nutrient over the days
-  that carry it, so each has its OWN denominator (returned with `logged_days`). The
-  `NUTRIENTS` tuple drives every sum/average/render site, so adding a nutrient is one
-  tuple entry + an `ALTER TABLE` in `init_db` + a unit label in `macros.eating_block`.
-  Same split as everywhere: turning "a chipotle bowl" into calories is the MODEL's
-  estimate, made in conversation; there is no food database in the server — but the
-  intake log IS its own food database for repeats: `intake_find_past(query)` fuzzily
-  searches everything ever logged (token-level scoring — exact/substring/Jaro-
-  Winkler/phonetic per query word — grouped by identical item text, latest numbers
-  win, ranked by match quality with a small ~30-day-half-life recency bonus so this
-  week's leftovers outrank last month's near-twin). Both similarity rules are
-  LENGTH-GUARDED, because the defaults scored junk above the 0.74 floor and this
-  tool's whole job is telling a genuine repeat from a near-twin: the substring
-  rule needs 3+ characters (ungated it paid 0.92 for a single letter, so the query
-  "a" scored a PERFECT 1.0 against "half a medium eggplant"), and Jaro-Winkler is
-  damped when the two tokens' lengths are far apart (its prefix bonus scored
-  "chipotel"≈"pot" at 0.792, which put hot pot vegetables top of a search for a
-  chipotle bowl). The model REUSES those settled
-  numbers when it judges a hit is genuinely the same thing, estimates fresh when it
-  isn't — deliberately a read tool + model judgment, NOT a curated catalog: a
-  `foods` entity table was tried and rejected because the diet varies within brands
-  (which Chobani?) and a wrong-but-confident auto-resolve is worse than a
-  re-estimate; the log needs no gardening and is always as current as the last
-  meal. And day-so-far questions are answered from the DB, never from a chat-side
-  running tally (`intake_log` returns `day_totals` on every write; other clients —
-  the phone app, another conversation — may be writing the same day); both
-  contracts live in the server `instructions` + the intake docstrings.
-  Both write tools pair those totals with `targets` (`_day_targets`) — the stored
-  `eating_profile.targets`, hoisted out of the profile that only `intake_summary`
-  returned. The reason is that the CAPTURE surface and the VIEWING surface are
-  different screens: a sum with nothing to read it against ("sodium 2100") is a
-  number the model can report but not judge, so it either says nothing useful or
-  spends a second `intake_summary` call on a goal already in the DB. Malformed
-  entries are skipped exactly as `data.nutrient_targets()` skips them (`_bad_targets`
-  guards the write; a hand-edited blob must not fail a log call). Just the numbers —
-  there is no ceiling/floor direction to return, here or in the webapp (see the
-  `intake_items` row).
-  The webapp shows the intake log on its OWN `/food` page (`data.food_days` +
-  `macros.eating_block`) — one line per item: the item (led by its circled index) and
-  its calories + protein. Those two figures are on the line because they're what the
-  day is steered by; the other five would just rebuild the rings in worse form, so
-  they stay one click away in the detail modal.
-  The journal feed carries entries — plus, at the right edge of each day's date, a
-  fork-and-knife button opening that day's DISHES, no figures
-  (`data._intake_names_by_day`): "that was the night at Gjelina" is how you place a
-  day, and putting macros there would turn the journal into a tracker. Bare
-  water/alcohol taps have no text, so they're dropped from that list. The modal
-  itself is one shared partial (`templates/_detail_modal.html`, included by both
-  pages) with a single delegated handler, so a page adds a target just by rendering
-  `data-detail` on an element. `/food` is deliberately OUTSIDE the journal lock
-  (glancing at macros shouldn't need the knock) and has no chat panel. Its CONTENT is
-  STRICTLY READ-ONLY: intake has exactly ONE write path, the MCP tools (the in-app
-  chat panel counts — it calls the same functions). There is no form, no tappable
-  ring, no /intake write route; the browser only renders what was logged. The one
-  thing it writes is the TARGETS popover (below) — goals, not intake, the same
-  carve-out a collection page's Display popover makes. Water and alcohol rings still
-  always
-  render, dashed when unlogged, because "no water yet" is worth seeing on a day you
-  mean to hit a gallon. Each nutrient renders as a ring with BOTH
-  its summed figure (unit included: "1400mg") and a short label ("sod") inside it
-  (`macros.nutrient_ring`), read against `data.nutrient_targets()` — the stored
-  eating profile's `targets` numbers merged over the `data.NUTRIENT_TARGETS`
-  defaults, resolved per render. The NUMBERS live in the DB (settings
-  `eating_profile`) so the rings and the model coach against the same goals, and
-  they have TWO DOORS onto that one row: `intake_set_profile` (the model, in chat)
-  and `server.set_nutrient_targets` (the user, via `POST /food/targets` ← the page's
-  **Targets** popover). Two doors, one copy — the second exists because the screen
-  where you NOTICE a target is wrong is the one drawing the rings, and the only fix
-  used to be opening a chat to say it in a sentence. The website door differs in two
-  ways, both because it edits numbers rather than prose: it merges per NUTRIENT
-  (`intake_set_profile` replaces each top-level key wholesale, which for a form would
-  mean every unfilled box quietly clearing a goal), and `None` DROPS an override back
-  to the default — so a blank input hands a goal back instead of zeroing it, and the
-  popover shows a set number in the input with the default only as a placeholder.
-  **A target is JUST A TARGET — there is no ceiling/floor direction anywhere**, and
-  the deletion is the design. Direction used to be declared per nutrient
-  (`data.NUTRIENT_CEILINGS`) and drove a second ring color, which meant every
-  consumer had to carry the flag — the rings, `/api/today.json`, the SwiftBar
-  plugin's red/green, the popover's cap/goal labels — while the MODEL, which sees
-  these same numbers in `intake_log`'s `targets`, had no way to get it. So the app
-  could turn a ring clay at 90g of fat while the chat read it as 120% of a goal and
-  encouraged more. Rather than plumb direction to a fifth consumer, it's gone: one
-  fill color, every nutrient, arc capped at a full circle. Where a target really is
-  a cap, or is informational only, that goes in the eating profile's `targets_note`
-  — edited in this page's own Targets popover, alongside the numbers it describes —
-  which can phrase the nuance a boolean was flattening, and which both the rings'
-  owner and the model already read. In WORDS, never repeating the figure: the note
-  writes `{calories}` and the live number is substituted on read (see `settings`). An
-  untargeted nutrient (fat, until you give it one) still draws a DASHED track with
-  no arc: an empty solid ring would read as "0% of goal" rather than "no goal set".
-  A tapped
-  top-up has no text, so it's named from what it carries ("16oz water"). Four
-  things a rendered day can't say for itself — an
-  item's OWN nutrients (the rings show the day summed), a ring's TARGET (an arc can
-  only imply it), what the day's DRINKS cost in calories (a count of standard drinks
-  is the same "2" for two light beers and two margaritas — `data._day_nutrition`
-  derives it by summing the calories of the items carrying alcohol, and withholds
-  the share-of-day figure while any of them is unestimated, since a partial numerator
-  over the same partial denominator overstates it), and the day's item NOTES — are
-  all one CLICK away, into a single
-  display-only modal in `food.html`. Each click target carries its whole payload
-  as JSON in `data-detail` (`{kicker, title, rows, note}`), so the modal needs no
-  fetch and no lookup, and one delegated handler serves them all. Hover just firms
-  the text/figure to black — no tooltips, no underlines, nothing that would fight
-  the prose. The circled "i" (`macros.note_button`) at the end of the ring row is
-  the notes' target.
-- `nutrition` — LEGACY, dormant. The first shape of the intake log: one row per day,
-  with a "; "-joined summary string and stored day totals. Superseded by
-  `intake_items` (see above) because a stored total can't be corrected without
-  arithmetic. Its rows fold into `intake_items` once, one item per day, on the first
-  `init_db` after this change; the table is kept, not dropped.
+- `intake_items` — the WATER/PROTEIN log, on the TRAINER server: **one row per thing
+  consumed**. It used to be a full food tracker (calories, macros, sodium, fiber,
+  alcohol) on the journal connector, with a fuzzy past-food lookup, an eating-profile
+  prose layer and a Telegram bot; the user stopped tracking food, so it was cut to
+  the two figures still kept (`NUTRIENTS = ("protein_g", "water_oz")`) and moved onto
+  `trainer_mcp` as `log_intake` / `get_intake` / `update_intake` +
+  `delete_record(kind="intake")`. The other nutrient columns are DORMANT — kept with
+  their history, never read or written; `_LIVE_INTAKE` filters every read to rows
+  carrying one of the two live figures, so a legacy calories-only row is invisible
+  rather than an empty line. No time-of-day: `position` is the server-assigned order
+  within the day (the same append as entries' `day_position`).
+  **Day totals are DERIVED, never stored** (`SUM ... GROUP BY food_date`) — the
+  load-bearing decision that survived the cut: correcting one item is one UPDATE and
+  every total follows, with no arithmetic asked of the model. A figure no item carries
+  is ABSENT from the day's totals rather than 0 ("not logged" ≠ zero). Range-checked by
+  the shared `_bad_nutrients` (no negatives; a per-item `NUTRIENT_MAX` typo guard,
+  since one absurd row silently skews the day). Write returns carry `day_totals` plus
+  `targets`, and `get_fitness_briefing` carries `intake_today`, so the trainer answers
+  "how's my water" from the DB, never from a chat-side tally.
+  **Targets** live in `settings.eating_profile.targets` and have ONE door:
+  `server.set_nutrient_targets` (NON-tool, website-only) behind `/food`'s **Targets**
+  popover, merging per nutrient with `None` handing a goal back to the
+  `data.NUTRIENT_TARGETS` default. The model only reads them. A target is just a
+  target — no ceiling/floor direction anywhere. (The rest of the eating_profile blob —
+  goal/context prose, `targets_note` — is dormant from the food-tracker days.)
+  The webapp page is `/food` ("Water & protein" in the nav): outside the journal lock,
+  no chat panel, STRICTLY READ-ONLY for content — one line per item and two rings
+  (`macros.eating_block` / `nutrient_ring`, unit labels in `macros.NUTRIENT_UNITS`),
+  each item/ring opening the shared display-only detail modal
+  (`templates/_detail_modal.html`). `/api/today.json` (WIDGET_TOKEN) serves the same
+  two sums for the SwiftBar plugin.
+- `nutrition` — LEGACY, dormant. The first shape of the intake log: one row per day.
+  Its rows fold into `intake_items` once on the first `init_db` (spelled-out legacy
+  column list, so the fold stays lossless); the table is kept, not dropped.
 - `exercises` — the user's OWN movements, nothing else. **There is no library.** It used
   to be ~870 movements pre-loaded from free-exercise-db with technique notes, cautions,
   rep images and a three-layer rotation ⊆ hearted ⊆ library curation; the user retired
@@ -981,8 +817,7 @@ working.
   everywhere else (`notes_save`, `notes_file`), so `collections_list` and
   `collections_save` both return the `id` that this one kind needs — without it a
   collection was undeletable over MCP — reachable by name but not by handle.
-  The write returns carry three FRAMES, for the same capture-here/read-there split
-  the intake `targets` answer. `notes_save`/`notes_file` report `unfilled_fields`
+  The write returns carry three FRAMES, for the capture-here/read-there split. `notes_save`/`notes_file` report `unfilled_fields`
   (`_unfilled_fields`) — declared fields the item has no value for, the exact mirror
   of `stranded` (values with no field) and reported for the same reason: the return
   said only where the item landed, so nothing ever mentioned that a collection wanted
@@ -1182,46 +1017,14 @@ working.
   fields stay few) live in the journal server `instructions`.
 - `settings` — generic JSON KV; holds `profile` (`goals`, `split`, `session`,
   `injuries`, `coaching`, free-form beyond those) merged via `update_profile` and surfaced by `get_fitness_briefing`,
-  and `eating_profile`
-  (its journal-side twin: durable eating facts — goals, stats, coaching context —
-  plus the one structured key `targets`, a flat {nutrient: number} dict of daily
-  goals) merged via `intake_set_profile` and surfaced by `intake_summary`, so a new
-  conversation needs no pasted preamble. The webapp's rings read `targets` too
-  (`data.nutrient_targets()` merges it over the display defaults) — one source of
-  truth for goals, and one number per nutrient with no direction attached. That's also why
-  `targets` has a SECOND writer, `server.set_nutrient_targets` (a NON-tool,
-  website-only path behind `/food`'s Targets popover — see `intake_items` above):
-  the goals are the one part of the profile the user reads on a screen and wants to
-  change there, and it writes this same key rather than keeping a display copy.
-  It merges per nutrient (null drops back to the default) instead of replacing the
-  key wholesale, since a form submits every box at once.
-  **A number lives in `targets` and NOWHERE ELSE — the profile's PROSE must never
-  spell one out.** It was learned the expensive way: with direction deliberately
-  moved out of the schema and into prose ("a target is just a target"), nothing
-  stopped the prose from restating the NUMBER as well — so the blob ended up
-  carrying `targets.protein_g` 140, a `targets_note` saying "150 is a floor, 120 the
-  hard minimum", and a fake-structured `protein_floor_g` of 120: three answers to one
-  question, only the first of which the popover could change. Prose refers to a
-  target by PLACEHOLDER instead — `{calories}` — and `_render_targets_prose`
-  substitutes the live number into every string value on the way OUT
-  (`intake_summary`'s `profile`); the stored blob keeps the placeholder, so the
-  sentence follows the target instead of quoting it. A placeholder for an unset
-  nutrient renders `(no target set)` rather than a number, because the server can't
-  see the webapp's DISPLAY defaults (`data.NUTRIENT_TARGETS`) and inventing one here
-  would be the second copy all over again. Two guards, both deterministic and shared
-  by both doors: `_bad_targets_note` REJECTS an unknown placeholder (closest-name
-  suggestion, the `_bad_icon` habit), and `_note_literals` returns `stale_prose`
-  ADVISORY (never blocking, like `unfilled_fields`) when the note spells out a number
-  a target already carries. So `targets_note` is the one PROSE key with two doors
-  too — the popover edits it in the same round trip as the numbers, on purpose: the
-  note and the numbers drifted apart precisely because changing one never showed you
-  the other. There are no floors or ceilings anywhere, only targets. The rest of the
-  blob is free-form, but `targets` is VALIDATED (`_bad_targets`, shared by both writers:
-  a real nutrient key,
-  a positive number, closest-name suggestion on a typo) precisely BECAUSE the
-  rings read it: `nutrient_targets()` skips any override that isn't well-formed,
-  so an unvalidated write reported success while the ring you were aiming at
-  silently kept the old number, with nothing anywhere to say why.
+  and `eating_profile`, whose one live key is `targets` — the flat {nutrient: number}
+  water/protein goals, written only by `server.set_nutrient_targets` (/food's
+  Targets popover), validated by `_bad_targets` (a real nutrient key, a positive
+  number — the rings silently skip anything else, so an unvalidated write would
+  report success while the ring kept the old number), and read by the rings
+  (`data.nutrient_targets()`, merged over the display defaults) and the trainer's
+  intake returns. Its other keys (goal/context prose, `targets_note` with its
+  `{calories}` placeholders) are dormant from the food-tracker days.
   **The trainer has exactly TWO homes for guidance: the code's `instructions` for the
   RULES, the `profile` for the PERSON.** It used to have five — the instructions, a
   `DEFAULT_COACHING` string in code that filled `coaching` when empty, the profile,
@@ -1238,8 +1041,8 @@ working.
   initialize handshake). There are NO generic preference defaults in code: an empty
   profile makes the trainer ASK (the instructions' SETUP rule) rather than coach to
   a stranger's numbers, because a default the user never chose is exactly the kind of
-  quiet second copy this cleanup removed. Surface blurbs (`_TRAINER_BLURB`,
-  `_tg_blurb`) describe the SCREEN only — never how to train. `profile.coaching`
+  quiet second copy this cleanup removed. Surface blurbs (`_TRAINER_BLURB`)
+  describe the SCREEN only — never how to train. `profile.coaching`
   still has two doors onto one copy: `update_profile` (the model, when the user asks
   in so many words) and `server.set_trainer_profile` (the /trainer page's legacy
   **Coaching** popover); `update_profile` drops a key sent as null.

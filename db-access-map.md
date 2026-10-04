@@ -6,8 +6,8 @@ Three lanes, each with one front door. Everything below is checked against
 | Lane | Where I do it | Behind the tap-lock? |
 |---|---|---|
 | **Journal** — entries, people | Web UI → journal chat | ✅ yes |
-| **Training** — workouts, exercises | Web UI → **trainer** chat + plan card | ❌ no |
-| **Food** — intake, notes, collections | **Claude, over MCP** | n/a |
+| **Training** — workouts, exercises, water & protein | Web UI → **trainer** chat + plan card, or the trainer connector | ❌ no |
+| **Notes & collections** | **Claude, over MCP** | n/a |
 
 ---
 
@@ -49,7 +49,8 @@ structural, not a filter.
   `swap_exercise` · `reorder_plan` · `finish_workout` ·
   `get_exercise_history` · `get_personal_records` · `get_fitness_briefing` ·
   `find_exercises` · `save_exercise` · `set_rotation` · `set_hearted` ·
-  `update_profile` · `delete_record(workout|set)`
+  `update_profile` · `delete_record(workout|set|intake)` ·
+  `log_intake` · `get_intake` · `update_intake` (water & protein)
 - **Plan card, no chat** — tap-to-log sets, ↑/↓ reorder, remove, discard, finish
   (`complete_set`, `reorder_plan_exercises`, `remove_plan_exercise`,
   `discard_plan`, `clear_plan_set`, `pr_for_set`)
@@ -57,33 +58,31 @@ structural, not a filter.
   (`create_exercise`); ★/♥ toggles; archive
 - **Coaching popover** — `set_trainer_profile` → `settings.profile.coaching`
 
+- **`/food` Targets popover** — `set_nutrient_targets` →
+  `settings.eating_profile.targets` (water/protein goals; the `/food` page itself
+  is read-only)
+
 Tables: `workouts` · `sets` · `exercises` · `exercise_muscles` ·
-`exercise_aliases` · `settings.profile`
+`exercise_aliases` · `settings.profile` · `intake_items` (water_oz, protein_g) ·
+`settings.eating_profile`
 
 ---
 
-## Lane 3 — Food, notes & collections (MCP only)
+## Lane 3 — Notes & collections (MCP only)
 
 Photos and text to Claude; Claude writes over the connector. Never typed into
 the web UI.
 
-**The code agrees — `/food` content is strictly read-only.** No form, no
-tappable ring, no `/intake` write route. The browser only renders what was
-logged.
-
-- **Eating** — `intake_log` · `intake_update` · `intake_delete` ·
-  `intake_summary` · `intake_find_past` · `intake_set_profile`
 - **Notes** — `notes_save` · `notes_update` · `notes_file` · `notes_get` ·
   `notes_list` · `notes_search` · `notes_delete` · `notes_geocode`
 - **Collections** — `collections_list` · `collections_save` ·
   `collections_delete` · `collections_list_icons`
 
-Tables: `intake_items` · `items` · `items_fts` · `collections` ·
-`settings.eating_profile`
+Tables: `items` · `items_fts` · `collections`
 
-The web UI's job here is **reading**: `/food` rings, `/collections` grid, item
-pages. Plus two popovers that write *goals and layout*, never content —
-**Targets** (`set_nutrient_targets`) and **Display** (`set_collection_display`).
+The web UI's job here is **reading**: `/collections` grid, item pages. Plus the
+**Display** popover (`set_collection_display`), which writes layout, never
+content.
 
 ---
 
@@ -96,8 +95,8 @@ Four things that are part of how this gets used, with no lane above:
    write path that exists** — every hand-entry route was deleted, and there's no
    MCP tool. The trainer can *read* the trend (`get_fitness_briefing`) and
    cannot log one.
-2. **Reading on the website.** Food is captured in Claude but *read* on
-   `/food`; same for `/collections`, `/graphs`, `/journal`, `/workouts`,
+2. **Reading on the website.** Notes are captured in Claude but *read* on
+   `/collections`; same for `/food`, `/graphs`, `/journal`, `/workouts`,
    `/weight`. Capture-here/read-there is the standing shape — it's why the
    connector's writes return a `url`.
 3. **The plan card is a write surface without a chat.** Most sets get logged by
@@ -109,12 +108,14 @@ Four things that are part of how this gets used, with no lane above:
 
 ## Lane boundaries — all three now enforced
 
-**Fixed 2026-08-23: the journal chat no longer carries the food tools.**
+**Fixed 2026-08-23: the journal chat no longer carries the connector's tools.**
+(2026-10-04: the food tracker was cut to water + protein and moved to the trainer
+server, so the connector half is now notes + collections only.)
 `_AGENTS["journal"]` now takes `"include": server.CONNECTOR_HIDDEN_TOOLS`, so
 the panel and the connector are exact **complements** over one FastMCP instance:
 
 ```
-journal instance ─┬─ connector /mcp  →  18 tools : intake_* notes_* collections_*
+journal instance ─┬─ connector /mcp  →  12 tools : notes_* collections_*
                   └─ app chat panel  →  15 tools : entries + people
                                         (0 overlap, verified)
 ```
@@ -122,7 +123,7 @@ journal instance ─┬─ connector /mcp  →  18 tools : intake_* notes_* coll
 Stated as the complement of one frozenset rather than a second hand-kept list,
 so the halves can't drift: adding a journal tool means adding its name to
 `CONNECTOR_HIDDEN_TOOLS` (already the rule) and it lands on both sides at once;
-adding an intake or notes tool needs no chat change at all.
+adding a notes tool needs no chat change at all.
 
 The prompt was trimmed to match — no describing tools that aren't there — and
 `_JOURNAL_ONLY_BLOCK` handles the cost: a meal mentioned mid-journal is now
@@ -141,4 +142,8 @@ in the web UI today.
 `nutrition` (folded into `intake_items`) ·
 `collections.display_hint` (folded into `display` JSON) ·
 `intake_items.at_time` (orphan column) ·
+`intake_items` calories/carbs_g/fat_g/sodium_mg/fiber_g/standard_drinks (food
+tracker retired 2026-10-04; only water_oz + protein_g are live) ·
+`settings.eating_profile` prose keys (goal/context/targets_note — only `targets`
+is still read) ·
 `items.tags` (dropped, `items_fts` rebuilt)

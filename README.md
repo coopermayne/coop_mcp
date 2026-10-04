@@ -66,7 +66,7 @@ Edit `claude_desktop_config.json` (Settings → Developer → Edit Config):
 ```
 
 Use absolute paths. The two entries run the same `server.py` against the same DB; over
-stdio each launch serves one MCP server, selected by `MCP_SERVER` (the journal+drinking
+stdio each launch serves one MCP server, selected by `MCP_SERVER` (the journal+notes
 tools, or — with `MCP_SERVER=trainer` — the training tools). Register only `journal` if
 you don't want the trainer tools loaded. Restart Claude Desktop; the tools appear in the
 tools menu.
@@ -104,16 +104,16 @@ already carry most of it; this just sets the posture.
 >    `get_related_people`.
 > Keep confirmations to one line. Don't read entries back to me unless I ask.
 
-## Drinking + personal trainer
+## Personal trainer (+ water & protein)
 
-The same codebase also tracks drinking and acts as a personal trainer — same rule as
-the journal: **no LLM in the server.** It stores drinks/workouts and computes
-deterministic aggregates (per-muscle recency, sober streaks); the coaching judgment
+The same codebase also acts as a personal trainer — same rule as the journal: **no LLM
+in the server.** It stores workouts (and a small daily water/protein log) and computes
+deterministic aggregates (per-muscle recency, day totals); the coaching judgment
 — next weight, what to rest, which exercises, how to explain form — happens in the
 conversation, from what the retrieval tools return.
 
-**The trainer is a separate MCP server.** Drinking stays on the journal server, but the
-training tools live on their own FastMCP instance sharing the same DB. Connect it as its
+**The trainer is a separate MCP server.** The training tools — and the water/protein
+log — live on their own FastMCP instance sharing the same DB. Connect it as its
 own connector and give it its own Claude **Project**, so a journaling chat doesn't load
 the workout tools and vice-versa — each conversation carries a smaller, more relevant
 tool set. Use the trainer posture below as that project's custom instructions.
@@ -155,38 +155,18 @@ A subject can also carry an **article** — background reading the model writes
 the cards on the subject's `/learn` page. The article is for absorbing detail
 and big picture; the facets stay the tested key points.
 
-- **Intake: one row per thing consumed.** A sandwich is a row, a beer is a row, a
-  12oz glass of water is a row — food, alcohol and water are the same kind of fact, so
-  they share one table and one code path. `intake_log` logs ONE item (call it once per
-  thing) with whatever nutrients are known: calories, protein/carbs/fat, sodium, fiber,
-  `standard_drinks`, `water_oz`. Every number is optional and stays NULL until filled
-  in, so a day described only in words never reads as zero.
-
-  **Day totals are derived, never stored** — they're a SUM over the day's items. That's
-  what makes corrections cheap: "that bowl was 600, not 1100" is
-  `intake_update(item_id, calories=600)`, with no recomputing of the day, and
-  removing something is `intake_delete(item_id=…)`. `intake_summary`
-  returns each day's items *with ids* plus its totals, per-nutrient averages (each
-  over the days that carry it), and the stored eating **profile** (targets, goals,
-  coaching context — kept current with `intake_set_profile`, so a new conversation
-  needs nothing pasted in). The estimating is the model's job: there's no food
-  database in the server. But the log itself is one: `intake_find_past("chobani
-  drink")` fuzzily searches everything ever logged (spelling, word order and partial
-  names all land), grouped by item text with the latest numbers, times logged, and
-  last date — ranked by match quality with a recency lean, so this week's leftovers
-  surface first. The AI reuses those settled numbers when a hit is genuinely the
-  same thing and estimates fresh when it isn't — no catalog to curate, and it's
-  always as current as the last meal.
-
-  In the web app, each nutrient is a ring on the day's block showing the summed total
-  against its target (the stored profile's `targets` over the built-in defaults),
-  editable from the page's **Targets** popover — it writes the same profile the AI
-  coaches from, so both sides read one set of goals; a blank box hands that goal back
-  to its default. The intake itself is **read-only** here: logging has exactly one
-  path, the MCP tools (or the in-app chat panel, which calls the same ones). Alcohol and water have
-  no tools of their own; they're nutrients on an item. (The old `drinks` and day-level
-  `nutrition` tables are dormant: their rows fold into the intake log once,
-  automatically, on first start.)
+- **Water and protein — the one intake log kept.** `log_intake` logs ONE thing consumed
+  with `water_oz` and/or `protein_g` (plus an optional label like "protein shake"); it's
+  one row per item, and **day totals are derived, never stored** — a SUM over the day's
+  items — so "that shake was 30g, not 50" is `update_intake(item_id, protein_g=30)` with
+  no recomputing, and removing one is `delete_record(kind="intake")`. `get_intake` reads
+  days back with ids, totals and averages; today's totals also ride along in
+  `get_fitness_briefing` as `intake_today`. Daily targets are set on the web app's
+  `/food` page (**Targets** popover; blank hands a goal back to its default) and the
+  trainer only reads them. The page itself is read-only: two rings plus the day's items.
+  (This used to be a full food tracker — calories, macros, sodium, fiber, alcohol. Those
+  columns and the legacy `drinks`/`nutrition` tables are kept, dormant, with their
+  history; nothing reads them.)
 
 - **Your exercises, no library.** The trainer knows only the movements you do (active)
   and have done (archived, with a note on why you stopped). Nothing is pre-loaded and no
@@ -257,7 +237,7 @@ HTTP at `/mcp` (see the Dockerfile). On Coolify:
    the same DNS, and set the env var `TRAINER_PUBLIC_URL=https://TRAINER-DOMAIN`. The
    one process then serves the journal on `YOUR-DOMAIN` and the trainer on
    `TRAINER-DOMAIN`, each with its own root OAuth.
-5. Your MCP URLs are `https://YOUR-DOMAIN/mcp` (journal + drinking) and
+5. Your MCP URLs are `https://YOUR-DOMAIN/mcp` (journal + notes) and
    `https://TRAINER-DOMAIN/mcp` (training).
 6. In a browser at claude.ai → Customize → Connectors → Add custom connector → paste a
    URL. Add the journal one for sure; add the trainer one as a SECOND connector if you
@@ -366,26 +346,6 @@ If the connector shows "disconnected" after adding Google: usually the redirect 
 Google doesn't exactly match the host's `/auth/callback`, or `PUBLIC_URL` /
 `TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp` (it should be the bare origin).
 
-## Verifying the intake migration
-
-Alcohol used to live in its own `drinks` table, then briefly on a day-level
-`nutrition` row; it's now an item in `intake_items` like everything else consumed.
-Both folds run automatically inside `init_db()` at startup, once each (guarded by
-flags in `settings`), and neither deletes anything — the old tables are left in place.
-
-Before deploying that change against a database with real drinking history, prove it
-on a copy:
-
-```bash
-curl -H "X-Backup-Token: $BACKUP_TOKEN" https://YOUR-DOMAIN/export/journal.db -o prod.db
-python3 scripts/verify_intake_migration.py prod.db
-```
-
-It copies the file, runs the real `init_db()` on the copy twice (so a redeploy is
-covered too), and compares alcohol day-by-day before and after. Exit 0 and "OK" means
-every drinking day survived with the same total; any `LOST`/`CHANGED`/`ADDED` line
-means don't deploy. Your original file is never opened for writing.
-
 ## Backup & restore
 
 The whole life log is one SQLite file (`JOURNAL_DB`, on the `/data` volume in prod). If
@@ -434,7 +394,7 @@ between "should log that" and actually logging it is one glance wide.
 
 Two pieces: a read-only endpoint on the server, and a plugin script on the Mac.
 
-**1. Server.** `GET /api/today.json` returns today's nutrient sums plus the display
+**1. Server.** `GET /api/today.json` returns today's water/protein sums plus the display
 targets they're read against — no entries, no people, no items. Set `WIDGET_TOKEN` to
 a strong random value (`openssl rand -hex 32`) and restart:
 
@@ -445,15 +405,12 @@ curl -H "Authorization: Bearer $WIDGET_TOKEN" https://YOUR-DOMAIN/app/api/today.
 ```json
 {"date": "2026-08-06",
  "nutrients": {"protein_g": {"total": 92, "target": 150},
-               "water_oz":  {"total": 48, "target": 128}, ...}}
+               "water_oz":  {"total": 48, "target": 128}}}
 ```
 
-`total` is `null` when nothing logged carries that nutrient — the same distinction the
-journal rings draw between "0 so far" and "unestimated", so a client can show an unknown
-state rather than claiming a zero. An untargeted nutrient (fat) reports `target: null`.
-There is no ceiling/floor flag: a target is just a target, so a client renders progress
-toward a number and leaves whether being over it matters to the eating profile's prose.
-Units aren't included: they're a rendering choice that lives in `macros.html`, and a
+`total` is `null` when nothing logged carries that figure — the same distinction the
+`/food` rings draw between "0 so far" and "not logged", so a client can show an unknown
+state rather than claiming a zero. Units aren't included: they're a rendering choice that lives in `macros.html`, and a
 second server-side copy is how the two drift.
 
 > **`WIDGET_TOKEN` is deliberately NOT `BACKUP_TOKEN`.** This token sits on every device
@@ -481,26 +438,26 @@ prefer to keep the file pristine.)
 
 The **refresh interval is the filename** — `macros.1m.py` polls every minute; rename
 to `.1m.` / `.15m.` to change it. The dropdown carries a Refresh item for right after you
-log something. It shows the full nutrient breakdown — gauge, figure and target, no
-color, since a target is just a target — and links back to the journal. If the server is unreachable the
+log something. It shows each figure — gauge, figure and target, no color, since a
+target is just a target — and links back to the journal. If the server is unreachable the
 menu bar goes quiet (grey dashes) and the detail lands in the dropdown — a bar that shouts
 on every dropped wifi connection is a bar you learn to ignore.
 
 ## Web frontend
 
 `webapp/` is a small browser UI for reviewing what's been recorded — journal entries
-(with FTS search), workout sessions, drinking trends, and people. The browse/reading
+(with FTS search), workout sessions, water/protein, and people. The browse/reading
 pages are **read-only**: they read the **same** SQLite DB and reuse `server.py`'s
 retrieval functions directly (the single source of truth for data shapes), so they never
-duplicate query logic. Writes are confined to two purpose-built surfaces: the **journal
-chat panel** (AI) and the **day-header drink counter** (no AI) — see below.
+duplicate query logic. Writes are confined to a few purpose-built surfaces: the AI
+**chat panels**, plus small settings carve-outs (targets, goals, display prefs).
 
 Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 `workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
 uppercase `tracking-widest` labels, stat-tile grids.
 
-Pages: dashboard · journal (+ `?q=` search, + AI chat panel, + per-day drink counter) ·
-entry detail · workouts · graphs · people · person detail.
+Pages: journal (+ `?q=` search, + AI chat panel) · water & protein (`/food`) ·
+entry detail · workouts · graphs · people · person detail · collections · learn.
 
 ### In-app AI chat — toolset-scoped
 
@@ -517,11 +474,10 @@ chips linking to the affected page.
 Each surface is bound to **one** toolset (smaller tool surface = less latency, the same
 reason the MCP servers are split):
 
-- **`journal`** — the journal server's people/entry tools, *minus* the drink tools
-  (alcohol and water are direct entry). Lives as a **slide-in panel** on the `/journal` page
+- **`journal`** — the journal server's people/entry tools. Lives as a **slide-in panel** on the `/journal` page
   (near-fullscreen on mobile, a right-edge side panel on desktop). Posts to
   `/chat/journal/send`.
-- **`trainer`** — the trainer server's workout tools. Will get its **own page** linked
+- **`trainer`** — the trainer server's workout + water/protein tools. Will get its **own page** linked
   from the workout page (longer, workout-length conversations). Wired in `chat.py`; the
   page itself is a later round.
 
@@ -587,158 +543,6 @@ Note `WEB_BASE_URL` (not `PUBLIC_URL`) — the webapp uses standard browser OAut
 from the MCP server's OAuth-provider flow, so its env vars don't collide if you run both
 in one Coolify project.
 
-## Telegram — four bots on the same loop
-
-The journal, the eating log, the notes layer and the trainer, reachable from a Telegram
-DM. Off by default; turns on when `TELEGRAM_MODE` is set to `webhook` or `polling` and at
-least one bot token exists. It's the **same agent loop as the in-app chat**
-(`webapp/chat.py`) with a different front end, so the project's rule holds unchanged —
-still no LLM inside `server.py`, no new pip dependency, no second process.
-
-**Four bots, not one**, because the split already exists in the code: every tool on the
-journal server is either in `CONNECTOR_HIDDEN_TOOLS` (people/entries) or carries an
-`intake_` / `notes_` / `collections_` prefix. The bots' tool lists are *derived* from
-that, so a tool added later lands in the right bot with no edit here — and
-`chat.assert_tool_partition()` fails the boot if the split ever stops being exact.
-
-| Bot | Handles | Tools |
-|---|---|---|
-| journal | days, events, the people in them | 15 |
-| intake | food, drinks, water | 6 |
-| notes | notes & collections | 12 |
-| trainer | workouts, plans, your exercises | 21 |
-
-The cost is that you pick the chat: "burrito after the gym with Karl" is three bots'
-business. Each one knows what its siblings own, so it does its part and says where the
-rest belongs rather than silently dropping it.
-
-### Setup
-
-1. **BotFather** → `/newbot` for each bot you want (start with one). Keep each token.
-   On each: `/setjoingroups` → **Disable**, `/setprivacy` → **Enable**.
-2. **`@userinfobot`** → your numeric id. Same id for all four — in a private chat
-   `chat.id` *is* your user id.
-3. Set the env vars (see `.env.example`): `TELEGRAM_MODE`, one or more
-   `TELEGRAM_TOKEN_*`, `TELEGRAM_ALLOWED_CHAT_IDS`, and in webhook mode
-   `TELEGRAM_WEBHOOK_SECRET` (`openssl rand -hex 32`).
-4. Redeploy. Webhooks register themselves at startup — nothing to call by hand, and a
-   redeploy is a no-op rather than a re-register.
-
-**Dev:** `TELEGRAM_MODE=polling` long-polls instead, which is the only mode that can talk
-to a laptop running against `journal_dev.db`.
-
-**Use separate bot tokens for local work.** A token is the same string everywhere, and
-Telegram refuses `getUpdates` while a webhook is set — so polling has to clear one first,
-and pointing a laptop at a production token would unregister the deployment's webhook and
-quietly take delivery over, with nothing in prod's logs to say why. Polling therefore
-REFUSES to start when it finds a webhook already registered, naming the URL and stopping;
-clearing it stays possible as a deliberate `deleteWebhook`, never as a side effect of
-starting a dev server. Four more bots from BotFather is a minute's work and removes the
-question.
-
-Commands, per bot: `/new` (fresh thread), `/help` (what this bot owns), `/whoami` (your
-chat id).
-
-### Security — two doors, and most people only think about the first
-
-**The webhook** is open to the internet by necessity (Telegram carries no Google session,
-so the path is in `PUBLIC_PATHS`). A secret path segment keeps scanners out of the
-handler; the `X-Telegram-Bot-Api-Secret-Token` header is the check that actually proves
-the caller is Telegram, since a URL leaks into logs and a header doesn't.
-
-**The bot itself** is the door people miss: anyone who learns the handle can DM it, and
-those arrive as legitimately-signed Telegram deliveries. `TELEGRAM_ALLOWED_CHAT_IDS` is
-the whole answer, keyed on the numeric id (usernames are changeable and recyclable) and
-**failing closed** — empty means the bots talk to nobody. Note this is deliberately the
-opposite of `JOURNAL_ALLOWED_EMAILS`, where empty means authless dev: there, Google auth
-still stands behind it; here there is nothing behind it.
-
-**If a token leaks:** the holder can read what you send *that* bot and post as it. They
-cannot write to your journal — the allowlist lives in this app, not in Telegram. Four
-tokens means one leak is one domain, the same reasoning that keeps `WIDGET_TOKEN` separate
-from `BACKUP_TOKEN`. Rotate with BotFather `/revoke`.
-
-**What no setting fixes:** bot chats are never end-to-end encrypted. Message text sits in
-plaintext on Telegram's servers and in cloud history on every signed-in device — outside
-Google auth, outside the journal knock. A marginal change rather than a categorical one
-(journal prose already goes to Anthropic's API by design), but it's the reason
-`TELEGRAM_REPLY_TTL` exists, and the realistic threats are Telegram account takeover (fix:
-cloud password / 2FA) and someone picking up an unlocked phone.
-
-### How replies are rendered
-
-Three tiers, each falling back to the next, because a rejected message is a LOST
-message:
-
-1. **Rich** — when the model's reply contains a table, heading, list or block quote,
-   the markdown goes to `sendRichMessage` as `rich_message.markdown` and Telegram
-   parses it into native structure. Read-back answers ("what did I eat this week", a
-   workout plan) arrive as real tables instead of a wall of prose, and the 32,768-char
-   ceiling means no chunking.
-2. **HTML text** — ordinary prose, with inline `**bold**` / `*italic*` / `` `code` `` /
-   `[label](url)` rendered.
-3. **Plain text** — tags stripped, if Telegram rejects the markup.
-
-A confirmation stays a plain sentence: wrapping "Logged the burrito, 900 cal" in a rich
-object buys nothing, so structure is reserved for answers with several rows in them.
-
-Long read-backs **collapse**: `<details><summary>…</summary>…</details>` is the one HTML
-form the rich markdown honours, so the model leads with the finding and hides the table
-behind a tap. (GitHub's `> [!NOTE]` degrades to a plain quote and `:::details` prints
-literally — neither is supported.) `rich_message` honours `markdown` OR `blocks` and
-never both, so anything needing a block — a map — is its own message.
-
-Two things learned the hard way and worth not re-learning: **Telegram silently ignores
-unknown fields**, so a probe that "accepts" a parameter proves nothing about whether it
-does anything — `parse_mode` on a rich block is accepted and dropped, which put literal
-`<b>` tags in a chat. And rich blocks format via **`entities`**, not `parse_mode`; the
-markdown path sidesteps that entirely, which is most of why it's used.
-
-### Photos
-
-Send a photo of a plate, a label or a menu to the intake bot and it estimates from the
-picture. The image is passed to the model inline and **never stored** — which is what
-makes it cheap: Telegram's file URLs embed the bot token and expire, so keeping one as
-an item's featured image would need real blob storage and a decision to go with it, but
-estimating a meal needs the bytes only for the length of one turn. Captions ride along,
-so "half of this" reaches the model with the picture.
-
-### Places
-
-When the notes bot saves or reads back an item with a `location` field, it follows the
-reply with a real inline **map**, which taps through to Google/Apple/Bing/OSM. (An
-earlier version used `sendVenue`; the map block does the same job, opens the same
-choosers, and looks like part of the conversation.) It has to be its own message either
-way: `rich_message` honours `markdown` OR `blocks`, never both, so a map can't be folded
-into the reply above it. The
-coordinates are read from the DB by item id, never from anything the model wrote, so a
-hallucinated coordinate can't reach a maps app. Collections already require coordinates
-on a location field (the webapp's map view can't plot an address), so the data is there.
-
-### Nudges — the bot messaging you first
-
-`TELEGRAM_NUDGES=intake@16:00,journal@21:00` (Pacific, comma-separated `bot@HH:MM`).
-Unset by default: a bot that starts conversations is opt-in.
-
-Each nudge is a **real agent turn**, not a canned string — the same split as everywhere,
-where the server decides *when* and the model decides *whether and what*, reading the day
-out of the DB with its own tools. Every nudge prompt authorizes silence: the model replies
-`SKIP` when there's nothing worth saying, and nothing is delivered. A reminder that fires
-whether or not it has anything to say is one you turn off within a week.
-
-Two scheduling rules worth knowing. Times are Pacific, like every date in this project.
-And **anything already past when the process starts is treated as fired** — a restart at
-6pm won't deliver the 4pm nudge two hours late, and a crash-looping container won't nudge
-on every boot.
-
-Nudges land in the normal thread and take the same per-chat lock as a user message, so one
-can't arrive mid-conversation and tangle the transcript. Replying to a nudge just continues
-the conversation.
-
-**Not wired up:** voice notes (needs a transcription service — a second external network
-call, and its own decision), photos (Telegram file URLs embed the bot token and expire),
-inline keyboards, group chats.
-
 ## Places on a map
 
 A collection whose items carry a `location` field can be laid out as a **map** — a
@@ -785,17 +589,15 @@ Split across three connectors and the app's own chat. The **teacher** server
 (`TEACHER-DOMAIN/mcp`, or `/teacher/mcp` authless) carries the learning log —
 `next_card`/`check`/`record` and friends; see "Learning" above and the tool docstrings
 in `server.py`. The **journal** server
-(`YOUR-DOMAIN/mcp`) exposes to MCP clients only the intake tools (`intake_*`) and the
-notes-&-collections tools (`notes_*`, `collections_*`) — every name carries its domain
-as a prefix, so a client's tool list groups itself and an intake item is never confused
-with a saved note. The journal-capture tools (`add_journal_entry` through
+(`YOUR-DOMAIN/mcp`) exposes to MCP clients only the notes-&-collections tools
+(`notes_*`, `collections_*`) — every name carries its domain as a prefix, so a
+client's tool list groups itself. The journal-capture tools (`add_journal_entry` through
 `journal_delete_entry` below) are hidden from connectors by `HiddenToolsMiddleware`
 (neither listed nor callable), because journal capture happens in the app's own
-chat, which drives the full tool set in-process and isn't affected. (Alcohol and
-water are nutrients on an intake item, not
-tools of their own — see "Intake" above.) The **trainer** server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the
-main origin when authless) carries the tools below, plus its
-own `delete_record` scoped to `workout`/`set`. Both hit the same DB. (The
+chat, which drives the full tool set in-process and isn't affected. The **trainer**
+server (`TRAINER-DOMAIN/mcp`, or `/trainer/mcp` on the main origin when authless)
+carries the tools below (including the water/protein log), plus its own
+`delete_record` scoped to `workout`/`set`/`intake`. Both hit the same DB. (The
 notes-&-collections tools — `notes_save`, `collections_list`, `notes_search`, … — are
 newer than this table; see CLAUDE.md's `collections` section for the full contract.)
 
@@ -815,12 +617,9 @@ newer than this table; see CLAUDE.md's `collections` section for the full contra
 | `reorder_entries` | Set a day's within-day chronological order (entries append on save; reorder so the day reads earliest-first, or to move one) |
 | `search_entries` | Full-text search for topics/events. Plain words are tokenized and quoted before hitting FTS5 (so apostrophes/punctuation are safe, terms ANDed); `raw_query=True` passes FTS5 syntax through for OR/NEAR/prefix\* |
 | `journal_delete_entry` | Delete one entry and its mentions — irreversible. App chat only; not advertised on the connector |
-| `intake_log` | Log ONE thing consumed (meal, beer, glass of water) with whatever nutrients are known — calories, macros, sodium, fiber, standard drinks, water oz |
-| `intake_summary` | Intake days back: each day's items *with ids* + summed totals, per-nutrient averages (each over the days that carry it), and the stored eating profile |
-| `intake_update` | Correct one logged item by id — the day's totals re-derive themselves |
-| `intake_find_past` | Fuzzy-search everything ever logged, by name — grouped by item text, latest numbers + times logged + last date, recency-weighted — so repeats reuse settled numbers instead of re-estimates |
-| `intake_set_profile` | Merge durable eating facts into the JSON profile — `targets` (daily nutrient goals, also read by the webapp's rings), goals, stats, coaching context |
-| `intake_delete` | Delete one logged intake item — the day's totals re-derive from what's left |
+| `log_intake` | *(trainer)* Log ONE thing consumed — `water_oz` and/or `protein_g`, optional label; returns the day's totals + targets |
+| `get_intake` | *(trainer)* Water/protein days back: items *with ids*, day totals, averages, targets |
+| `update_intake` | *(trainer)* Correct one logged item by id — the day's totals re-derive themselves |
 | `list_exercises` | Your exercises: `active` (what the trainer programs from) and `archived` (done before, with a note on why you stopped), each with muscles, last done, session count |
 | `add_exercise` | Add a movement ahead of using it (planning/logging a new name with its `muscles` creates it on the fly anyway); refuses an existing name, asks "did you mean?" on a near-duplicate unless `new=True` |
 | `update_exercise` | Rename an exercise (history follows), fix its muscles, category or note |
@@ -835,8 +634,8 @@ newer than this table; see CLAUDE.md's `collections` section for the full contra
 | `get_personal_records` | Heaviest / best-e1RM / cardio bests per lift |
 | `import_weigh_ins` | Load rows from the scale app's export (attached to the conversation); idempotent on the reading's timestamp |
 | `get_exercise_history` | Per-session weight/reps/rpe (+ `set_id`/`workout_id`) for one lift — progressive overload + edit discovery |
-| `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight + `upcoming` (sessions already planned, not yet done) |
-| `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set` (weigh-ins are import-only and not deletable here) — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `intake_delete`, `notes_delete`, `collections_delete`) |
+| `get_fitness_briefing` | One-call trainer context: profile + per-muscle recency + recent sessions (with notes) + latest bodyweight + today's water/protein (`intake_today`) + `upcoming` (sessions already planned, not yet done) |
+| `delete_record` | *(trainer connector only)* Delete one record by `kind` + `id` — `workout`/`set`/`intake` (weigh-ins are import-only and not deletable here) — irreversible, cascades/renumbers as needed. The journal side has no kind-scoped delete: each domain owns a narrow one (`journal_delete_entry`, `notes_delete`, `collections_delete`) |
 | `update_profile` | Merge durable training facts (injury, split, goals) into the JSON profile |
 
 ## Notes / next steps

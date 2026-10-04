@@ -4,8 +4,8 @@
   <bitbar.title>Journal Macros</bitbar.title>
   <bitbar.version>v1.0</bitbar.version>
   <bitbar.author>Cooper Mayne</bitbar.author>
-  <bitbar.desc>Today's protein and water from the journal, with a full nutrient
-  breakdown in the dropdown.</bitbar.desc>
+  <bitbar.desc>Today's protein and water from the journal, with the figures in
+  the dropdown.</bitbar.desc>
   <bitbar.dependencies>python3</bitbar.dependencies>
 
 The REFRESH INTERVAL is the filename, not anything in here: `macros.1m.py` polls
@@ -60,14 +60,8 @@ FILLED, EMPTY, UNLOGGED = "█", "░", "┈"
 # units are a rendering choice that already lives in the web app's templates, and a
 # second server-side copy is how the two drift apart.
 UNITS = {
-    "calories": ("", "Calories"),
     "protein_g": ("g", "Protein"),
-    "carbs_g": ("g", "Carbs"),
-    "fat_g": ("g", "Fat"),
-    "sodium_mg": ("mg", "Sodium"),
-    "fiber_g": ("g", "Fiber"),
     "water_oz": ("oz", "Water"),
-    "standard_drinks": ("", "Drinks"),
 }
 
 

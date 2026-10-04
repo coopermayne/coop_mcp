@@ -1,27 +1,23 @@
 {% extends "base.html" %}
 {% import "macros.html" as m with context %}
-{% block title %}Food · Journal{% endblock %}
+{% block title %}Water & protein · Journal{% endblock %}
 {% block content %}
 
-{# The food log, split out of the journal feed: intake days only, newest first.
-   Deliberately OUTSIDE the journal lock (glancing at macros shouldn't need the
-   knock) and with no chat panel — intake is logged through the MCP tools (or the
-   journal chat), this page only reads. #}
+{# The water/protein log: intake days only, newest first. Deliberately OUTSIDE the
+   journal lock and with no chat panel — intake is logged through the trainer's
+   tools (the trainer connector or the trainer chat); this page only reads. #}
 <div class="flex items-center justify-between mb-6">
-  <h1 class="text-2xl font-bold tracking-tight">Food</h1>
+  <h1 class="text-2xl font-bold tracking-tight">Water &amp; protein</h1>
   <div class="relative flex items-baseline gap-4">
     <span class="text-xs uppercase tracking-widest text-gray-400">{{ count }} day{{ '' if count == 1 else 's' }} logged</span>
-    {# The Targets popover — the one thing this page writes, and the only write on
-       /food at all: intake CONTENT still enters through the MCP tools alone. It
-       saves via POST /food/targets (server.set_nutrient_targets, a website-only
-       path) into the same eating_profile the model reads, so a goal changed here
-       is the goal it coaches against. It's here because this is the screen where
-       you NOTICE a target is wrong — the alternative was opening a chat to say it
-       in a sentence while looking at the ring. #}
+    {# The Targets popover — the one thing this page writes. It saves via POST
+       /food/targets (server.set_nutrient_targets, a website-only path) into the
+       same settings the trainer reads, so a goal changed here is the goal it
+       coaches against. #}
     <button id="tgt-btn" type="button"
             class="text-xs uppercase tracking-widest text-gray-400 hover:text-black transition-colors">Targets</button>
     <div id="tgt-pop" hidden
-         class="absolute right-0 top-7 z-20 w-80 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
+         class="absolute right-0 top-7 z-20 w-64 bg-white border border-gray-200 rounded-[4px] shadow-xl px-5 py-4 text-sm text-left">
       <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-3">Daily targets</p>
       <div class="space-y-2">
         {# One row per nutrient, in the ring order — the unit table is macros.html's
@@ -42,24 +38,9 @@
         {% endfor %}
       </div>
       <p class="text-[11px] text-gray-400 mt-3 mb-3 leading-snug">
-        Blank falls back to the default. Whether a number is one to reach or stay
-        under is a note, below — not something the ring decides.
-      </p>
-      {# The note lives HERE, with the numbers it describes. Editing them on separate
-         screens is how the note came to say 150 while the target said 140, with
-         nothing on either screen to show the other existed. It refers to a number by
-         placeholder — {calories} — and the current value is substituted wherever the
-         profile is read, so the sentence follows the target instead of quoting it. #}
-      <p class="text-[10px] uppercase tracking-widest text-gray-400 mb-2">Note</p>
-      <textarea id="tgt-note" rows="4"
-                placeholder="e.g. calories and sodium are numbers to stay under; protein and water are numbers to reach. Flag a day well under {calories}."
-                class="w-full border border-gray-200 rounded-[4px] px-2 py-1.5 text-[13px] leading-snug text-gray-700">{{ targets_note }}</textarea>
-      <p class="text-[11px] text-gray-400 mt-2 mb-3 leading-snug">
-        Write <code class="text-gray-500">{calories}</code> rather than the number —
-        it follows the target above.
+        Blank falls back to the default.
       </p>
       <p id="tgt-err" hidden class="text-[11px] text-red-600 mb-3 leading-snug"></p>
-      <p id="tgt-warn" hidden class="text-[11px] text-amber-600 mb-3 leading-snug"></p>
       <button id="tgt-apply" type="button"
               class="w-full px-3 py-2 border border-gray-200 text-gray-500 text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors">Save</button>
     </div>
@@ -80,7 +61,7 @@
   </div>
   {% endif %}
 {% else %}
-<p class="text-sm text-gray-400">Nothing logged yet — tell the journal chat (or Claude) what you ate.</p>
+<p class="text-sm text-gray-400">Nothing logged yet — tell the trainer how much water you've had, or what protein you ate.</p>
 {% endif %}
 
 {% include "_detail_modal.html" %}
@@ -94,12 +75,8 @@
 (function () {
   var btn = document.getElementById('tgt-btn'), pop = document.getElementById('tgt-pop');
   if (!btn) return;
-  var err = document.getElementById('tgt-err'), warn = document.getElementById('tgt-warn');
-  // A save that came back with a hint has already been WRITTEN — it just can't
-  // reload immediately without throwing the hint away. So the reload waits until
-  // the popover is dismissed, and the rings catch up then.
-  var pending = false;
-  function close() { pop.hidden = true; if (pending) location.reload(); }
+  var err = document.getElementById('tgt-err');
+  function close() { pop.hidden = true; }
   btn.addEventListener('click', function () { if (pop.hidden) pop.hidden = false; else close(); });
   document.addEventListener('click', function (e) {
     if (!pop.hidden && !pop.contains(e.target) && !btn.contains(e.target)) close();
@@ -122,21 +99,12 @@
     fetch("{{ base }}/food/targets", {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targets: targets, note: document.getElementById('tgt-note').value })
+      body: JSON.stringify({ targets: targets })
     }).then(function (r) {
       return r.json().then(function (j) {
         if (!r.ok) {
           err.textContent = (j && j.error) || 'Could not save those targets.';
           err.hidden = false;
-          return;
-        }
-        // Advisory, never blocking (server._note_literals): the note spelled a
-        // number out that a target already carries, so the two can drift apart the
-        // next time one of them changes.
-        if (j && j.stale_prose && j.stale_prose.length) {
-          warn.textContent = 'Saved. ' + j.stale_prose.join(' ');
-          warn.hidden = false;
-          pending = true;
           return;
         }
         location.reload();

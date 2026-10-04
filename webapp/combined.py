@@ -2,7 +2,7 @@
 Single-process entrypoint: both MCP servers and the read-only web UI in one app,
 sharing one DB so each Claude project loads only its own tools.
 
-  - Journal + drinking: served on the main origin (PUBLIC_URL). `/mcp` plus its OAuth
+  - Journal + notes: served on the main origin (PUBLIC_URL). `/mcp` plus its OAuth
     discovery (`/.well-known/*`, `/auth/callback`) and the browser UI under `/app`.
   - Trainer: a full OAuth server can't share an origin with the journal (their
     `/authorize`, `/token`, `/auth/callback` paths collide), so when TRAINER_PUBLIC_URL
@@ -44,7 +44,7 @@ from starlette.routing import Host, Mount, Route   # noqa: E402
 # never reach the live DB, and any query that references a new column 500s.
 server.init_db()
 
-mcp_app = server.mcp.http_app(path="/mcp")   # journal + eating, on the main origin
+mcp_app = server.mcp.http_app(path="/mcp")   # journal + notes, on the main origin
 
 
 def _secondary_routes(instance, prefix: str, public_url: str):
@@ -74,18 +74,9 @@ _teacher_routes, teacher_app = _secondary_routes(
 async def _lifespan(app):
     # Each app runs its own StreamableHTTP session manager; enter them all or a
     # secondary endpoint has no live session manager.
-    #
-    # The UI app is MOUNTED, and Starlette does not run a mounted app's lifespan —
-    # so webapp.app's own _lifespan never fires here and the Telegram bots would
-    # never start in prod. Starting them from this outer lifespan is that fix; the
-    # two paths call the same pair of functions, and only one of them ever runs.
     async with mcp_app.lifespan(app), trainer_app.lifespan(app), \
                teacher_app.lifespan(app):
-        await webapp.tg.startup()
-        try:
-            yield
-        finally:
-            await webapp.tg.shutdown()
+        yield
 
 
 async def _app_root_redirect(request):

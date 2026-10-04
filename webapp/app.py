@@ -15,8 +15,6 @@ Env: PORT, WEB_HOST, WEB_BASE_URL (public origin, for the OAuth redirect),
      SESSION_SECRET, GOOGLE_CLIENT_ID/SECRET, JOURNAL_ALLOWED_EMAILS, JOURNAL_DB.
 """
 
-import asyncio
-import contextlib
 import json
 import os
 import re
@@ -62,7 +60,6 @@ _load_dotenv()
 import data            # noqa: E402  local data layer
 import server          # noqa: E402  reused for db()/reads and ALLOWED_EMAILS
 import chat            # noqa: E402  in-app AI chat agent loop (the one write path)
-import telegram as tg  # noqa: E402  the Telegram bots, a third front end on that loop
 
 from fastapi import FastAPI, Request                          # noqa: E402
 from fastapi.responses import JSONResponse, RedirectResponse, Response  # noqa: E402
@@ -155,23 +152,7 @@ LOCK_MAX_CHORD = 6
 LOCK_PATHS_EXACT = {"/", "/journal", "/pending", "/people", "/groups"}
 LOCK_PATHS_PREFIX = ("/entry/", "/person/", "/group/", "/chat/journal/", "/mention/")
 
-@contextlib.asynccontextmanager
-async def _lifespan(_app):
-    """Bring the Telegram bots up with the app and take them down with it.
-
-    This is the STANDALONE path — a laptop running `uvicorn app:app` without
-    combined.py, which is also the only way polling mode is useful. In prod
-    combined.py owns the lifespan and calls the same two functions; both exist so a
-    dev run isn't a second, differently-wired app.
-    """
-    await tg.startup()
-    try:
-        yield
-    finally:
-        await tg.shutdown()
-
-
-app = FastAPI(title="Journal", lifespan=_lifespan)
+app = FastAPI(title="Journal")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
 
@@ -251,10 +232,8 @@ for _name, _fn in [
 ]:
     templates.env.filters[_name] = _fn
 
-# The eating block's rings read targets through this; a global (not a per-route
-# context var) because the macro is reached through day_block, several call frames
-# from the route. A FUNCTION, not the dict: targets can now come from the stored
-# eating profile, so they're read fresh per render (the macro calls it once per block).
+# The intake block's rings read targets through this; a FUNCTION, not the dict, so
+# a target saved in the popover shows on the next render.
 templates.env.globals["nutrient_targets"] = data.nutrient_targets
 
 # Collection icons: the vendored Lucide subset (icons.py, generated). A global
@@ -497,11 +476,7 @@ PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health",
                 "/api/today.json"}
 
 # Path PREFIXES that are public, for the same reason but where the tail varies.
-# The Telegram webhook carries a per-deploy secret segment, so it can't be an exact
-# path; Telegram has no Google session and would be handed an HTML login page.
-# It does its OWN auth in-route (secret path + secret header) and then again on the
-# sender's numeric id (telegram._authorized) — see webapp/telegram.py.
-PUBLIC_PREFIXES = ("/static", "/telegram/webhook/")
+PUBLIC_PREFIXES = ("/static",)
 
 oauth = None
 if AUTH_ENABLED:
@@ -767,17 +742,11 @@ async def today_json(request: Request):
     laptop or phone can't be turned into a data exfil. Auth is a session or
     WIDGET_TOKEN (see `_widget_authorized`).
 
-    Returns each nutrient as {total, target}. `total` is null when nothing
-    logged carries that nutrient — the SAME distinction the rings draw between "0 so
-    far" and "unestimated", so a client can render a dashed/unknown state instead of
-    claiming a zero. Targets ride along from `data.nutrient_targets()` — the stored
-    eating profile's numbers over the webapp defaults, the same merge the rings
-    read — so the widget always agrees with the page and with what the model is
-    coaching against.
-
-    There is no ceiling/floor flag: a target is just a target here, the same
-    simplification the rings make, so a client shows progress toward a number and
-    leaves whether being over is good or bad to the eating profile's prose.
+    Returns each tracked figure (water_oz, protein_g) as {total, target}. `total`
+    is null when nothing logged carries it — the SAME distinction the rings draw
+    between "0 so far" and "not logged". Targets ride along from
+    `data.nutrient_targets()`, the same merge the rings read, so the widget always
+    agrees with the page and with what the trainer reads.
 
     UNITS are deliberately NOT here. They're a rendering choice that already lives in
     `macros.html`, and duplicating them server-side is how the two copies drift; a
@@ -791,10 +760,8 @@ async def today_json(request: Request):
     intake = server.get_intake(days=1, include_items=False)
     # get_intake omits days with nothing logged, so an unlogged day has no entry.
     totals = next((d["totals"] for d in intake["days"] if d["food_date"] == day), {})
-    # Keyed off server.NUTRIENTS, not the targets dict, so an UNTARGETED nutrient
-    # (fat) still reports its figure with target=null — the same thing the journal
-    # page does when it draws fat's ring with a dashed track and no arc. Iterating
-    # the targets instead would silently drop it.
+    # Keyed off server.NUTRIENTS, not the targets dict, so an untargeted figure
+    # still reports its total with target=null.
     targets = data.nutrient_targets()
     return JSONResponse({
         "date": day,
@@ -853,7 +820,7 @@ async def manifest(request: Request):
     return JSONResponse({
         "name": "Journal",
         "short_name": "Journal",
-        "description": "A private record — journal, training and drinking.",
+        "description": "A private record — journal and training.",
         "start_url": f"{base}/",
         "scope": f"{base}/",
         "display": "standalone",
@@ -1030,37 +997,29 @@ async def journal(request: Request, q: str = "", since: str = "", kind: str = ""
 
 @app.get("/food")
 async def food(request: Request, since: str = ""):
-    # The food log's own page — split out of the journal feed. Deliberately NOT in
-    # LOCK_PATHS (glancing at macros shouldn't need the knock) and carries no chat
-    # panel: intake is logged through the MCP tools / the journal chat, this page
-    # only reads.
+    # The water/protein log's own page. Deliberately NOT in LOCK_PATHS (glancing
+    # at it shouldn't need the knock) and carries no chat panel: intake is logged
+    # through the trainer's tools (connector or the trainer chat); this page reads.
     res = data.food_days(since=(since or "").strip() or None)
     return page(request, "food.html", active="food",
                 days=res["days"], count=res["total"],
                 has_more=res["has_more"], next_since=res["next_since"],
                 # The Targets popover wants the two apart: what's actually SET
                 # goes in the inputs, the defaults are only placeholders.
-                defaults=data.NUTRIENT_TARGETS, stored=data.stored_targets(),
-                # The note rides along with the numbers it explains — see
-                # server.set_nutrient_targets on why they're edited together.
-                targets_note=data.stored_targets_note())
+                defaults=data.NUTRIENT_TARGETS, stored=data.stored_targets())
 
 
 @app.post("/food/targets")
 async def food_targets(request: Request):
-    """Save the /food page's Targets popover — the daily nutrient goals the rings
-    are read against. A website-only write path through server.set_nutrient_targets
-    (never a FastMCP tool), and the ONLY thing this page writes: intake CONTENT
-    still enters through the MCP tools alone. Targets aren't content — they're the
-    same kind of fact as a collection's Display prefs, except they live where the
-    model can read them too, since it coaches against the same numbers.
-    Body: {targets: {nutrient: number|null}, note?: str} — null hands a goal back to
-    its default, and `note` is the prose explaining them (targets_note), saved in the
-    same round trip so the two can't be edited apart. Outside the journal lock, like
-    the page itself."""
+    """Save the /food page's Targets popover — the daily water/protein goals the
+    rings are read against. A website-only write path through
+    server.set_nutrient_targets (never a FastMCP tool), and the ONLY thing this page
+    writes: intake CONTENT enters through the trainer's tools alone.
+    Body: {targets: {nutrient: number|null}} — null hands a goal back to its
+    default. Outside the journal lock, like the page itself."""
     from fastapi.responses import JSONResponse
     body = await request.json()
-    res = server.set_nutrient_targets(body.get("targets"), body.get("note"))
+    res = server.set_nutrient_targets(body.get("targets"))
     code = 400 if isinstance(res, dict) and res.get("error") else 200
     return JSONResponse(res, status_code=code)
 
@@ -1387,7 +1346,7 @@ async def weight_import(request: Request):
 
 # --------------------------------------------------------------------------- #
 # Graphs — one page of line charts over the trends the app already stores
-# (bodyweight, drinks, per-exercise strength progress). The whole history is
+# (bodyweight, per-exercise strength progress). The whole history is
 # bootstrapped into the page as JSON (single-user data is small) and
 # filtered/toggled client-side by static/graphs.js.
 #
@@ -1454,52 +1413,6 @@ async def graphs_goal(request: Request):
         goal["start_lbs"], goal["start_date"] = r["weight_lbs"], r["weigh_date"]
     server.update_profile(profile={"weight_goal": goal})
     return RedirectResponse(base + "/graphs", status_code=303)
-
-
-# --------------------------------------------------------------------------- #
-# Telegram webhook — the one route the bots need. Everything else about them
-# lives in webapp/telegram.py.
-# --------------------------------------------------------------------------- #
-
-@app.post("/telegram/webhook/{bot}/{secret}")
-async def telegram_webhook(request: Request, bot: str, secret: str):
-    """Accept one update from Telegram and hand it to the agent loop.
-
-    Two checks, and only the second one is real. The path segment keeps scanners out
-    of the handler; the X-Telegram-Bot-Api-Secret-Token HEADER is what proves the
-    caller is Telegram, since a URL leaks into logs and proxies while the header does
-    not. Both compared with compare_digest.
-
-    Those two must never carry the SAME value — see telegram.webhook_path. The path
-    is written to the access log on every request, so if it were the secret itself,
-    the log would publish the credential the header check depends on. Source-IP filtering is
-    possible but would read X-Forwarded-For under forwarded_allow_ips="*", i.e. trust
-    the proxy's word about it, so it isn't done.
-
-    Neither check says WHO is talking — that's telegram._authorized, on the sender's
-    numeric id, inside the handler.
-
-    The 200 goes back BEFORE the work. An agent turn can run a dozen tool hops, and
-    Telegram retries anything it doesn't get a fast 200 for — a retry that arrives
-    mid-turn is how one burrito gets logged twice. The dedupe set in telegram.py is
-    the other half of that; this is why it's needed at all.
-    """
-    if not tg.enabled():
-        return JSONResponse({"ok": True})
-    if not (tg.WEBHOOK_SECRET
-            and secrets.compare_digest(secret, tg.webhook_path(bot).rsplit("/", 1)[-1])):
-        return Response(status_code=403)
-    hdr = request.headers.get("x-telegram-bot-api-secret-token", "")
-    if not secrets.compare_digest(hdr, tg.WEBHOOK_SECRET):
-        return Response(status_code=403)
-    if bot not in tg.BOTS:
-        return Response(status_code=403)
-    try:
-        update = await request.json()
-    except Exception:
-        return JSONResponse({"ok": True})
-    asyncio.create_task(tg.handle_update(bot, update))
-    return JSONResponse({"ok": True})
 
 
 # --------------------------------------------------------------------------- #

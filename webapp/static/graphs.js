@@ -1,4 +1,4 @@
-/* /graphs — line charts over bodyweight, drinks, and per-exercise strength
+/* /graphs — line charts over bodyweight and per-exercise strength
    progress. Rendering is uPlot (vendored, static/vendor/); this file is the
    common chart component (theme-aware defaults, synced cursors) plus the page
    logic (range presets, panel toggles, the exercise picker).
@@ -37,20 +37,13 @@
     };
   }
   var WEIGHT_COLOR = { light: SLOTS.light[0], dark: SLOTS.dark[0] };
-  // Drinks read against a guideline rather than as a bare trend: a day at or
-  // under DRINK_LIMIT standard drinks is green, over it red (slots 5 and 7 of the
-  // validated palette, so the pair stays distinguishable in both themes).
-  var DRINK_LIMIT = 2;
-  var UNDER_COLOR = { light: SLOTS.light[5], dark: SLOTS.dark[5] };
-  var OVER_COLOR  = { light: SLOTS.light[7], dark: SLOTS.dark[7] };
-
   /* ---------- state (persisted) ----------------------------------------- */
   var STORE_KEY = 'graphs.state';
   // `ex` is deliberately NOT restored from storage: the panel always opens on
   // the lift trained most recently, so a visit starts on what you just did
   // rather than on whatever you happened to be looking at weeks ago. The
   // cycler/dropdown still move freely within the visit.
-  var state = { range: 90, panels: { weight: true, drinks: true, exercises: true },
+  var state = { range: 90, panels: { weight: true, exercises: true },
                 ex: null, metric: 'top' };
   try {
     var saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
@@ -237,36 +230,6 @@
     makeChart(el, series, [xs].concat(cols), { height: 180 });
   }
 
-  function buildDrinks(el) {
-    if (!DATA.drinks.length) return emptyNote(el, 'No drinks logged yet.');
-    // Gap-fill: a day with no row is sober (0), and the calendar shouldn't lie —
-    // fill every day from the range start (or first logged day) through today.
-    // Iterate calendar days as ISO strings, not timestamp += 86400 (DST).
-    var start = DATA.drinks[0].date;
-    if (minIso() && minIso() > start) start = minIso();
-    var byDate = {};
-    DATA.drinks.forEach(function (p) { byDate[p.date] = p.total; });
-    var xs = [], ys = [], any = false;
-    for (var d = start; d <= DATA.today; d = isoShift(d, 1)) {
-      xs.push(ts(d));
-      ys.push(byDate[d] || 0);
-      if (byDate[d]) any = true;
-    }
-    if (!xs.length) return emptyNote(el, 'No days in this range.');
-    // One bar per day, read against the DRINK_LIMIT guideline: at or under the
-    // line is green, over it red. The limit itself is drawn as a flat dashed
-    // series so the eye has the reference, and the y-range is floored just above
-    // it so an all-sober stretch still shows the line.
-    var t = theme();
-    var colors = ys.map(function (v) { return v > DRINK_LIMIT ? OVER_COLOR[t] : UNDER_COLOR[t]; });
-    var limit = xs.map(function () { return DRINK_LIMIT; });
-    makeChart(el, [
-      { label: 'Drinks', color: UNDER_COLOR[t], bars: true, colors: colors },
-      { label: 'Limit', color: palette().axis, dash: [3, 5], points: false, width: 1.5 },
-    ], [xs, ys, limit], { height: 180, zeroBase: true, yMin: DRINK_LIMIT * 1.4 });
-    if (!any) emptyNote(el, 'All sober in this range.');
-  }
-
   function buildExercises(el) {
     var ex = exById[state.ex];
     if (!ex) return emptyNote(el, 'No logged lifts yet.');
@@ -283,10 +246,9 @@
     ], { height: 240 });
   }
 
-  var BUILDERS = { weight: buildWeight, drinks: buildDrinks, exercises: buildExercises };
+  var BUILDERS = { weight: buildWeight, exercises: buildExercises };
   var HAS_DATA = {
     weight: DATA.weight.length > 0,
-    drinks: DATA.drinks.length > 0,
     exercises: DATA.exercises.length > 0,
   };
 
@@ -300,7 +262,7 @@
     var scrollY = window.scrollY;
     teardown();
     var anyShown = false;
-    ['weight', 'exercises', 'drinks'].forEach(function (key) {
+    ['weight', 'exercises'].forEach(function (key) {
       var section = root.querySelector('[data-panel-el="' + key + '"]');
       var el = section.querySelector('[data-chart]');
       el.innerHTML = '';
@@ -309,7 +271,7 @@
       if (show) { anyShown = true; BUILDERS[key](el); }
     });
     root.querySelector('[data-graphs-empty]').hidden = anyShown ||
-      HAS_DATA.weight || HAS_DATA.drinks || HAS_DATA.exercises;
+      HAS_DATA.weight || HAS_DATA.exercises;
     syncChips();
     if (window.scrollY !== scrollY) window.scrollTo(0, scrollY);
   }
@@ -319,7 +281,7 @@
     root.querySelectorAll('[data-range]').forEach(function (b) {
       b.setAttribute('aria-pressed', String(Number(b.dataset.range) === state.range));
     });
-    var panelColor = { weight: WEIGHT_COLOR[theme()], drinks: UNDER_COLOR[theme()], exercises: '' };
+    var panelColor = { weight: WEIGHT_COLOR[theme()], exercises: '' };
     root.querySelectorAll('[data-panel]').forEach(function (b) {
       var key = b.dataset.panel;
       b.hidden = !HAS_DATA[key];

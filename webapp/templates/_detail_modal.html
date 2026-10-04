@@ -1,12 +1,11 @@
 {# The detail reader — ONE modal serving every "there's more behind this" target on
    a page. On /food that's an item (its own nutrients, which the summed rings can't
    show), a nutrient ring (its target, which an arc can only imply), and the circled
-   "i" (the day's notes); on /journal it's the day's food icon (what was eaten).
+   "i" (the day's notes).
 
    Each target carries its whole payload in `data-detail` as JSON —
    {kicker, title, rows, note, empty} — so opening one is display-only, with no fetch
-   and nothing to look up. A row is {label, value}; `value` may be empty, which is how
-   the journal's plain list of dishes renders without a figure column.
+   and nothing to look up. A row is {label, value}; `value` may be empty.
 
    Included by both pages rather than copied into each: one delegated handler on
    document means a page adds a target just by rendering `data-detail` on it. #}

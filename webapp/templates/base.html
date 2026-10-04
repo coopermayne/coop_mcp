@@ -316,8 +316,8 @@
       <a href="{{ base }}/journal" aria-label="Journal" title="Journal" class="hover:text-black transition-colors {% if active in ('journal', 'people') %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       </a>
-      <a href="{{ base }}/food" aria-label="Food" title="Food" class="hover:text-black transition-colors {% if active == 'food' %}text-black{% endif %}">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>
+      <a href="{{ base }}/food" aria-label="Water &amp; protein" title="Water &amp; protein" class="hover:text-black transition-colors {% if active == 'food' %}text-black{% endif %}">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
       </a>
       <a href="{{ base }}/workouts" aria-label="Training" title="Training" class="hover:text-black transition-colors {% if active in ('workouts', 'trainer') %}text-black{% endif %}">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="9" x2="3.5" y2="15"/><line x1="6.5" y1="6.5" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="20.5" y1="9" x2="20.5" y2="15"/><line x1="6.5" y1="12" x2="17.5" y2="12"/></svg>
@@ -626,7 +626,7 @@
   {# DOMPurify sits between marked and innerHTML everywhere markdown renders (here
      and chat.js). marked passes raw inline HTML through untouched, and this prose is
      model-written — an entry/article/recipe that picked up a hostile fragment
-     (prompt injection via a pasted page, a Telegram message, …) must not script the
+     (prompt injection via a pasted page, …) must not script the
      authenticated session. Sanitizing the PARSED output (not the source) keeps
      markdown intact and also strips javascript: hrefs. #}
   <script src="{{ base }}/static/vendor/purify.min.js"></script>

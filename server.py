@@ -2,7 +2,8 @@
 Journal MCP server.
 
 This module defines THREE FastMCP servers sharing one SQLite DB: `mcp` (the journal +
-eating tools, at /mcp), `trainer_mcp` (the training tools, at /trainer/mcp), and
+notes/collections tools, at /mcp), `trainer_mcp` (the training tools plus the
+water/protein log, at /trainer/mcp), and
 `teacher_mcp` (the spaced-repetition learning log, at /teacher/mcp; logic lives in the
 `learning/` package). They're split so each is its own connector / Claude project and
 a conversation loads only the relevant tool set. webapp/combined.py composes them onto
@@ -310,7 +311,7 @@ class AllowlistMiddleware(Middleware):
 
 # Tools hidden from the journal MCP connector (see HiddenToolsMiddleware).
 # Everything people/entry-shaped: the user does all journal capture through the
-# app's own chat, so the connector surface is intake + collections only. Keep
+# app's own chat, so the connector surface is notes & collections only. Keep
 # this set in sync when adding a journal tool.
 CONNECTOR_HIDDEN_TOOLS = frozenset({
     "add_journal_entry", "link_mentions", "save_person", "update_contact",
@@ -347,68 +348,23 @@ class HiddenToolsMiddleware(Middleware):
 
 # ---------------------------------------------------------------------------
 # Model-facing instructions — one journal server, two surfaces. The MCP
-# connector sees only the eating log + notes & collections (people/entry tools
-# hidden by HiddenToolsMiddleware); the app's own chat drives the FULL tool set
+# connector sees only notes & collections (people/entry tools hidden by
+# HiddenToolsMiddleware); the app's own chat drives the people/entry half
 # in-process and takes JOURNAL_CHAT_INSTRUCTIONS as its system prompt
 # (webapp/chat.py). The shared blocks are written once and composed into both
 # texts so the surfaces can't drift; the Pacific block is parameterized on the
-# tool that carries `now`, because get_briefing is hidden from the connector —
-# there, intake_summary is the clock.
+# tool that carries `now` (get_briefing); the connector has no clock tool and just
+# states the timezone.
 # ---------------------------------------------------------------------------
 
-def _pacific_block(anchor_tool: Optional[str] = None) -> str:
-    """The Pacific-dates rule, parameterized on WHERE the model reads `now`.
-
-    Most surfaces have a tool that carries it (get_briefing, intake_summary) and the
-    rule points at that tool. A surface can have none — the notes bot's tools are all
-    collection-shaped and none returns a clock — and then the anchor is the live
-    "Current moment" system block webapp/chat.py adds to every turn. Naming a tool
-    that doesn't return `now` would be worse than naming nothing: the model would go
-    looking for a field that isn't there and fall back to computing the date itself,
-    which is the one thing this block exists to stop."""
-    where = (f"{anchor_tool} returns `now` (current Pacific date/time), with\n"
-             if anchor_tool else
-             "The \u201cCurrent moment\u201d line in your system prompt is the current\n"
-             "Pacific date/time, with ")
+def _pacific_block(anchor_tool: str) -> str:
+    """The Pacific-dates rule, parameterized on the tool that returns `now`."""
     return f"""\
 All dates in this log are Pacific (America/Los_Angeles) — the user lives and logs
-on Pacific time. {where}`date`/`yesterday`/`tomorrow` precomputed: use those EXACT
-strings for "today"/"yesterday"/"tomorrow" rather than computing or shifting dates
-yourself, and resolve any bare day reference against them before defaulting or
-saving."""
-
-
-_INTAKE_BLOCK = """\
-Eating and drinking are logged as intake items: when the user mentions eating or
-drinking, call intake_log — ONCE PER ITEM ("a sandwich and a beer" is two calls).
-Corrections go through intake_update by id; day totals are summed from the
-items, so you never recompute a day yourself. Three rules keep the numbers
-trustworthy:
-  - TOTALS COME FROM THE DB, not from a tally you keep in conversation. Other clients
-    (the phone app, another chat) may write to the same day, so your context is not
-    the day. intake_log returns `day_totals` after every write; answer "how am I
-    doing" from those or a fresh intake_summary.
-  - REPEAT FOODS get looked up, not re-estimated: the intake log is its own food
-    database. When something sounds like a repeat — leftovers across several days, a
-    staple, "same as yesterday" — intake_find_past(name) surfaces what it was logged
-    at before (fuzzy, so spelling doesn't matter); reuse those settled numbers when
-    it's genuinely the same thing (your judgment), estimate fresh when it isn't.
-    Novel and one-off dishes you estimate yourself, as always.
-  - TARGETS AND COACHING CONTEXT (calorie/protein goals, medications, the cut, and how
-    the user wants to be coached) live in the eating profile — returned by
-    intake_summary, updated via intake_set_profile — not in whatever a conversation
-    happens to say. Load it BEFORE THE FIRST LOG of a conversation, not just before
-    answering a question: a session opens with "log a beer" far more often than with
-    "how am I doing", and logging without it is how the coaching goes quietly missing
-    for a whole day. Fold in durable changes as they come up, like a person's summary.
-    The NUMBERS live in one place only — the profile's `targets`, which the user edits
-    on the /food page — so never write one into the profile's prose. A spelled-out
-    number is a second copy: the user changes the goal on the page, the sentence goes
-    on quoting the old one, and the two then say different things with nothing to
-    show which is current. Refer to a target by placeholder instead, "{calories}",
-    and the live number is substituted when you read the profile back. There are no
-    floors or ceilings anywhere, only targets; whether a number is one to reach or
-    stay under goes in `targets_note`, in words."""
+on Pacific time. {anchor_tool} returns `now` (current Pacific date/time), with
+`date`/`yesterday`/`tomorrow` precomputed: use those EXACT strings for
+"today"/"yesterday"/"tomorrow" rather than computing or shifting dates yourself, and
+resolve any bare day reference against them before defaulting or saving."""
 
 
 # Connector-ONLY (not in JOURNAL_CHAT_INSTRUCTIONS): a Claude conversation writes
@@ -419,7 +375,7 @@ trustworthy:
 _APP_LINK_BLOCK = """\
 You are writing to a log the user READS IN THE APP, on another screen. Write tools
 return a `url` for what they just wrote — offer it when the user would rather look
-than be told (a day's rings, a saved recipe, a collection you just built), and skip
+than be told (a saved recipe, a collection you just built), and skip
 it when they simply wanted the thing captured. Don't paste one after every call."""
 
 
@@ -451,28 +407,29 @@ Four rules govern it:
     A write into a collection tells you when the slot is empty."""
 
 
-_TRAINER_NOTE = "(Workouts/training live on a separate `trainer` MCP server.)"
+_TRAINER_NOTE = ("(Workouts/training and the water/protein log live on a separate "
+                 "`trainer` MCP server.)")
 
 
-# What the journal PANEL is not for. The other two logs are captured elsewhere —
-# eating and notes/collections through the Claude connector, training in the trainer
-# chat — and this surface no longer carries their tools at all (webapp/chat.py narrows
+# What the journal PANEL is not for. The other logs are captured elsewhere —
+# notes/collections through the Claude connector, training (and water/protein) in
+# the trainer chat — and this surface no longer carries their tools at all (webapp/chat.py narrows
 # it to CONNECTOR_HIDDEN_TOOLS). Say so, rather than leaving the model to discover it
 # by reaching for a tool that isn't there: a meal named in passing is part of the
 # entry's story, and the right move is to write it down, not to apologize or offer to
 # log it somewhere it can't reach.
 _JOURNAL_ONLY_BLOCK = """\
-This panel captures the JOURNAL — entries and people — and nothing else. Eating,
-notes & collections, and workouts each have their own surface and are NOT among your
-tools here. So when a meal, a drink or a lift comes up in what the user is telling
+This panel captures the JOURNAL — entries and people — and nothing else. Notes &
+collections, workouts, and the water/protein log each have their own surface and are
+NOT among your tools here. So when a meal, a drink or a lift comes up in what the user is telling
 you, it is part of the entry: write it into the note like any other detail. Don't
 offer to log it, and don't tell the user where it belongs — they know."""
 
 
 # The app chat's system prompt for the journal surface — the journal contract, and
 # ONLY that. Consumed by webapp/chat.py; NOT what the connector sees. The two texts
-# are complements, like the tool lists they describe: this one drops the intake and
-# collections blocks the connector's `instructions` keep, and they go on sharing the
+# are complements, like the tool lists they describe: this one drops the
+# collections block the connector's `instructions` keep, and they go on sharing the
 # blocks that genuinely apply to both.
 JOURNAL_CHAT_INSTRUCTIONS = f"""\
 Single-user life log: a conversational journal — people are resolved to stable
@@ -516,76 +473,22 @@ they come up.
 {_TRAINER_NOTE}"""
 
 
-# ---------------------------------------------------------------------------
-# Two more compositions of the SAME blocks, for the two journal-side surfaces
-# that have no instructions of their own: the intake and notes Telegram bots
-# (webapp/telegram.py). The journal instance's `instructions` describe the
-# CONNECTOR, which carries eating and notes/collections TOGETHER; a bot carries
-# exactly one of them, so neither text fits and both halves are already written.
-#
-# So these say nothing new about how intake or collections work — that prose has
-# one home each (_INTAKE_BLOCK, _COLLECTIONS_BLOCK) and is composed here for the
-# fourth and fifth time. What's telegram-SPECIFIC (plain text, a phone, which
-# sibling bot owns what) is deliberately NOT here: that's the surface, not the
-# contract, and webapp/chat.py's per-agent `blurb` is where surface framing
-# already lives.
-INTAKE_CHAT_INSTRUCTIONS = f"""\
-Single-user EATING LOG: food, alcohol and water are all intake items, one row per
-thing consumed. The server only stores and sums — turning "a chipotle bowl" into
-numbers is your judgment. There is no food database here; the log IS one.
+_auth = _build_auth()
+mcp = FastMCP("journal", auth=_auth, instructions=f"""\
+Single-user life log. This connector carries its NOTES & COLLECTIONS layer; the
+journal proper (people, entries) is captured through the app's own chat and is not
+exposed here, so treat "save this idea" as the whole job.
 
-{_pacific_block("intake_summary")}
-
-{_INTAKE_BLOCK}
-
-{_APP_LINK_BLOCK}
-
-Start a session with intake_summary: it returns `now`, the recent days with their
-summed totals, and the stored eating profile (targets, goals, coaching context), so
-you coach in context rather than from a blank slate."""
-
-
-NOTES_CHAT_INSTRUCTIONS = f"""\
-Single-user NOTES & COLLECTIONS layer: the flexible half of a life log, for
-everything the user wants kept that has no bespoke schema — recipes, trip ideas,
-books, whatever comes up. A note with no collection is an inbox note; a collection
-gives a group of them a shape (its `fields`) and an icon.
-
-{_pacific_block()}
+Tool names carry their domain as a prefix: `notes_*` is a single note (filed or in
+the inbox), `collections_*` is the collection it's filed in. Dates are Pacific
+(America/Los_Angeles) — the user lives on Pacific time.
 
 {_COLLECTIONS_BLOCK}
 
 {_APP_LINK_BLOCK}
 
 collections_list is cheap and tells you what shapes already exist — read it before
-filing so a note lands somewhere real rather than starting a near-duplicate."""
-
-
-_auth = _build_auth()
-mcp = FastMCP("journal", auth=_auth, instructions=f"""\
-Single-user life log. This connector carries its EATING LOG and its NOTES &
-COLLECTIONS layer; the journal proper (people, entries) is captured through the
-app's own chat and is not exposed here, so treat "log my lunch" or "save this
-idea" as the whole job. The server only stores and sums — turning "a chipotle
-bowl" into numbers is your judgment.
-
-Tool names carry their domain as a prefix: `intake_*` is the eating log,
-`notes_*` is a single note (filed or in the inbox), `collections_*` is the
-collection it's filed in. Note that a "note" and an "intake item" are different
-things — intake_find_past searches what you've EATEN, notes_search searches what
-you've SAVED.
-
-{_pacific_block("intake_summary")}
-
-{_INTAKE_BLOCK}
-
-{_COLLECTIONS_BLOCK}
-
-{_APP_LINK_BLOCK}
-
-Start an eating session with intake_summary: it returns `now`, the recent days with
-their summed totals, and the stored eating profile (targets, goals, coaching
-context), so you coach in context rather than from a blank slate.
+filing so a note lands somewhere real rather than starting a near-duplicate.
 {_TRAINER_NOTE}""")
 if _auth is not None:
     mcp.add_middleware(AllowlistMiddleware())
@@ -601,7 +504,8 @@ _trainer_auth = _build_auth(os.environ.get("TRAINER_PUBLIC_URL"))
 trainer_mcp = FastMCP("trainer", auth=_trainer_auth, instructions="""\
 Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe, plus
 duration/distance for cardio like running and walking), the user's own exercises
-(active and archived, with target muscles), and their weigh-ins. The server only
+(active and archived, with target muscles), their weigh-ins, and a small daily
+water/protein log. The server only
 stores and computes deterministic aggregates (per-muscle recency/volume, cardio
 minutes/miles, personal records) — all coaching judgment (next weight, what to
 program, what to rest, how to cue form) is yours.
@@ -712,6 +616,16 @@ WEIGH-INS come from a connected scale. When the user attaches the scale app's ex
 read it and pass every row to import_weigh_ins (it skips what's already on file). A
 number they merely mention is not a reading — don't log it; the briefing's `bodyweight`
 is the trend to coach from.
+
+WATER AND PROTEIN are the one intake log kept — nothing else about food is tracked,
+so never estimate or bring up calories or other macros. When the user mentions
+drinking water or eating something with protein, call log_intake (water in fl oz,
+protein in grams — estimate protein from the food when they don't give a number, and
+say what you assumed). Day totals are SUMMED by the server, so answer "how's my water"
+from log_intake's `day_totals` or get_fitness_briefing's `intake_today`, never from a
+tally you've kept in conversation; read them against `targets`, which the user sets on
+the app's /food page and you only read. Fix an item with update_intake, remove one
+with delete_record(kind="intake"), look back over days with get_intake.
 
 THE USER'S PROFILE is the ONE place everything about them lives — this text holds the
 rules of the system, the profile holds the person. It comes back with every
@@ -1010,32 +924,30 @@ CREATE TABLE IF NOT EXISTS drinks (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_drinks_date ON drinks(drink_date);
 
 -- ----------------------------------------------------------------------- --
--- Intake log — ONE ROW PER THING CONSUMED. A sandwich is a row; a 12oz glass
--- of water is a row; a beer is a row. Food, alcohol and water are the same
--- shape because they're the same kind of fact, so there is no per-nutrient
--- special case anywhere above this table.
+-- Intake log — ONE ROW PER THING CONSUMED. Only water_oz and protein_g are
+-- live now (the trainer's log_intake); the other nutrient columns are from the
+-- full food-tracker days and are DORMANT — kept with their history, never read.
 --
 -- A day's totals are DERIVED (SUM ... GROUP BY food_date), never stored: a
 -- stored total can drift from the items it claims to summarize, and correcting
 -- one item would mean re-deriving it by hand. Correcting is instead a plain
 -- UPDATE/DELETE on the item's id — no arithmetic anywhere.
 --
--- Every nutrient column is per-item and optional; NULL means "not estimated"
--- (a day described only in words isn't a zero-calorie day). The model does the
--- estimating in conversation — there is no food database in here.
+-- Every nutrient column is per-item and optional; NULL means "not logged",
+-- which is a different fact from zero.
 -- ----------------------------------------------------------------------- --
 CREATE TABLE IF NOT EXISTS intake_items (
     id         INTEGER PRIMARY KEY,
     food_date  TEXT NOT NULL,    -- YYYY-MM-DD (Pacific) it was consumed
     position   INTEGER,          -- order logged within the day (1 = first)
     item       TEXT,             -- "chipotle bowl"; NULL for a bare tap ("+16oz")
-    calories   REAL,             -- all optional; NULL = not estimated
+    calories   REAL,             -- dormant; NULL = not logged
     protein_g  REAL,
     carbs_g    REAL,
     fat_g      REAL,
     sodium_mg  REAL,
     fiber_g    REAL,
-    standard_drinks REAL,        -- alcohol, in standard drinks
+    standard_drinks REAL,        -- dormant (alcohol, in standard drinks)
     water_oz   REAL,             -- fluid ounces of water (128 = a gallon)
     note       TEXT,             -- how it sat, why an estimate is soft
     created_at TEXT NOT NULL
@@ -1625,13 +1537,17 @@ def init_db() -> None:
             "SELECT value FROM settings WHERE key='nutrition_split_into_items'"
         ).fetchone()
         if not done2:
+            # The FULL column list the legacy table carried, spelled out — NUTRIENTS
+            # is now just the two live figures, and this fold must stay lossless.
+            legacy = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg",
+                      "fiber_g", "standard_drinks", "water_oz")
             for r in conn.execute("SELECT * FROM nutrition ORDER BY food_date").fetchall():
                 conn.execute(
                     "INSERT INTO intake_items(food_date, position, item, note, "
-                    + ", ".join(NUTRIENTS) + ", created_at) VALUES (?,?,?,?"
-                    + ",?" * len(NUTRIENTS) + ",?)",
+                    + ", ".join(legacy) + ", created_at) VALUES (?,?,?,?"
+                    + ",?" * len(legacy) + ",?)",
                     (r["food_date"], 1, r["summary"], r["notes"],
-                     *(r[m] for m in NUTRIENTS), r["created_at"]),
+                     *(r[m] for m in legacy), r["created_at"]),
                 )
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES "
@@ -2656,7 +2572,7 @@ def reorder_entries(entry_date: str, ordered_entry_ids: list[int]) -> dict:
 
 def _delete_record(kind: str, id: int) -> dict:
     """Shared delete implementation behind every delete tool on both servers (the
-    journal's four narrow ones, the trainer's kind-scoped delete_record). Maps
+    journal's three narrow ones, the trainer's kind-scoped delete_record). Maps
     `kind` to its table, deletes the row, and (for sets) renumbers the remaining
     set_index so it stays contiguous."""
     tables = {"entry": "entries", "intake_item": "intake_items",
@@ -2696,7 +2612,7 @@ def _delete_record(kind: str, id: int) -> dict:
     return out
 
 
-# Four narrow deletes rather than one kind-scoped delete_record. Each domain owns
+# Three narrow deletes rather than one kind-scoped delete_record. Each domain owns
 # its own destructive verb, so the model never picks a `kind` string (and never
 # picks the WRONG one), and the journal-only delete is gated by simply not being
 # advertised on the connector — see HiddenToolsMiddleware.
@@ -2708,15 +2624,6 @@ def journal_delete_entry(entry_id: int) -> dict:
     App chat only: this tool is not advertised on the MCP connector, where the
     whole journal surface is hidden."""
     return _delete_record("entry", entry_id)
-
-
-@mcp.tool(name="intake_delete", annotations=DESTRUCTIVE)
-def intake_delete(item_id: int) -> dict:
-    """Permanently delete one logged intake item — a meal, a beer, a glass of
-    water. Irreversible — confirm first. The day's totals re-derive from what's
-    left, so nothing else needs fixing. Find the id with intake_summary (or the
-    `item_id` intake_log returned)."""
-    return _delete_record("intake_item", item_id)
 
 
 @mcp.tool(name="notes_delete", annotations=DESTRUCTIVE)
@@ -3204,28 +3111,34 @@ def _get_profile(conn: sqlite3.Connection) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Intake tools (food, alcohol, water — one row per thing consumed)
+# Intake tools — water and protein, on the TRAINER server
 # --------------------------------------------------------------------------- #
 
-# The numeric nutrient columns, in the order they read back. One list so adding a
-# nutrient later doesn't mean editing every sum/average/round site. Alcohol and water
-# are in here deliberately: a beer and a sandwich are the same kind of fact, so they
-# share one shape and one code path — no parallel table, no per-nutrient special case.
-NUTRIENTS = ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g",
-             "standard_drinks", "water_oz")
-# Per-ITEM sanity ceilings. Deliberately far above any real meal — this is a
-# typo guard (a stray exponent, a doubled zero), not a judgment about how much
-# anyone should eat. It matters because day totals are DERIVED: one absurd row
-# silently poisons that day's totals and every average built on it, and the
-# damage isn't visible next to the item that caused it.
-NUTRIENT_MAX = {"calories": 20000, "protein_g": 2000, "carbs_g": 2000,
-                "fat_g": 2000, "sodium_mg": 100000, "fiber_g": 2000,
-                "standard_drinks": 100, "water_oz": 512}
+# The intake log used to be a full food tracker (calories, macros, sodium, fiber,
+# alcohol) on the journal connector. It's now just the two daily figures the user
+# still keeps — water and protein — and it lives on the trainer server, since both
+# are training-adjacent and too small to justify a surface of their own.
+#
+# The TABLE is unchanged: one intake_items row per thing consumed, day totals DERIVED
+# (summed), never stored, so a correction is one UPDATE and every total follows. The
+# other nutrient columns (calories, carbs_g, fat_g, sodium_mg, fiber_g,
+# standard_drinks) are DORMANT — kept with their history, never read or written by
+# the code. A legacy row carrying none of the two live figures is simply invisible.
+#
+# NUTRIENTS drives every sum/round/render site, so adding a figure back is one tuple
+# entry plus a unit label in macros.NUTRIENT_UNITS — the column is already there.
+NUTRIENTS = ("protein_g", "water_oz")
+# Per-ITEM sanity ceilings — a typo guard (a stray exponent, a doubled zero), not a
+# judgment. It matters because day totals are DERIVED: one absurd row silently skews
+# the day, nowhere near the item that caused it.
+NUTRIENT_MAX = {"protein_g": 500, "water_oz": 512}
+# Only rows carrying at least one live figure are part of the log.
+_LIVE_INTAKE = "(" + " OR ".join(f"{m} IS NOT NULL" for m in NUTRIENTS) + ")"
 
 
 def _bad_nutrients(values: dict) -> Optional[dict]:
-    """Range-check per-item nutrients. Shared by intake_log and intake_update so
-    the two can't drift. Same spirit as _bad_set: the error names the fix."""
+    """Range-check per-item figures. Shared by log_intake and update_intake so the
+    two can't drift. Same spirit as _bad_set: the error names the fix."""
     for k, v in values.items():
         if v is None:
             continue
@@ -3234,14 +3147,15 @@ def _bad_nutrients(values: dict) -> Optional[dict]:
         if k in NUTRIENT_MAX and v > NUTRIENT_MAX[k]:
             return {"error": f"{k}={v} is past the sane ceiling for ONE item "
                              f"({NUTRIENT_MAX[k]}) — check for a typo. Day totals "
-                             "are summed from items, so a wrong one skews the "
-                             "day and its averages."}
+                             "are summed from items, so a wrong one skews the day."}
     return None
 
 
 def _item_row(r) -> dict:
-    """One logged item, token-compact: only the nutrients it actually carries."""
-    out = {"item_id": r["id"], "food_date": r["food_date"], "item": r["item"]}
+    """One logged item, token-compact: only the figures it actually carries."""
+    out = {"item_id": r["id"], "food_date": r["food_date"]}
+    if r["item"]:
+        out["item"] = r["item"]
     if r["note"]:
         out["note"] = r["note"]
     for m in NUTRIENTS:
@@ -3251,8 +3165,8 @@ def _item_row(r) -> dict:
 
 
 def _day_totals(rows) -> dict:
-    """Sum a day's items per nutrient. A nutrient no item carries stays ABSENT (not 0)
-    — the day simply wasn't estimated for it, which is a different fact from zero."""
+    """Sum a day's items per figure. One no item carries stays ABSENT (not 0) — the
+    day simply wasn't logged for it, which is a different fact from zero."""
     totals = {}
     for m in NUTRIENTS:
         vals = [r[m] for r in rows if r[m] is not None]
@@ -3261,84 +3175,62 @@ def _day_totals(rows) -> dict:
     return totals
 
 
-@mcp.tool(name="intake_log", annotations=WRITE)
-def log_intake(item: str = "", food_date: Optional[str] = None,
-             calories: Optional[float] = None, protein_g: Optional[float] = None,
-             carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
-             sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
-             standard_drinks: Optional[float] = None, water_oz: Optional[float] = None,
-             note: Optional[str] = None) -> dict:
-    """Log ONE thing consumed — a meal, a snack, a beer, a glass of water. Call it once
-    per item, not once per day: "a sandwich and a beer" is TWO calls. Each becomes its
-    own row, and the day's totals are summed from them.
+def _day_rows(conn: sqlite3.Connection, d: str) -> list:
+    return conn.execute(
+        f"SELECT * FROM intake_items WHERE food_date=? AND {_LIVE_INTAKE} "
+        "ORDER BY position, id", (d,),
+    ).fetchall()
 
-    The returned `day_totals` are where the day ACTUALLY stands — read them back after
-    every write instead of keeping your own running tally. Other clients (the phone
-    app, another conversation) may be logging the same day, so your conversation
-    memory is not the day; when asked how the day is going, answer from `day_totals`
-    or a fresh intake_summary, never from arithmetic in your head. Alongside them,
-    `targets` is the user's stored daily goal per nutrient (absent for nutrients
-    with no goal set), so read a total AGAINST its target rather than reporting a
-    bare number — whether being over one is good or bad is your judgment, not the
-    server's. `url` is where the day is rendered, worth offering when the user
-    would rather look than be told.
 
-    REPEAT FOODS: before estimating something that sounds like a repeat — leftovers,
-    a staple, "same as yesterday" — check intake_find_past and reuse the settled
-    numbers (see its docstring for the judgment). Keep item TEXT consistent with the
-    past log when it is the same thing, so the history stays searchable.
+def _with_totals(out: dict, conn: sqlite3.Connection, d: str) -> dict:
+    """Pair a write's return with where the day now stands, and the targets to read
+    it against — a bare "64oz" is a number the model can report but not judge."""
+    out["day_totals"] = _day_totals(_day_rows(conn, d))
+    if targets := _day_targets(conn):
+        out["targets"] = targets
+    return out
 
-    Keep `item` the thing itself, in the user's own terms, concise and concrete
-    ("2 eggs, toast, black coffee", "chipotle bowl", "12oz water"). Put how it sat —
-    cravings, feeling stuffed, skipped on purpose — in `note`.
 
-    ALCOHOL AND WATER are items too, logged exactly like food: "two beers" is
-    `item="two beers"` with `standard_drinks=2` (plus its calories); "a big glass of
-    water" is `item="glass of water"` with `water_oz=16`. Convert to standard drinks
-    before calling — a regular beer, a 5oz glass of wine, or a shot each count ~1.0;
-    a strong cocktail ~1.5; a tallboy/double ~2.0. Water is in fluid ounces (128 = a
-    gallon).
+@trainer_mcp.tool(name="log_intake", annotations=WRITE)
+def log_intake(protein_g: Optional[float] = None, water_oz: Optional[float] = None,
+               item: str = "", food_date: Optional[str] = None,
+               note: Optional[str] = None) -> dict:
+    """Log water and/or protein — ONE thing consumed per call ("a protein shake and
+    a big glass of water" is two calls, or one if they came together). These are the
+    only two intake figures tracked; don't estimate or mention calories or other
+    macros.
 
-    The nutrient numbers are OPTIONAL and stay NULL until filled in. Estimate them
-    when the user wants numbers tracked or asks how a day is adding up (that judgment
-    is yours — the server looks up only what the user has SAVED; everything else is
-    your estimate); leave them out when they're just telling you what they ate. Don't
-    pass 0 for "unknown": NULL reads as unestimated, 0 as a real zero. A day the user
-    says they didn't drink is `standard_drinks=0` with no other numbers — that's a
-    record that the day was accounted for.
+    The returned `day_totals` are where the day ACTUALLY stands — read them back
+    instead of keeping your own running tally (the app or another conversation may
+    have logged the same day). `targets` holds the user's daily goals, set on the
+    app's /food page, so read a total against its target rather than reporting a
+    bare number.
 
-    To fix a logged item use intake_update (by `item_id`, which this returns and
-    intake_summary lists); to remove one, intake_delete(item_id=...).
-    Neither needs any arithmetic — the day's totals re-derive themselves.
+    Water is in fluid ounces (128 = a gallon; a "glass" is ~12-16oz, a typical
+    bottle 16.9oz). Protein is grams — estimate it from what they ate when they
+    don't give a number (a chicken breast ~40g, a scoop of whey ~25g), and say
+    what you assumed.
 
     Args:
-        item: What was consumed, e.g. "chipotle bowl". Optional only when logging a
-            bare number, like a water top-up from the app.
+        protein_g: Grams of protein in this item.
+        water_oz: Fluid ounces of water.
+        item: Optional short label in the user's own terms ("protein shake",
+            "chicken breast"). Leave empty for a bare water top-up.
         food_date: Day consumed, YYYY-MM-DD (Pacific). Defaults to today.
-        calories: Optional calories for THIS item.
-        protein_g: Optional grams of protein.
-        carbs_g: Optional grams of carbs.
-        fat_g: Optional grams of fat.
-        sodium_mg: Optional milligrams of sodium.
-        fiber_g: Optional grams of fiber.
-        standard_drinks: Optional standard drinks of alcohol.
-        water_oz: Optional fluid ounces of water.
-        note: Optional context for this item.
+        note: Optional context.
     """
     if err := _bad_date(food_date, "food_date"):
         return err
     item = (item or "").strip()
-    nutrients = {"calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
-                 "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
-                 "standard_drinks": standard_drinks, "water_oz": water_oz}
+    nutrients = {"protein_g": protein_g, "water_oz": water_oz}
     if err := _bad_nutrients(nutrients):
         return err
-    if not item and all(v is None for v in nutrients.values()):
-        return {"error": "nothing to log — pass an item and/or a nutrient amount"}
+    if all(v is None for v in nutrients.values()):
+        return {"error": "nothing to log — pass protein_g and/or water_oz"}
     d = food_date or today()
     cols = ("food_date", "position", "item", "note", *NUTRIENTS, "created_at")
     with db() as conn:
-        # Position is the order logged within the day — the server assigns it, same
+        # Position is the order logged within the day — server-assigned, the same
         # deterministic append as entries' day_position.
         nxt = conn.execute(
             "SELECT COALESCE(MAX(position), 0) + 1 AS n FROM intake_items WHERE food_date=?",
@@ -3349,42 +3241,25 @@ def log_intake(item: str = "", food_date: Optional[str] = None,
             + ",".join("?" * len(cols)) + ")",
             (d, nxt, item or None, note, *(nutrients[m] for m in NUTRIENTS), now()),
         ).lastrowid
-        rows = conn.execute(
-            "SELECT * FROM intake_items WHERE food_date=? ORDER BY position, id", (d,)
-        ).fetchall()
-        row = next(r for r in rows if r["id"] == rid)
-        targets = _day_targets(conn)
-    out = {**_item_row(row), "day_totals": _day_totals(rows)}
-    if targets:
-        out["targets"] = targets
+        row = conn.execute("SELECT * FROM intake_items WHERE id=?", (rid,)).fetchone()
+        out = _with_totals(_item_row(row), conn, d)
     if url := _app_url("/food"):
         out["url"] = url
     return out
 
 
-@mcp.tool(name="intake_summary", annotations=READ_ONLY)
-def get_intake(days: int = 14, since: Optional[str] = None,
-                  until: Optional[str] = None, include_items: bool = True) -> dict:
-    """Read the intake log back: per day, its items (with ids) and summed totals.
+@trainer_mcp.tool(name="get_intake", annotations=READ_ONLY)
+def get_intake(days: int = 7, since: Optional[str] = None,
+               until: Optional[str] = None, include_items: bool = True) -> dict:
+    """Read the water/protein log back: per day, its items (with ids) and summed
+    totals, plus the daily `targets`. Use it for "how have I been doing on water this
+    week", and to find the `item_id` of something to correct (update_intake) or
+    remove (delete_record kind="intake"). Today's totals also ride in on
+    get_fitness_briefing, so you don't need this just to check the current day.
 
-    Use this before commenting on how someone's been eating, and to find the `item_id`
-    of the thing to correct — intake_update and intake_delete both work by id, so
-    a fix never involves recomputing a day. Days with nothing logged are omitted; they
-    are NOT zero-calorie days.
-
-    This is also the eating session's anchor: it returns `now` (current Pacific
-    date/time with `date`/`yesterday`/`tomorrow` precomputed — resolve bare day
-    references against those exact strings) and the stored `profile` —
-    targets, goals, coaching context (see intake_set_profile) — so a fresh
-    conversation needs nothing pasted in. And it is the source of truth for where a
-    day stands: other clients may have logged items your conversation never saw, so
-    trust what comes back over any tally you've been keeping.
-
-    A day's totals sum only the items that carry each nutrient, and a nutrient no item
-    carries is absent rather than 0. `averages` work the same way across days — each
-    has its OWN denominator, so a week with protein on 7 days and sodium on 2 averages
-    sodium over those 2. Check `logged_days` and the per-day rows before calling any
-    of it a weekly average.
+    Days with nothing logged are omitted — they're unlogged, not zero. `averages` are
+    per figure over the days that carry it, each with its own denominator; check
+    `logged_days` before calling one a weekly average.
 
     Args:
         days: Size of the trailing window in days (ignored if `since` is given).
@@ -3394,10 +3269,8 @@ def get_intake(days: int = 14, since: Optional[str] = None,
     """
     if err := _bad_date(since, "since") or _bad_date(until, "until"):
         return err
-    # A backwards window matched nothing and reported it as a NEGATIVE
-    # window_days — an empty result that reads like "you logged nothing then",
-    # which is a different and far more alarming fact than "you asked
-    # backwards". Say which it is.
+    # A backwards window matched nothing and read like "you logged nothing then" —
+    # a different, more alarming fact than "you asked backwards". Say which it is.
     if since and until and since > until:
         return {"error": f"since {since!r} is after until {until!r} — the window "
                          "runs earliest to latest; swap them"}
@@ -3407,13 +3280,10 @@ def get_intake(days: int = 14, since: Optional[str] = None,
             date.fromisoformat(until).toordinal() - max(days, 1) + 1).isoformat()
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM intake_items WHERE food_date BETWEEN ? AND ? "
+            f"SELECT * FROM intake_items WHERE food_date BETWEEN ? AND ? AND {_LIVE_INTAKE} "
             "ORDER BY food_date DESC, position, id", (since, until),
         ).fetchall()
-        prof = _get_eating_profile(conn)
-        # Prose comes back with its {nutrient} placeholders filled from the live
-        # targets, so a note about a goal can never quote a stale number.
-        prof = _render_profile(prof, _day_targets(conn))
+        targets = _day_targets(conn)
     by_day: dict = {}
     for r in rows:
         by_day.setdefault(r["food_date"], []).append(r)
@@ -3429,60 +3299,36 @@ def get_intake(days: int = 14, since: Optional[str] = None,
                 if t is not None]
         if vals:
             averages[m] = round(sum(vals) / len(vals), 1)
-    window_days = (date.fromisoformat(until).toordinal()
-                   - date.fromisoformat(since).toordinal() + 1)
-    out = {
-        "now": current_clock(),
-        "since": since, "until": until, "window_days": window_days,
-        "logged_days": len(by_day),
-        "days": out_days,
-        "averages": averages,
-    }
-    if prof:
-        out["profile"] = prof
+    out = {"since": since, "until": until, "logged_days": len(by_day),
+           "days": out_days, "averages": averages}
+    if targets:
+        out["targets"] = targets
     return out
 
 
-@mcp.tool(name="intake_update", annotations=WRITE_IDEMPOTENT)
-def update_intake_item(item_id: int, item: Optional[str] = None,
+@trainer_mcp.tool(name="update_intake", annotations=WRITE_IDEMPOTENT)
+def update_intake_item(item_id: int, protein_g: Optional[float] = None,
+                       water_oz: Optional[float] = None, item: Optional[str] = None,
                        food_date: Optional[str] = None,
-                       calories: Optional[float] = None, protein_g: Optional[float] = None,
-                       carbs_g: Optional[float] = None, fat_g: Optional[float] = None,
-                       sodium_mg: Optional[float] = None, fiber_g: Optional[float] = None,
-                       standard_drinks: Optional[float] = None,
-                       water_oz: Optional[float] = None,
                        note: Optional[str] = None) -> dict:
-    """Correct ONE logged item. Only the args you pass are written, and they REPLACE
-    that item's values (intake_log adds a new item; this edits an existing one).
-
-    This is the whole correction path: "that bowl was 600, not 1100" is one call with
-    `calories=600` — you do NOT recompute the day, because the day's totals are summed
-    from the items. `food_date` moves the item to another day. To remove it entirely,
-    intake_delete(item_id=...). Find ids with intake_summary.
-
-    Returns the re-derived `day_totals` with the stored `targets` to read them
-    against, same as intake_log.
+    """Correct ONE logged intake item. Only the args you pass are written, and they
+    REPLACE that item's values. "That shake was 30g, not 50" is one call — you never
+    recompute the day, because its totals are summed from the items. `food_date`
+    moves the item to another day. To remove it, delete_record(kind="intake").
+    Returns the re-derived `day_totals` with the `targets`, same as log_intake.
 
     Args:
-        item_id: The item to correct (from intake_summary or intake_log).
-        item: Replacement text for what it was.
-        food_date: Move it to this day, YYYY-MM-DD (Pacific).
-        calories: Replacement calories for this item.
+        item_id: The item to correct (from log_intake or get_intake).
         protein_g: Replacement grams of protein.
-        carbs_g: Replacement grams of carbs.
-        fat_g: Replacement grams of fat.
-        sodium_mg: Replacement milligrams of sodium.
-        fiber_g: Replacement grams of fiber.
-        standard_drinks: Replacement standard drinks.
         water_oz: Replacement fluid ounces of water.
-        note: Replacement note for this item.
+        item: Replacement label.
+        food_date: Move it to this day, YYYY-MM-DD (Pacific).
+        note: Replacement note.
     """
     if err := _bad_date(food_date, "food_date"):
         return err
     fields = {"item": item, "note": note, "food_date": food_date,
-              "calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
-              "fat_g": fat_g, "sodium_mg": sodium_mg, "fiber_g": fiber_g,
-              "standard_drinks": standard_drinks, "water_oz": water_oz}
+              "protein_g": protein_g, "water_oz": water_oz}
     if err := _bad_nutrients({m: fields[m] for m in NUTRIENTS}):
         return err
     sets = {k: v for k, v in fields.items() if v is not None}
@@ -3504,14 +3350,16 @@ def update_intake_item(item_id: int, item: Optional[str] = None,
             (*sets.values(), item_id),
         )
         cur = conn.execute("SELECT * FROM intake_items WHERE id=?", (item_id,)).fetchone()
-        rows = conn.execute(
-            "SELECT * FROM intake_items WHERE food_date=? ORDER BY position, id",
-            (cur["food_date"],),
-        ).fetchall()
-        targets = _day_targets(conn)
-    out = {**_item_row(cur), "updated": [k for k in sets if k != "position"],
-           "day_totals": _day_totals(rows)}
-    if targets:
+        out = _with_totals({**_item_row(cur), "updated": [k for k in sets if k != "position"]},
+                           conn, cur["food_date"])
+    return out
+
+
+def _intake_today(conn: sqlite3.Connection) -> dict:
+    """Today's water/protein for get_fitness_briefing: totals plus targets, so a
+    training conversation opens already knowing where the day stands."""
+    out = {"totals": _day_totals(_day_rows(conn, today()))}
+    if targets := _day_targets(conn):
         out["targets"] = targets
     return out
 
@@ -3522,17 +3370,11 @@ def _get_eating_profile(conn: sqlite3.Connection) -> dict:
 
 
 def _day_targets(conn: sqlite3.Connection) -> dict:
-    """The stored daily targets, to pair with a day's totals on a WRITE. A sum with
-    nothing to read it against ("sodium 2100") is a number the model can report but
-    not judge, so it either says nothing useful or spends a second intake_summary
-    call to find the goal it already had in the DB. intake_summary surfaces these
-    inside `profile`; this is the same numbers, hoisted for the write path.
-
-    Malformed entries are SKIPPED, exactly as the webapp's nutrient_targets() skips
-    them — _bad_targets guards the write, but a hand-edited blob shouldn't make a
-    log call fail. There is no ceiling/floor direction on any of this: a target is
-    just a target, and whether being over one matters is a nuance the profile's
-    prose can phrase far better than a flag could encode."""
+    """The stored daily targets (settings → eating_profile → targets), written from
+    the /food page's Targets popover. Malformed entries — and targets for nutrients
+    no longer tracked — are SKIPPED, exactly as the webapp's nutrient_targets() skips
+    them: _bad_targets guards the write, but an old blob shouldn't fail a log call.
+    A target is just a target; there's no ceiling/floor direction anywhere."""
     t = _get_eating_profile(conn).get("targets")
     if not isinstance(t, dict):
         return {}
@@ -3542,13 +3384,9 @@ def _day_targets(conn: sqlite3.Connection) -> dict:
 
 
 def _bad_targets(targets) -> Optional[str]:
-    """Check the profile's one STRUCTURED key. The rest of the blob is free-form
-    on purpose, but `targets` is read by machinery — the webapp's rings — which
-    accepts only a real nutrient key carrying a positive number and silently
-    keeps its default otherwise. Without this the two disagree in the worst
-    direction: the write reports success, and the ring you were aiming at goes
-    on reading the old number with nothing to say why. Same actionable-error
-    habit as _bad_data/_bad_set/_bad_icon."""
+    """Check a targets write: a real nutrient key carrying a positive number. The
+    rings silently keep their default otherwise, so without this the save would
+    report success while the ring went on reading the old number."""
     if targets is None:
         return None
     if not isinstance(targets, dict):
@@ -3556,8 +3394,6 @@ def _bad_targets(targets) -> Optional[str]:
                 f"the nutrients are {list(NUTRIENTS)}")
     for k, v in targets.items():
         if k not in NUTRIENTS:
-            # Closest name in the error, the _bad_icon habit: a typo'd nutrient
-            # ("protien_g") should be fixable from the message in one go.
             near = max(NUTRIENTS,
                        key=lambda n: jellyfish.jaro_winkler_similarity(str(k), n))
             return (f"unknown nutrient {k!r} in targets — did you mean {near!r}? "
@@ -3569,172 +3405,21 @@ def _bad_targets(targets) -> Optional[str]:
     return None
 
 
-# The placeholder convention: prose in the eating profile refers to a target by
-# NAME, "{calories}", and the number is substituted at read time. This is the whole
-# fix for the mixed-messages problem — a note that spelled the number out was a
-# SECOND copy of it, and the /food popover could change the first one without ever
-# touching the second, silently. There is no LLM in this path: it is a regex and a
-# dict lookup.
-_TARGET_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+def set_nutrient_targets(targets: dict) -> dict:
+    """Set the daily water/protein targets from the WEBSITE — the /food page's
+    Targets popover. A NON-tool, website-only path like set_collection_display and
+    import_bodyweight: never a FastMCP tool, so this is the one door onto the goals, and
+    the model only ever reads them (log_intake/get_intake/get_fitness_briefing).
 
-
-def _fmt_target(v) -> str:
-    """A target as prose reads it: 2000 not 2000.0, 1.5 kept as 1.5."""
-    return str(int(v)) if float(v) == int(v) else str(v)
-
-
-def _render_targets_prose(text: str, targets: dict) -> str:
-    """Substitute {nutrient} placeholders with the live numbers. A placeholder whose
-    nutrient has no target set renders as "(no target set)" rather than a number:
-    the server can't see the webapp's DISPLAY defaults (webapp/data.NUTRIENT_TARGETS),
-    and inventing one here would be exactly the second copy this convention exists to
-    prevent. An unknown name is left verbatim — _bad_targets_note rejects those at the
-    door, so anything that survives to a read is not ours to rewrite."""
-    if not isinstance(text, str) or "{" not in text:
-        return text
-    def sub(m):
-        k = m.group(1)
-        if k not in NUTRIENTS:
-            return m.group(0)
-        v = targets.get(k)
-        return _fmt_target(v) if v is not None else "(no target set)"
-    return _TARGET_PLACEHOLDER.sub(sub, text)
-
-
-def _render_profile(profile: dict, targets: dict) -> dict:
-    """The profile as the model should READ it: every prose value with its
-    placeholders filled from the current targets. The STORED blob keeps the
-    placeholders — that's the copy the popover edits and the one that can't go
-    stale."""
-    return {k: (_render_targets_prose(v, targets) if isinstance(v, str) else v)
-            for k, v in profile.items()}
-
-
-def _bad_targets_note(note) -> Optional[str]:
-    """Validate the one prose key with a second door — `targets_note`, edited from
-    the /food popover as well as by the model. Only the PLACEHOLDERS are checked, in
-    the actionable-error habit of _bad_targets/_bad_icon: a typo'd "{protien_g}"
-    would otherwise render verbatim in the model's context, looking like prose."""
-    if note is None:
-        return None
-    if not isinstance(note, str):
-        return f"targets_note must be a string, got {note!r}"
-    for k in _TARGET_PLACEHOLDER.findall(note):
-        if k not in NUTRIENTS:
-            near = max(NUTRIENTS,
-                       key=lambda n: jellyfish.jaro_winkler_similarity(k, n))
-            return (f"unknown nutrient {{{k}}} in targets_note — did you mean "
-                    f"{{{near}}}? The nutrients are {list(NUTRIENTS)}")
-    return None
-
-
-def _note_literals(note, targets: dict) -> list:
-    """ADVISORY (never blocking, like unfilled_fields/stranded): a bare number in the
-    note that EQUALS a current target is a second copy of it, which is how the note
-    and the popover came to disagree in the first place. Deterministic — it compares
-    the numbers actually stored, so it can't guess wrong about which is which."""
-    if not isinstance(note, str) or not targets:
-        return []
-    seen, out = set(), []
-    for tok in re.findall(r"\d[\d,]*(?:\.\d+)?", note):
-        try:
-            n = float(tok.replace(",", ""))
-        except ValueError:
-            continue
-        for k, v in targets.items():
-            if float(v) == n and tok not in seen:
-                seen.add(tok)
-                out.append(f"the note says {tok}, which is targets.{k} — "
-                           f"write {{{k}}} instead so it follows the number")
-    return out
-
-
-@mcp.tool(name="intake_set_profile", annotations=WRITE_IDEMPOTENT)
-def update_eating_profile(profile: dict) -> dict:
-    """Merge fields into the stored eating profile (JSON) — the trainer profile's
-    twin. This is where targets and coaching context LIVE, so they survive across
-    conversations instead of being pasted into each one: intake_summary returns the
-    profile, and a target changed here is changed everywhere at once (the webapp's
-    rings read `targets` too).
-
-    Pass only the keys you want to change; each top-level key you pass REPLACES that
-    key wholesale (read the current profile via intake_summary first), a key set to null
-    is dropped, and unmentioned keys are preserved.
-
-    Two keys are special. `targets` is a flat {nutrient: number} dict on the intake
-    nutrient keys (calories, protein_g, carbs_g, fat_g, sodium_mg, fiber_g,
-    standard_drinks, water_oz) — the daily goals, e.g.
-    {"targets": {"calories": 2100, "protein_g": 150, "water_oz": 128}}. It is the
-    SINGLE SOURCE OF TRUTH for every one of those numbers, and the user edits it on
-    the /food page. `targets_note` is its prose companion — direction and nuance, the
-    things a bare number can't say — and it has that same second door, so treat it as
-    the user's text and edit it sparingly.
-
-    NEVER WRITE A TARGET'S NUMBER INTO PROSE — see the server instructions for why.
-    Refer to one by placeholder, "{calories}", and the current number is substituted
-    when you read the profile back. Everything else is free-form: keep durable coaching
-    facts here the way you'd keep them in a person's summary, e.g.
-    {"goal": "cut to 180 by December", "stats": "6'4\", 205",
-     "context": "on semaglutide — front-load protein, watch fiber + water",
-     "targets_note": "calories and sodium are numbers to stay under; protein and "
-                     "water are numbers to reach. Flag a day well under {calories}."}
-    """
-    if (err := _bad_targets(profile.get("targets"))):
-        return {"error": err}
-    if (err := _bad_targets_note(profile.get("targets_note"))):
-        return {"error": err}
-    with db() as conn:
-        current = _get_eating_profile(conn)
-        current.update(profile)
-        current = {k: v for k, v in current.items() if v is not None}
-        conn.execute(
-            """INSERT INTO settings(key, value) VALUES ('eating_profile', ?)
-               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-            (json.dumps(current),),
-        )
-        stale = _note_literals(current.get("targets_note"), _day_targets(conn))
-    out = {"profile": current}
-    if stale:
-        out["stale_prose"] = stale
-    return out
-
-
-def set_nutrient_targets(targets: dict, note: Optional[str] = None) -> dict:
-    """Set the daily nutrient targets, and the note that explains them, from the
-    WEBSITE — the /food page's Targets popover. A NON-tool, website-only path like set_collection_display and
-    import_bodyweight: never a FastMCP tool, so no connector can reach it.
-
-    It writes the SAME place update_eating_profile does (settings →
-    `eating_profile` → `targets`), because one set of goals feeding both the rings
-    and the model's coaching is the whole point of storing them. This is a second
-    DOOR onto those numbers, not a second copy — and it earns its keep because the
-    screen where you NOTICE a target is wrong is the one showing the rings, and
-    reaching the other door meant opening a chat to say it in a sentence.
-
-    Two differences from the model's door, both because this one edits numbers
-    rather than prose. It merges per NUTRIENT (update_eating_profile replaces each
-    top-level key wholesale, which for a form would mean every unfilled box quietly
-    clearing a goal), and a key set to None DROPS that override, falling back to
-    the webapp's default — so a target can be handed back, not just changed. Only
-    the numbers being SET are validated; an unknown key paired with None is left to
-    pop harmlessly, since removing junk from the blob is the one thing it can do.
-    Everything else in the profile — goals, stats, coaching context — is untouched.
-
-    There is no direction here, and none in the webapp either: a target is just a
-    target. Which numbers are caps, which are floors, which are informational — that
-    is what `note` is for, and it rides along on this same save BECAUSE the screen
-    where you change a number is the screen that should show the sentence describing
-    it. Editing them apart is precisely how the note came to contradict the numbers.
-    Unlike the per-nutrient merge above, `note` REPLACES targets_note wholesale (it is
-    one blob of prose, not a dict) and "" drops it — the same hand-it-back gesture a
-    blank number input makes. Pass None to leave it untouched. It may refer to a
-    target by placeholder, "{calories}"; it must not spell the number out, and
-    `stale_prose` in the return says so when it does."""
+    Merges per NUTRIENT, and a key set to None DROPS that override, falling back to
+    the webapp's default — so a blank input hands a goal back rather than zeroing it.
+    Only the numbers being SET are validated; an unknown key paired with None pops
+    harmlessly, since removing junk from the blob is the one thing it can do. The
+    rest of the stored eating profile (legacy prose from the food-tracker days) is
+    left untouched."""
     if not isinstance(targets, dict):
         return {"error": f"targets must be a {{nutrient: number}} dict, got {targets!r}"}
     if (err := _bad_targets({k: v for k, v in targets.items() if v is not None})):
-        return {"error": err}
-    if (err := _bad_targets_note(note)):
         return {"error": err}
     with db() as conn:
         profile = _get_eating_profile(conn)
@@ -3749,150 +3434,12 @@ def set_nutrient_targets(targets: dict, note: Optional[str] = None) -> dict:
             profile["targets"] = cur
         else:
             profile.pop("targets", None)
-        if note is not None:
-            if note.strip():
-                profile["targets_note"] = note.strip()
-            else:
-                profile.pop("targets_note", None)
         conn.execute(
             """INSERT INTO settings(key, value) VALUES ('eating_profile', ?)
                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
             (json.dumps(profile),),
         )
-        stale = _note_literals(profile.get("targets_note"), cur)
-    out = {"targets": cur, "note": profile.get("targets_note", "")}
-    if stale:
-        out["stale_prose"] = stale
-    return out
-
-
-# --------------------------------------------------------------------------- #
-# Past-item lookup — the intake log IS the food database
-# --------------------------------------------------------------------------- #
-
-def _score_item_text(query: str, text: str) -> float:
-    """0..1 similarity of a spoken food name to a logged item's text, judged token by
-    token (an item is a phrase — "Chobani lactose-free Greek yogurt w/ whey" — so
-    whole-string similarity would punish every word the query didn't say). Each query
-    token takes its best match among the item's tokens: exact wins outright, a
-    substring hit of 3+ characters (prefixes while typing, "yog" in "yogurt") lands
-    just under, then Jaro-Winkler — damped when the two tokens' lengths are far
-    apart — with the phonetic floor for transcription noise. The item is scored
-    on the MEAN over query tokens, so "chobani drink" needs both words to land
-    somewhere, not either one.
-
-    The two length guards exist because this tool's whole job is telling a genuine
-    repeat from a near-twin, and both defaults scored junk above PAST_ITEM_FLOOR —
-    see the comments inline."""
-    # Single-character query tokens are dropped, not scored. One letter identifies
-    # no food, but it matches EXACTLY against the "a" in "half a medium eggplant"
-    # — a perfect 1.0 on a word carrying no information — and inside a longer
-    # query it drags the mean up with it. Items keep their short tokens; they're
-    # only ever match targets.
-    qt = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(t) > 1]
-    tt = re.findall(r"[a-z0-9]+", (text or "").lower())
-    if not qt or not tt:
-        return 0.0
-
-    def best(q: str) -> float:
-        s = 0.0
-        for t in tt:
-            if q == t:
-                cand = 1.0
-            elif len(q) >= 3 and len(t) >= 3 and (q in t or t in q):
-                # LENGTH-GUARDED substring. Ungated, this paid 0.92 for a single
-                # character, so the query "a" scored a PERFECT 1.0 against "half a
-                # medium eggplant" — every item containing an "a" came back looking
-                # like a settled repeat. A substring only means something once
-                # there's enough of it to mean something.
-                cand = 0.92
-            else:
-                cand = jellyfish.jaro_winkler_similarity(q, t)
-                # Jaro-Winkler pays a prefix bonus that short strings can't earn
-                # honestly: "chipotel" vs "pot" scored 0.792, which cleared the
-                # 0.74 floor and put hot pot vegetables at the top of a search for
-                # a chipotle bowl. Damp it when the two lengths are far apart —
-                # the shorter the overlap relative to the longer word, the less a
-                # shared opening is evidence of the same food.
-                ratio = min(len(q), len(t)) / max(len(q), len(t))
-                if ratio < 0.6:
-                    cand *= 0.5 + 0.5 * ratio
-                if phonetic(q) and phonetic(q) == phonetic(t):
-                    cand = max(cand, 0.88)
-            s = max(s, cand)
-        return s
-
-    return round(sum(best(q) for q in qt) / len(qt), 3)
-
-
-PAST_ITEM_FLOOR = 0.74  # forgiving on purpose: this returns CANDIDATES for you to
-                        # judge, never numbers that apply themselves — a loose match
-                        # costs a glance, a missed one costs a re-estimate.
-
-
-@mcp.tool(name="intake_find_past", annotations=READ_ONLY)
-def find_past_items(query: str, limit: int = 8) -> dict:
-    """Search everything the user has EVER logged eating, by name — fuzzily, so
-    spelling, word order and partial names all land ("chobani yogrut", "yogurt
-    drink", "modelo"). The intake log is its own food database: when something
-    sounds like a repeat — leftovers eaten across several days, a staple, "same as
-    yesterday", "another one of those" — look it up here and REUSE the settled
-    numbers instead of re-estimating them (label-backed numbers especially: they were
-    settled once and shouldn't drift). Whether a hit really IS the same thing — the
-    190g cup vs the 10oz drink, a full vs half portion — is YOUR judgment, from the
-    item text and the numbers shown.
-
-    Matches are grouped by identical item text: each comes back once with its most
-    recent numbers (`last` — latest wins, it's the most corrected), `last_date`,
-    `times` logged, and `item_id` of that latest row. Ranked by match quality, with
-    recent items breaking ties upward — on a changing diet the version from this
-    week outranks the one from months ago.
-
-    Args:
-        query: The food as spoken, e.g. "chobani drink", "meatballs".
-        limit: Max distinct items returned.
-    """
-    query = (query or "").strip()
-    if not query:
-        return {"error": "pass a query — the food name as the user said it"}
-    limit, _ = _page(limit)
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM intake_items WHERE item IS NOT NULL "
-            "ORDER BY food_date DESC, position DESC, id DESC"
-        ).fetchall()
-    groups: dict[str, dict] = {}
-    for r in rows:  # newest first, so first sight of a text is its latest occurrence
-        key = r["item"].lower()
-        g = groups.get(key)
-        if g is None:
-            groups[key] = {"row": r, "times": 1}
-        else:
-            g["times"] += 1
-    today_ord = date.fromisoformat(today()).toordinal()
-    scored = []
-    for g in groups.values():
-        r = g["row"]
-        sc = _score_item_text(query, r["item"])
-        if sc < PAST_ITEM_FLOOR:
-            continue
-        # Recency riding on top of the match score (never replacing it): a half-life
-        # of ~30 days worth up to +0.05 — enough to lift this week's version of a
-        # food over last month's near-identical twin, too small to promote a WORSE
-        # match. Deterministic arithmetic, no judgment.
-        age = max(0, today_ord - date.fromisoformat(r["food_date"]).toordinal())
-        scored.append((sc + 0.05 * (0.5 ** (age / 30)), sc, g))
-    scored.sort(key=lambda t: t[0], reverse=True)
-    out = []
-    for _rank, sc, g in scored[:limit]:
-        r = g["row"]
-        last = {m: round(r[m], 1) for m in NUTRIENTS if r[m] is not None}
-        entry = {"item": r["item"], "item_id": r["id"], "last_date": r["food_date"],
-                 "times": g["times"], "score": sc, "last": last}
-        if r["note"]:
-            entry["note"] = r["note"]
-        out.append(entry)
-    return {"query": query, "matches": out}
+    return {"targets": {k: v for k, v in cur.items() if k in NUTRIENTS}}
 
 
 # --------------------------------------------------------------------------- #
@@ -6379,7 +5926,8 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
     in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
     logged last time is a caution this time), `bodyweight` (latest reading, days since,
-    and 30-day change; negative = down), `upcoming` (sessions already PLANNED and not yet
+    and 30-day change; negative = down), `intake_today` (water/protein so far),
+    `upcoming` (sessions already PLANNED and not yet
     done — workout_id, planned_date, focus, exercise names, set count — next-due first),
     `exercises` — the user's ACTIVE exercises (muscles, last_done, sessions, note) — and
     `archived_exercises` (how many are in the archive; list_exercises shows them). Call this at the
@@ -6398,7 +5946,11 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
 
     `muscle_recency` counts COMPLETED work only, so it can't see the days you've already
     programmed this week — that's what `upcoming` is for. Read it alongside the recency
-    numbers: a muscle that reads "due" may already be booked for Wednesday."""
+    numbers: a muscle that reads "due" may already be booked for Wednesday.
+
+    `intake_today` is today's water/protein totals with their `targets` (see
+    log_intake) — always TODAY, whatever `as_of` says, since it's where the day
+    stands rather than anything to plan from."""
     ref = as_of or today()
     if err := _bad_date(as_of, "as_of"):
         return err
@@ -6492,6 +6044,7 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
                           "days_since": _days_since(bw_latest["weigh_date"])}
             if base:
                 bodyweight["change_30d_lbs"] = round(bw_latest["weight_lbs"] - base["weight_lbs"], 1)
+        intake_today = _intake_today(conn)
     recency = sorted(
         ({"muscle": r["muscle"], "last_trained": r["last_date"],
           "days_since": _days_since(r["last_date"], ref), "sets_last_7d": r["sets_7d"]}
@@ -6510,7 +6063,8 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
             "muscle_recency": recency, "cardio_recency": cardio,
             "bodyweight": bodyweight, "recent_workouts": recent_out,
             "upcoming": upcoming_out, "exercises": active,
-            "archived_exercises": archived_count}
+            "archived_exercises": archived_count,
+            "intake_today": intake_today}
 
 
 @trainer_mcp.tool(annotations=WRITE_IDEMPOTENT)
@@ -6576,14 +6130,17 @@ def delete_training_record(kind: str, id: int) -> dict:
       - "workout" — a whole session (all its sets go too).
       - "set"     — one logged set (remaining sets for that exercise are renumbered
                     so set_index stays contiguous).
-    Find workout/set ids with get_fitness_briefing or get_exercise_history.
+      - "intake"  — one logged water/protein item; the day's totals re-derive.
+    Find workout/set ids with get_fitness_briefing or get_exercise_history, intake
+    item ids with get_intake (or the `item_id` log_intake returned).
 
     Weigh-ins are NOT deletable here — they come from the scale's export and are
     corrected at the scale's app, then re-exported."""
-    if kind not in ("workout", "set"):
+    if kind not in ("workout", "set", "intake"):
         return {"error": f"unknown kind {kind!r}; this server deletes one of "
-                         "['set', 'workout'] (use the journal server for entries and notes)"}
-    return _delete_record(kind, id)
+                         "['intake', 'set', 'workout'] (use the journal server for "
+                         "entries and notes)"}
+    return _delete_record("intake_item" if kind == "intake" else kind, id)
 
 
 # --------------------------------------------------------------------------- #

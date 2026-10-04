@@ -209,34 +209,19 @@ with server.db() as conn:
 print(f"entries written: {len(E)}; mentions auto-resolved: {resolved}")
 
 # --------------------------------------------------------------------------- #
-# Drinks — scattered, mostly social, a few sober stretches
+# Water + protein — a few days of the trainer's intake log
 
-DRINKS = [
-    ("2026-04-05", 1.0, "wine", None),
-    ("2026-04-07", 2.0, "beer", "dinner out"),
-    ("2026-04-09", 1.5, "cocktail", None),
-    ("2026-04-15", 3.0, "wine", "Robin's birthday"),
-    ("2026-04-17", 1.0, "beer", None),
-    ("2026-04-23", 1.5, "beer", "with Dev"),
-    ("2026-04-25", 1.0, "wine", None),
-    ("2026-04-26", 2.0, "mimosa", "brunch"),
-    ("2026-04-28", 1.5, "wine", None),
-    ("2026-05-02", 1.0, "wine", "with Robin"),
-    ("2026-05-08", 2.5, "cocktail", "with Alex"),
-    ("2026-05-10", 1.5, "mimosa", None),
-    ("2026-05-14", 1.0, "beer", None),
-    ("2026-05-16", 1.0, "wine", None),
-    ("2026-05-20", 2.0, "beer", "with Theo"),
-    ("2026-05-24", 1.0, "wine", None),
-    ("2026-05-25", 3.0, "margarita", "El Coyote"),
-    ("2026-05-26", 2.0, "beer", "beach day"),
-    ("2026-05-30", 1.0, "beer", None),
-    ("2026-06-01", 1.0, "wine", "Lillet"),
+INTAKE = [
+    ("2026-05-28", 40, None, "chicken breast"),
+    ("2026-05-28", None, 32, None),
+    ("2026-05-29", 25, 16, "protein shake"),
+    ("2026-05-30", None, 48, None),
+    ("2026-05-31", 35, None, "greek yogurt + eggs"),
+    ("2026-06-01", None, 24, None),
 ]
-for dd, n, kind, notes in DRINKS:
-    # Alcohol is a nutrient on the intake row now — same path as food.
-    server.log_intake(item=kind, food_date=dd, standard_drinks=n, note=notes)
-print(f"drinks logged: {len(DRINKS)}")
+for dd, prot, water, label in INTAKE:
+    server.log_intake(protein_g=prot, water_oz=water, item=label or "", food_date=dd)
+print(f"intake logged: {len(INTAKE)}")
 
 
 # --------------------------------------------------------------------------- #

@@ -50,12 +50,11 @@
     <button type="button" class="gchip" data-range="0">All</button>
   </div>
 
-  {# Which panels are on. Weight and drinks are single lines with their own units,
-     so each is its own panel; all strength exercises share the lbs panel below.
+  {# Which panels are on. Bodyweight is its own panel; all strength exercises share
+     the lbs panel below.
      Cursor is synced across panels, so together they read as one timeline. #}
   <div class="flex flex-wrap gap-1.5 mb-6" data-panel-chips role="group" aria-label="Data shown">
     <button type="button" class="gchip" data-panel="weight"><span class="gdot"></span>Bodyweight</button>
-    <button type="button" class="gchip" data-panel="drinks"><span class="gdot"></span>Drinks</button>
     <button type="button" class="gchip" data-panel="exercises"><span class="gdot"></span>Exercises</button>
   </div>
 
@@ -125,13 +124,6 @@
     </div>
     <div data-chart="exercises"></div>
     <p class="text-[11px] text-gray-400 mt-2" data-ex-meta></p>
-  </section>
-
-  <section data-panel-el="drinks" hidden class="mb-8">
-    <div class="flex items-baseline justify-between mb-2">
-      <h2 class="text-sm font-semibold">Drinks <span class="text-gray-400 font-normal">std&nbsp;drinks / day</span></h2>
-    </div>
-    <div data-chart="drinks"></div>
   </section>
 
   <p class="text-sm text-gray-400" data-graphs-empty hidden>Nothing to plot yet.</p>

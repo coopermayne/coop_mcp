@@ -5,8 +5,7 @@ The MCP server (`server.py`) is the single source of truth for how journal data
 is shaped, matched and aggregated. We reuse its retrieval functions directly
 (they stay plain-callable under fastmcp v3) and only add the handful of reads the
 MCP contract doesn't expose: a recent-entry list, an entry's resolved people,
-full workouts-with-sets, person detail, a gap-filled drink series, and the
-dashboard roll-up. Nothing here writes.
+full workouts-with-sets, person detail, and the dashboard roll-up. Nothing here writes.
 """
 
 import calendar as _cal
@@ -198,41 +197,10 @@ def list_days(limit_entries: int = 120, since: str | None = None,
         if not days or days[-1]["date"] != e["entry_date"]:
             days.append({"date": e["entry_date"], "entries": []})
         days[-1]["entries"].append(e)
-    # Intake lives on its own /food page now (food_days below) — the journal feed
-    # carries entries only, so no nutrition is attached here.
     if kind is None:
         _fill_empty_days(days)
-    # …but WHAT was eaten rides along as a memory hook: "oh, Gjelina" is often how you
-    # remember what a day was. Names only — the figures stay on /food, so the journal
-    # reads as prose. Attached AFTER the fill, since a day with nothing written can
-    # still have been a day you ate somewhere memorable.
-    if days:
-        eaten = _intake_names_by_day([d["date"] for d in days])
-        for d in days:
-            d["food"] = eaten.get(d["date"], [])
     return {"days": days, "total": total, "oldest": oldest,
             "has_more": has_more, "next_since": next_since}
-
-
-def _intake_names_by_day(dates: list[str]) -> dict[str, list[dict]]:
-    """{date: [{text}]} for the given days — what was eaten, nothing about it.
-
-    A bare water top-up has no text of its own and would render as an empty line, so
-    it's dropped here: this list is for recognizing a day, and "16oz water" isn't a
-    thing you remember one by."""
-    if not dates:
-        return {}
-    out: dict[str, list[dict]] = {}
-    with server.db() as conn:
-        rows = conn.execute(
-            "SELECT food_date, item FROM intake_items "
-            "WHERE food_date BETWEEN ? AND ? AND item IS NOT NULL AND item != '' "
-            "ORDER BY food_date, position, id",
-            (min(dates), max(dates)),
-        ).fetchall()
-    for r in rows:
-        out.setdefault(r["food_date"], []).append({"text": r["item"]})
-    return out
 
 
 def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
@@ -265,67 +233,30 @@ def _fill_empty_days(days: list[dict], span_cap: int = 400) -> None:
     days.sort(key=lambda x: x["date"], reverse=True)
 
 
-# DEFAULT daily targets the intake block's rings read against — the fallback when the
-# stored eating profile doesn't name a number. The NUMBERS come from the DB (settings
-# key 'eating_profile', its `targets` dict, written from either door — the model's
-# server.update_eating_profile or the /food popover's server.set_nutrient_targets) so
-# the rings and the model coach against the SAME goals.
-# Read targets through nutrient_targets(), never this dict directly.
-#
-# A target is JUST A TARGET — there is no ceiling/floor direction here, and that is
-# the point. Direction was once declared per nutrient and drove a second ring color,
-# which meant every consumer needed the flag (the rings, the widget API, the SwiftBar
-# plugin, the popover's cap/goal labels) and the MODEL — which sees these same numbers
-# in intake_log's `targets` — had no way to get it, so the app and the coaching could
-# read the same number opposite ways. One number per nutrient is the whole model now;
-# where a target is really a cap, say so in the eating profile's prose, which is the
-# one place a nuance like that can be phrased instead of encoded.
-#
-# The default macros are set so they add up to the calorie target rather than each
-# being picked on its own (130p + 200c + 75f = 1,995 kcal): protein is fixed by muscle
-# preservation, fat by a rough 0.35 g/lb floor, and carbs take the remainder. Fat
-# carries no default at all, so its ring stays dashed until the profile names one.
+# DEFAULT daily targets for the /food rings — the fallback when the stored
+# eating_profile doesn't name a number. The numbers the user SETS come from the DB
+# (settings → eating_profile → targets, written by /food's Targets popover through
+# server.set_nutrient_targets), so the rings and the trainer read the same goals.
+# Read targets through nutrient_targets(), never this dict directly. A target is
+# just a target — no ceiling/floor direction anywhere.
 NUTRIENT_TARGETS = {
-    "calories":  2000,
     "protein_g": 130,
-    "carbs_g":   200,
-    "sodium_mg": 2300,
-    "fiber_g":   30,
     "water_oz":  88,
-    "standard_drinks": 2,
 }
 
 
 def nutrient_targets() -> dict:
-    """The live targets, {nutrient: number}: NUTRIENT_TARGETS defaults, overridden per
-    nutrient by any number in the stored eating profile's `targets` — written from
-    either door, server.update_eating_profile (the model, in chat) or
-    server.set_nutrient_targets (the user, from /food's Targets popover). Read
-    per-request, so a target changed either way shows on the next page load. Only
-    well-formed overrides count: a real nutrient key carrying a positive number;
-    anything else in the blob is the model's business, not the rings'."""
+    """The live targets, {nutrient: number}: NUTRIENT_TARGETS defaults, overridden
+    per nutrient by any well-formed number stored in the eating profile."""
     return {**NUTRIENT_TARGETS, **stored_targets()}
 
 
 def stored_targets() -> dict:
-    """Only the targets actually SET in the eating profile, without the defaults
-    merged in (server._day_targets does the same filtering for the write path's
-    returns). The /food popover needs the two apart: a number you chose belongs in
-    the input, an inherited default is only a placeholder — otherwise every ring
-    looks equally deliberate and there's no way to hand one back."""
+    """Only the targets actually SET, without the defaults merged in. The /food
+    popover needs the two apart: a number you chose belongs in the input, an
+    inherited default is only a placeholder — and clearing the box hands it back."""
     with server.db() as conn:
         return server._day_targets(conn)
-
-
-def stored_targets_note() -> str:
-    """The prose that explains the targets — direction, nuance, what a bare number
-    can't say. Edited in the same /food popover as the numbers, deliberately: the
-    note and the numbers drifted apart precisely because changing one never showed
-    you the other. Returned RAW, with its {nutrient} placeholders unresolved, since
-    the popover edits the template, not the rendering of it."""
-    with server.db() as conn:
-        note = server._get_eating_profile(conn).get("targets_note")
-    return note if isinstance(note, str) else ""
 
 
 def stored_coaching() -> str:
@@ -338,81 +269,61 @@ def stored_coaching() -> str:
 
 def _day_nutrition(items: list) -> dict:
     """One day's intake, shaped for the templates: summed totals plus the item rows.
-    Totals are SUMMED here from the item rows (server.intake_items) rather than read
-    from a stored column: the sum is the only version that can't drift from the items
-    shown beside it. A nutrient no item carries is absent, not 0 — "unestimated" is a
-    different fact from zero."""
+    Totals are SUMMED here from the item rows rather than read from a stored column:
+    the sum is the only version that can't drift from the items shown beside it. A
+    figure no item carries is absent, not 0 — "not logged" is a different fact."""
     n = {m: round(sum(x[m] for x in items if x[m] is not None), 1)
          for m in server.NUTRIENTS
          if any(x[m] is not None for x in items)}
     n["items"] = [
         {"id": r["id"], "text": r["item"], "note": r["note"],
-         # Which nutrients this item carries — drives the per-item detail modal.
          **{m: r[m] for m in server.NUTRIENTS if r[m] is not None}}
         for r in items
     ]
-    # What the day's ALCOHOL cost in calories — derived from the items like every
-    # other figure here, never stored. The drinks ring counts standard drinks, and
-    # two of those can be 200 kcal or 900 depending on whether they were light beers
-    # or margaritas, so the count alone can't say what drinking added to the day.
-    # `unestimated` counts alcohol items carrying no calorie figure, so a partial sum
-    # can admit it instead of reading as the whole truth — the same "unestimated is
-    # not zero" rule the totals follow.
-    booze = [x for x in items if x["standard_drinks"]]
-    kcal = [x["calories"] for x in booze if x["calories"] is not None]
-    if booze:
-        missing = len(booze) - len(kcal)
-        n["alcohol"] = {
-            "calories": round(sum(kcal), 1) if kcal else None,
-            "unestimated": missing,
-            # Share is withheld while any drink is unestimated: a partial numerator
-            # over the same partial denominator reads as a much bigger fraction than
-            # it is (one estimated drink on a day of otherwise-unestimated drinks
-            # would say "100% of the day's calories").
-            "share": (round(100 * sum(kcal) / n["calories"])
-                      if kcal and not missing and n.get("calories") else None),
-        }
     n["notes"] = "; ".join(r["note"] for r in items if r["note"]) or None
     return n
 
 
 def food_days(since: str | None = None, limit_days: int = 30) -> dict:
-    """The food log's own feed: days with intake, newest first, each carrying the
-    `nutrition` dict (_day_nutrition). Journal entries don't appear here and intake
+    """The water/protein log's own feed: days with intake, newest first, each
+    carrying the `nutrition` dict (_day_nutrition). Journal entries don't appear here and intake
     no longer appears on /journal — the two logs are separate pages.
 
     Default window is the `limit_days` most recent logged days; `since` (ISO date)
     instead loads every logged day on/after it, cumulatively — the same "load older"
     cursor contract as list_days, so the button works identically."""
+    # Only rows carrying water or protein: the other nutrient columns are dormant,
+    # and a legacy calories-only day would otherwise render as an empty block.
+    LIVE = server._LIVE_INTAKE
     with server.db() as conn:
         if since:
             dates = [r["food_date"] for r in conn.execute(
                 "SELECT DISTINCT food_date FROM intake_items "
-                "WHERE food_date >= ? ORDER BY food_date DESC", (since,))]
+                f"WHERE {LIVE} AND food_date >= ? ORDER BY food_date DESC", (since,))]
         else:
             dates = [r["food_date"] for r in conn.execute(
-                "SELECT DISTINCT food_date FROM intake_items "
+                f"SELECT DISTINCT food_date FROM intake_items WHERE {LIVE} "
                 "ORDER BY food_date DESC LIMIT ?", (limit_days,))]
         total = conn.execute(
-            "SELECT COUNT(DISTINCT food_date) AS n FROM intake_items").fetchone()["n"]
+            f"SELECT COUNT(DISTINCT food_date) AS n FROM intake_items WHERE {LIVE}").fetchone()["n"]
         oldest = dates[-1] if dates else None
         rows = conn.execute(
-            "SELECT * FROM intake_items WHERE food_date >= ? "
+            f"SELECT * FROM intake_items WHERE {LIVE} AND food_date >= ? "
             "ORDER BY food_date DESC, position, id", (oldest,)
         ).fetchall() if oldest else []
         has_more, next_since = False, None
         if oldest:
             has_more = conn.execute(
-                "SELECT 1 FROM intake_items WHERE food_date < ? LIMIT 1", (oldest,)
+                f"SELECT 1 FROM intake_items WHERE {LIVE} AND food_date < ? LIMIT 1", (oldest,)
             ).fetchone() is not None
             if has_more:
                 row = conn.execute(
-                    "SELECT DISTINCT food_date FROM intake_items WHERE food_date < ? "
+                    f"SELECT DISTINCT food_date FROM intake_items WHERE {LIVE} AND food_date < ? "
                     "ORDER BY food_date DESC LIMIT 1 OFFSET ?",
                     (oldest, limit_days - 1),
                 ).fetchone()
                 next_since = row["food_date"] if row else conn.execute(
-                    "SELECT MIN(food_date) AS d FROM intake_items").fetchone()["d"]
+                    f"SELECT MIN(food_date) AS d FROM intake_items WHERE {LIVE}").fetchone()["d"]
     by_date: dict = {}
     for r in rows:
         by_date.setdefault(r["food_date"], []).append(r)
@@ -796,9 +707,6 @@ def graph_data() -> dict:
     - weight: one point per weighed day (latest reading wins). Read-only — readings
       arrive by importing the scale's export on /weight, and this page just plots
       them against the goal.
-    - drinks: days with an alcohol figure on at least one intake item, summed
-      (`SUM(intake_items.standard_drinks)`, including explicit 0s); the page
-      gap-fills unlogged days to 0 so the line is honest about the calendar.
     - exercises: per strength exercise (has at least one done, weighted set on a
       done workout), one point per session date with the deterministic aggregates
       the page can plot: heaviest set (`top`), best Epley est. 1RM (`e1rm` =
@@ -825,17 +733,6 @@ def graph_data() -> dict:
                    WHERE id = (SELECT MAX(id) FROM body_weight
                                WHERE weigh_date = b.weigh_date)
                    ORDER BY weigh_date"""
-            )
-        ]
-        # Alcohol is a per-ITEM figure now (intake_items), so the day is a SUM —
-        # not a column read off the dormant day-level `nutrition` table, which
-        # stopped being written the moment intake became one row per drink.
-        drinks = [
-            {"date": r["food_date"], "total": r["standard_drinks"]}
-            for r in conn.execute(
-                "SELECT food_date, ROUND(SUM(standard_drinks),2) AS standard_drinks "
-                "FROM intake_items WHERE standard_drinks IS NOT NULL "
-                "GROUP BY food_date ORDER BY food_date"
             )
         ]
         ex_rows = conn.execute(
@@ -866,7 +763,7 @@ def graph_data() -> dict:
             exercises.append(ex)
         ex["points"].append({"date": r["date"], "top": r["top"],
                              "e1rm": r["e1rm"], "vol": r["vol"]})
-    return {"weight": weight, "drinks": drinks, "exercises": exercises,
+    return {"weight": weight, "exercises": exercises,
             "active_ids": active_ids, "today": server.today(),
             "weight_goal": goal}
 
@@ -1070,46 +967,6 @@ def _item_pins(items: list[dict], loc_fields: list[dict]) -> tuple[list[dict], l
         if not placed:
             unplottable.append(it["title"])
     return pins, unplottable
-
-
-def item_locations(item_id: int) -> list[dict]:
-    """Plottable places on one item, as {title, address, lat, lng}.
-
-    For the Telegram notes bot, which turns each into a real map pin. Reuses
-    `_coords` — the map view's rule for what counts as plottable — rather than
-    re-deriving it, so a value the map refuses can't become a pin here.
-
-    Read from the DB by item id, never from anything a model produced: the bot asks
-    "what did that item actually end up with", so a coordinate the model imagined
-    can't reach a maps app.
-    """
-    conn = server.db()
-    row = conn.execute(
-        "SELECT i.title, i.data, c.fields FROM items i "
-        "LEFT JOIN collections c ON c.id = i.collection_id WHERE i.id = ?",
-        (item_id,)).fetchone()
-    if not row:
-        return []
-    try:
-        blob = json.loads(row["data"] or "{}")
-        fields = json.loads(row["fields"] or "[]")
-    except (TypeError, ValueError):
-        return []
-
-    out = []
-    for f in fields:
-        if f.get("type") != "location":
-            continue
-        v = blob.get(f["key"])
-        ll = _coords(v)
-        if not ll:
-            continue
-        # The label leads (it's what the user calls the place); the item title is
-        # the fallback, since a pin with no name is just a dot.
-        out.append({"title": (v.get("label") or row["title"] or "Saved place")[:64],
-                    "address": (v.get("address") or "")[:128],
-                    "lat": ll[0], "lng": ll[1]})
-    return out
 
 
 def collection_page(name: str) -> dict | None:

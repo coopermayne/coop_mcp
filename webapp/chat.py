@@ -2,7 +2,7 @@
 In-app AI chat: the web app as an MCP *client*.
 
 This is the one place the web app writes *prose* (the journal). Browse pages
-(`app.py`) stay read-only — including intake, whose only write path is these tools.
+(`app.py`) stay read-only.
 Here an Anthropic-powered agent loop drives the SAME `@mcp.tool()` functions that
 Claude Desktop calls over the connector — in-process, no MCP transport. The split
 that governs the whole project holds: the model does the judgment ("which Tom?"),
@@ -12,10 +12,10 @@ that governs the whole project holds: the model does the judgment ("which Tom?")
 lean slice of its tools, so a conversation loads only what it needs (smaller tool
 surface = less latency, the same reason the MCP servers are split):
 
-  - `journal` — the journal server's people/entry/intake tools. Lives as a slide-in
+  - `journal` — the journal server's people/entry tools. Lives as a slide-in
     panel on the journal page.
-  - `trainer` — the trainer server's workout tools. Its own page, linked from the
-    workout page. (Wired here; the page is a later round.)
+  - `trainer` — the trainer server's workout + water/protein tools. A panel on the
+    Training hub and on each session page.
 
 The system prompt and tool definitions are not hand-written: they're lifted
 straight from the live server — each instance's `instructions` is the system
@@ -23,7 +23,7 @@ prompt, and each tool's docstring + signature become the Anthropic tool schema v
 `list_tools()`. Change a docstring in `server.py` and the chat updates with it.
 The one exception is the journal surface's system prompt, and it comes out of the
 journal instance carrying TWO surfaces at once. Its own `instructions` are the
-CONNECTOR half — eating + notes/collections, with the people/entry tools hidden
+CONNECTOR half — notes/collections, with the people/entry tools hidden
 from MCP clients by HiddenToolsMiddleware. This panel is the OTHER half: it drives
 the instance in-process (bypassing that middleware) but narrows the tool list to
 exactly the hidden names, so the two surfaces partition the instance rather than
@@ -70,23 +70,6 @@ _TRAINER_BLURB = (
 )
 
 
-def _included(include, name: str) -> bool:
-    """Whether `name` passes an agent's `include` narrowing, which is either a SET of
-    exact names or a PREDICATE over one. Both are needed and neither subsumes the
-    other: the journal panel's is the frozenset CONNECTOR_HIDDEN_TOOLS (the split it
-    describes is a hand-kept list by nature), while the intake and notes bots narrow
-    by the `intake_` / `notes_` / `collections_` DOMAIN PREFIX — which CLAUDE.md
-    already calls load-bearing rather than cosmetic. Deriving those two from the
-    prefix rather than listing them means a tool added tomorrow lands in the right
-    bot with no edit here."""
-    return include(name) if callable(include) else name in include
-
-
-def _prefix(*prefixes):
-    """An `include` predicate matching any of `prefixes` — see `_included`."""
-    return lambda name: name.startswith(prefixes)
-
-
 # The agent registry. A server-bound entry binds a chat surface to one FastMCP instance
 # and narrows its tool list: `exclude` drops names, `include` keeps ONLY those names.
 # An `instructions` key overrides the instance's own (the journal instance's are
@@ -96,140 +79,20 @@ def _prefix(*prefixes):
 #
 # The journal panel's `include` is CONNECTOR_HIDDEN_TOOLS — the two surfaces are exact
 # COMPLEMENTS over the one journal instance, and saying it that way is what keeps them
-# from drifting. The connector carries eating + notes/collections and hides the
-# people/entry tools; this panel carries the people/entry tools and nothing else,
-# because that is the split in how the app is actually used (journal here, food and
-# saved notes in Claude). Adding a journal tool means adding its name to that frozenset
-# — already the rule — and it lands on both sides at once; adding an intake/notes tool
-# needs no change here at all.
-# --------------------------------------------------------------------------- #
-# Telegram surfaces (webapp/telegram.py) — same loop, a third front end
-# --------------------------------------------------------------------------- #
-
-# What each bot owns, in the user's words. One line each, and they are the ONLY
-# statement of the four-way split's user-facing meaning — the tool lists below say
-# the same thing in code, and these say it to the model so it can hand a stray
-# request to the right sibling instead of dropping the half it can't reach.
-_TG_DOMAINS = {
-    "journal": "the journal itself — days, events, the people in them",
-    "intake":  "the eating log — food, drinks, water",
-    "notes":   "notes & collections — recipes, ideas, links, lists",
-    "trainer": "training — workouts, plans, exercises",
-}
-
-
-def _tg_blurb(bot: str) -> str:
-    """The surface framing for one bot: it's Telegram, on a phone, and it has three
-    siblings that own the things it can't.
-
-    This is a BLURB rather than prose in server.py on purpose. The instruction
-    strings are the CONTRACT for a domain — how intake works, what a collection is —
-    and they're shared with the connector and the browser panel. Being on Telegram is
-    the SURFACE, which is exactly what a blurb has always been for, and it's why the
-    same INTAKE_CHAT_INSTRUCTIONS can serve a bot here without knowing Telegram
-    exists.
-
-    The sibling list is the honest answer to what four bots cost: "burrito after the
-    gym with Karl" is three bots' business and this one can only do its part. Naming
-    the others lets it say so instead of quietly logging a third of the sentence."""
-    siblings = "\n".join(f"  - {k}: {v}" for k, v in _TG_DOMAINS.items() if k != bot)
-    return (
-        "\n\nYou are running as a Telegram bot — the user is typing to you on their "
-        "phone, usually one-handed and mid-something. Be brief: a sentence or two, "
-        "not a report.\n\n"
-        "FORMATTING: write MARKDOWN — it is rendered natively, not shown literally. "
-        "Inline: **bold**, *italic*, `code`, [label](url). Structure: # headings, "
-        "- bullets, 1. numbered, | pipe | tables |, > block quotes and - [ ] task "
-        "lists — Telegram parses the markdown itself, so all of it renders as the "
-        "real thing.\n\n"
-        "LONG ANSWERS COLLAPSE. When a read-back runs past a screen — a whole week, "
-        "a long plan, every item in a collection — lead with the one-line finding "
-        "and put the bulk in a collapsible:\n"
-        "<details><summary>The week, day by day</summary>\n\n"
-        "| Day | Cal |\n|---|---|\n| Mon | 2140 |\n\n</details>\n"
-        "The summary line is what the user sees first, so make it the ANSWER "
-        "('averaged 2,010, high on Saturday'), not a label like 'Details'. Short "
-        "answers are never collapsed — hiding three rows behind a tap is worse than "
-        "showing them.\n\n"
-        "But structure is for ANSWERS, not confirmations. A capture reply is one "
-        "plain sentence — 'Logged the burrito, 900 cal' — with at most a bold "
-        "number; a table for one item is worse than no table. Reach for a table or "
-        "a list only when the user asked to SEE something with several rows: a week "
-        "of days, a workout's exercises, a collection's items.\n\n"
-        "The user can send PHOTOS. A picture of a plate, a label or a menu is "
-        "something to read and act on like any other message — estimate from what "
-        "you can see, say what you assumed, and ask only if it's genuinely "
-        "unreadable. The image is not stored anywhere, so describe what you logged "
-        "rather than referring back to 'the photo' later.\n\n"
-        f"You own {_TG_DOMAINS[bot]}, and only that. Three sibling bots own the rest:\n"
-        f"{siblings}\n"
-        "When a message spans domains, do YOUR part in full and say in a few words "
-        "which bot the rest belongs to — don't attempt it, and don't silently drop "
-        "it. If a message is entirely someone else's, just say so."
-    )
-
-
+# from drifting. The connector carries notes/collections and hides the people/entry
+# tools; this panel carries the people/entry tools and nothing else, because that is
+# the split in how the app is actually used (journal here, saved notes in Claude).
+# Adding a journal tool means adding its name to that frozenset — already the rule —
+# and it lands on both sides at once; adding a notes tool needs no change here.
 _AGENTS = {
     "journal":  {"server": server.mcp, "instructions": server.JOURNAL_CHAT_INSTRUCTIONS,
                  "include": server.CONNECTOR_HIDDEN_TOOLS, "blurb": _JOURNAL_BLURB},
     "trainer":  {"server": server.trainer_mcp, "exclude": set(), "blurb": _TRAINER_BLURB},
-
-    # One entry per Telegram bot. Server and tools are REUSED; only the framing is
-    # new — which is why these are separate entries rather than the browser agents
-    # with a flag: _TRAINER_BLURB talks about the plan card beside the chat and the
-    # Training page above the history, none of which exists in a Telegram thread.
-    #
-    # The four `include`s partition server.mcp's tools exactly — CONNECTOR_HIDDEN_TOOLS
-    # plus the three domain prefixes, disjoint with no leftovers — and
-    # `assert_tool_partition()` fails the boot if that ever stops being true.
-    "tg_journal": {"server": server.mcp, "instructions": server.JOURNAL_CHAT_INSTRUCTIONS,
-                   "include": server.CONNECTOR_HIDDEN_TOOLS, "blurb": _tg_blurb("journal")},
-    "tg_intake":  {"server": server.mcp, "instructions": server.INTAKE_CHAT_INSTRUCTIONS,
-                   "include": _prefix("intake_"), "blurb": _tg_blurb("intake")},
-    "tg_notes":   {"server": server.mcp, "instructions": server.NOTES_CHAT_INSTRUCTIONS,
-                   "include": _prefix("notes_", "collections_"), "blurb": _tg_blurb("notes")},
-    "tg_trainer": {"server": server.trainer_mcp, "exclude": set(),
-                   "blurb": _tg_blurb("trainer")},
 }
 
 
 def is_agent(name: str) -> bool:
     return name in _AGENTS
-
-
-async def assert_tool_partition() -> None:
-    """Fail the boot if the four journal-side bot surfaces stop partitioning the
-    journal instance's tools exactly.
-
-    The bots' tool lists are DERIVED — CONNECTOR_HIDDEN_TOOLS plus the three domain
-    prefixes — which is what makes a tool added tomorrow land in the right bot with
-    no edit here. The property that derivation rests on is that every tool on
-    server.mcp matches exactly one of the four. It holds today (14 + 6 + 12, no
-    leftovers) and nothing enforces it, so a tool added with no prefix and no
-    CONNECTOR_HIDDEN_TOOLS entry would be silently unreachable from every bot — a
-    tool that exists, works in the app, and is invisible on the phone, with nothing
-    to say why.
-
-    Raising at startup is the point: this is the same "one rule, two users" guard as
-    groupable_fields/can_map, and a wrong answer here is quiet rather than loud.
-    Only called when Telegram is actually enabled — with the bots off there is no
-    fourth consumer of the split, and a failed boot would be about nothing."""
-    names = {t.name for t in await server.mcp.list_tools(run_middleware=False)}
-    buckets = {k: {n for n in names if _included(_AGENTS[k]["include"], n)}
-               for k in ("tg_journal", "tg_intake", "tg_notes")}
-    covered = set().union(*buckets.values())
-
-    problems = []
-    if orphans := sorted(names - covered):
-        problems.append(
-            f"reachable from NO bot: {', '.join(orphans)} — give each an "
-            "intake_/notes_/collections_ prefix, or add it to CONNECTOR_HIDDEN_TOOLS")
-    for a, b in (("tg_journal", "tg_intake"), ("tg_journal", "tg_notes"),
-                 ("tg_intake", "tg_notes")):
-        if overlap := sorted(buckets[a] & buckets[b]):
-            problems.append(f"in BOTH {a} and {b}: {', '.join(overlap)}")
-    if problems:
-        raise RuntimeError("Telegram bot tool split is broken — " + "; ".join(problems))
 
 
 def person_context(person_id: int):
@@ -303,10 +166,9 @@ def _stamped(messages: list) -> list:
         if isinstance(m["content"], str):
             out[i] = {**m, "content": stamp + m["content"]}
             break
-        # A user-role LIST is either a turn carrying an image (Telegram photo) or
-        # the tool_result blocks fed back mid-turn. Only the first is something the
-        # user "sent", and stamping a tool_result would both be meaningless and stop
-        # the scan before it reached the real turn.
+        # A user-role LIST is normally the tool_result blocks fed back mid-turn —
+        # not something the user "sent", and stamping one would both be meaningless
+        # and stop the scan before it reached the real turn.
         blocks = m["content"]
         if isinstance(blocks, list) and blocks and _bget(blocks[0], "type") != "tool_result":
             out[i] = {**m, "content": [{"type": "text", "text": stamp.strip()}] + list(blocks)}
@@ -324,9 +186,8 @@ def _maybe_rollover(key: tuple) -> None:
     _CONV_DATE[key] = cur
 
 
-# One lock per conversation, held for a whole turn. Telegram already holds a
-# per-chat lock, but the browser path relied on client-side JS not sending while
-# a turn was in flight — two tabs sharing the session cookie hit the same convo
+# One lock per conversation, held for a whole turn. The browser path relied on
+# client-side JS not sending while a turn was in flight — two tabs sharing the session cookie hit the same convo
 # key and interleave their appends into an invalid tool_use/tool_result pairing
 # the API then 400s on for the rest of the day. Keyed like _CONVERSATIONS;
 # entries are tiny and per-session, dropped by the same rollover cadence as the
@@ -364,37 +225,13 @@ def _repair_tail(messages: list) -> None:
     ]})
 
 
-def _strip_images(messages: list) -> None:
-    """Drop image blocks from stored history once a turn has finished with them.
-    A Telegram photo arrives as a base64 block; left in _CONVERSATIONS it rides
-    in on every later turn and hop all day — multi-MB and token-expensive — and
-    it contradicts the bot prompt's "the image is not stored anywhere". The image
-    stays for the turn that carries it (the hops re-send it, which is the point);
-    this runs at turn end, in place."""
-    for m in messages:
-        content = m.get("content") if isinstance(m, dict) else None
-        if not isinstance(content, list):
-            continue
-        if any(isinstance(b, dict) and b.get("type") == "image" for b in content):
-            m["content"] = [
-                {"type": "text", "text": "(photo — handled, no longer attached)"}
-                if isinstance(b, dict) and b.get("type") == "image" else b
-                for b in content
-            ]
-
 # Write tools mutate the DB; everything else is read-only retrieval. Used only to
 # label the tool chips the UI shows, never to gate execution.
 _WRITE_TOOLS = {
     "add_journal_entry", "update_entry", "reorder_entries", "save_person",
     "link_mentions", "merge_people", "update_contact",
     "delete_record", "journal_delete_entry",
-    # Intake, notes and collections are NOT reachable from the browser panel (it is
-    # narrowed to CONNECTOR_HIDDEN_TOOLS) — they are here for the Telegram intake and
-    # notes bots, which drive the same loop over the other half of the journal
-    # instance. Not leftovers: delete these and those bots' writes stop being chips.
-    "intake_log", "intake_update", "intake_delete", "intake_set_profile",
-    "notes_save", "notes_update", "notes_delete", "notes_file",
-    "collections_save", "collections_delete",
+    "log_intake", "update_intake",
     "log_workout", "update_workout", "update_set", "delete_record",
     "update_profile", "add_exercise", "update_exercise", "archive_exercise",
     "start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
@@ -422,7 +259,7 @@ async def _ensure_tools(agent: str):
         tool_objs = await cfg["server"].list_tools(run_middleware=False)
         tools, dispatch = [], {}
         for t in tool_objs:
-            if include is not None and not _included(include, t.name):
+            if include is not None and t.name not in include:
                 continue
             if t.name in exclude:
                 continue
@@ -488,7 +325,7 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     """Friendly summary of a single tool call for the UI. Writes link to the page
     where the user can see the effect; reads are labelled quietly."""
     kind = "write" if name in _WRITE_TOOLS else "read"
-    href, summary, item_id = None, name.replace("_", " "), None
+    href, summary = None, name.replace("_", " ")
     g = lambda k, d=None: (args or {}).get(k, d)
     r = result if isinstance(result, dict) else {}
 
@@ -519,49 +356,16 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     elif name == "journal_delete_entry":
         href = "/journal"
         summary = "Deleted an entry"
-    # Eating log, notes & collections — the Telegram bots' half of the journal
-    # instance (see _WRITE_TOOLS above). The browser panel never reaches these.
-    elif name == "intake_log":
+    elif name == "log_intake":
         href = "/food"
-        it = g("item")
-        summary = f"Logged {it}" if it else "Logged intake"
-    elif name == "intake_update":
+        bits = [f"{v}{u}" for k, u in (("water_oz", "oz water"), ("protein_g", "g protein"))
+                if (v := g(k))]
+        summary = "Logged " + (" + ".join(bits) or "intake")
+    elif name == "update_intake":
         href = "/food"
         summary = "Corrected a logged item"
-    elif name == "intake_delete":
-        href = "/food"
-        summary = "Deleted a logged item"
-    elif name == "intake_set_profile":
-        summary = "Updated the eating profile"
-    elif name == "intake_summary":
-        summary = "Loaded the eating log"
-    elif name == "intake_find_past":
-        summary = "Looked up a past meal"
-    elif name == "notes_save":
-        iid = item_id = r.get("item_id")
-        href = f"/item/{iid}" if iid else "/collections"
-        t = g("title")
-        summary = f"Saved {t}" if t else "Saved a note"
-    elif name in ("notes_update", "notes_file"):
-        iid = item_id = r.get("item_id")
-        href = f"/item/{iid}" if iid else "/collections"
-        summary = "Updated a note" if name == "notes_update" else "Filed a note"
-    elif name == "notes_delete":
-        href = "/collections"
-        summary = "Deleted a note"
-    elif name in ("notes_get", "notes_list", "notes_search"):
-        summary = "Looked up notes"
-    elif name == "notes_geocode":
-        summary = f"Located {g('query')}" if g("query") else "Looked up a place"
-    elif name == "collections_save":
-        nm = r.get("name") or g("name")
-        href = f"/collections/{quote(nm, safe='')}" if nm else "/collections"
-        summary = f"Saved the {nm} collection" if nm else "Saved a collection"
-    elif name == "collections_delete":
-        href = "/collections"
-        summary = "Deleted a collection"
-    elif name in ("collections_list", "collections_list_icons"):
-        summary = "Looked up collections"
+    elif name == "get_intake":
+        summary = "Loaded water & protein"
     elif name in ("search_entries", "get_entry"):
         summary = "Searched the journal"
     elif name in ("list_people", "get_person_history", "get_related_people"):
@@ -609,11 +413,7 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
         if name == "finish_workout":
             href = "/workouts"
 
-    # `item_id` rides along only for the notes tools that touched one. The browser
-    # ignores keys it doesn't use; the Telegram notes bot reads it to look the item's
-    # saved coordinates up in the DB and send a real map pin.
-    return {"name": name, "summary": summary, "kind": kind, "href": href,
-            **({"item_id": item_id} if item_id else {})}
+    return {"name": name, "summary": summary, "kind": kind, "href": href}
 
 
 # --------------------------------------------------------------------------- #
@@ -627,11 +427,6 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
       {"type": "tool", ...}              a tool was called (chip payload)
       {"type": "done"}                   turn finished
       {"type": "error", "message": ...}  fatal error; turn aborts
-    `user_text` is normally a string; it may also be a list of Anthropic content
-    blocks, which is how a Telegram photo reaches the model (an image block plus the
-    caption). Everything downstream — history, stamping, tool dispatch — already
-    works on blocks, so this is a pass-through rather than a second path.
-
     Conversation state is updated in place so the next turn has full context
     (including the tool_use/tool_result blocks). An optional `context` (see
     `person_context`) scopes the conversation to its own thread (via `context['key']`)
@@ -652,7 +447,7 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
     tools, dispatch = _TOOLS[agent], _DISPATCH[agent]
     convo_key = _convo_key(agent, session_id, context)
     # The whole turn runs under the conversation's lock — a second sender (another
-    # tab, a Telegram retry) queues rather than interleaving the shared transcript.
+    # tab) queues rather than interleaving the shared transcript.
     async with _turn_lock(convo_key):
         _maybe_rollover(convo_key)  # new Pacific day → drop the stale transcript
         messages = _CONVERSATIONS.setdefault(convo_key, [])
@@ -708,10 +503,6 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
             yield {"type": "done"}
         except Exception as e:
             yield {"type": "error", "message": str(e)}
-        finally:
-            # Turn over (finished, errored, or cancelled by a disconnect): images
-            # served their purpose this turn — drop them from the stored history.
-            _strip_images(messages)
 
 
 def reset(agent: str, session_id: str, context: dict | None = None) -> None:
