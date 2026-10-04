@@ -807,9 +807,7 @@ working.
   reading is a MEASUREMENT now, and a second door onto a measurement is a second version
   of the truth — a hand-typed 186 that disagrees with the scale's 185.4 is not a
   correction, it's a fork. A wrong reading is fixed AT THE SCALE'S APP and re-exported.
-  `DEFAULT_COACHING` moved with them: it used to say "if I tell you a number, log it",
-  which is the deleted door stated in prose; it now tells the trainer it cannot write
-  one and to read the trend instead.
+  The trainer's instructions say so (a mentioned weight is not a reading).
   The load-bearing consequence of import-only is IDEMPOTENCE, and it's why the table
   grew a column. Exports OVERLAP — the scale app hands you "the last 30 days", not the
   delta since your last upload — so re-importing must insert only what's new.
@@ -1182,8 +1180,8 @@ working.
   lookup, deliberately not the model's FTS `notes_search`. The three
   judgment rules (capture first/file second; structure proposed, never imposed;
   fields stay few) live in the journal server `instructions`.
-- `settings` — generic JSON KV; holds `profile` (injury, split, goals, and
-  `coaching`) merged via `update_profile` and surfaced by `get_fitness_briefing`,
+- `settings` — generic JSON KV; holds `profile` (`goals`, `split`, `session`,
+  `injuries`, `coaching`, free-form beyond those) merged via `update_profile` and surfaced by `get_fitness_briefing`,
   and `eating_profile`
   (its journal-side twin: durable eating facts — goals, stats, coaching context —
   plus the one structured key `targets`, a flat {nutrient: number} dict of daily
@@ -1224,28 +1222,27 @@ working.
   rings read it: `nutrient_targets()` skips any override that isn't well-formed,
   so an unvalidated write reported success while the ring you were aiming at
   silently kept the old number, with nothing anywhere to say why.
-  **`profile.coaching` is the trainer's user-editable prompt**, and it's the
-  eating side's targets story told about prose. It holds the user's own standing
-  instructions about HOW to coach — session size, tone, what to nudge — and it has
-  the same two doors onto one copy: `update_profile` (the model, in chat) and
-  `server.set_trainer_profile` (the user, via `POST /trainer/profile` ← the
-  /trainer page's **Coaching** popover, a NON-tool website-only path like
-  `set_nutrient_targets`). Defaults live in code (`DEFAULT_COACHING`) and are
-  resolved on read by `_resolved_profile`, exactly as `nutrient_targets()` merges
-  over `data.NUTRIENT_TARGETS`; a blank save DROPS the key, so the default can be
-  handed BACK rather than only overwritten. Two of its lines (session sizing, and what
-  to say about weigh-ins) used to sit in `trainer_mcp`'s `instructions` — the wrong home,
-  for a reason worth keeping straight when the next knob comes along.
-  `instructions` is CONTRACT: the active-exercises policy, the signed-
-  weight convention — rules that pair with tool code, belong in git, and must not
-  be editable from a textarea. These were PREFERENCE, the part the user wants to
-  tune between sessions. And the delivery differs: `instructions` reaches a
-  connector only at its initialize handshake, so an edit there needs a redeploy,
-  while the profile rides in on every `get_fitness_briefing` — the same text
-  landing on the connector and the in-app chat with nothing to restart. So the
-  instructions now POINT at the key (read it as instruction, not background; it
-  can't loosen the rules; it's the user's to edit) instead of restating what it
-  says.
+  **The trainer has exactly TWO homes for guidance: the code's `instructions` for the
+  RULES, the `profile` for the PERSON.** It used to have five — the instructions, a
+  `DEFAULT_COACHING` string in code that filled `coaching` when empty, the profile,
+  `webapp/chat.py`'s trainer blurb (which carried its own "21-26 working sets"
+  sizing rule, contradicting the default, so the trainer coached differently on the
+  web panel than on the connector), and whatever the user pasted into the Claude
+  project's custom instructions. The split now is by WHAT a line is. A rule that pairs
+  with tool code (the active-exercises policy, signed weights, a mentioned weight isn't
+  a weigh-in) is CONTRACT: in git, in `trainer_mcp`'s `instructions`, not editable
+  from a textarea. Anything about the user — goals, split, session size, injuries,
+  coaching tone — is PREFERENCE: in `profile`, delivered on every
+  `get_fitness_briefing` (so a change lands next session on every surface with
+  nothing to redeploy, where `instructions` only reaches a connector at its
+  initialize handshake). There are NO generic preference defaults in code: an empty
+  profile makes the trainer ASK (the instructions' SETUP rule) rather than coach to
+  a stranger's numbers, because a default the user never chose is exactly the kind of
+  quiet second copy this cleanup removed. Surface blurbs (`_TRAINER_BLURB`,
+  `_tg_blurb`) describe the SCREEN only — never how to train. `profile.coaching`
+  still has two doors onto one copy: `update_profile` (the model, when the user asks
+  in so many words) and `server.set_trainer_profile` (the /trainer page's legacy
+  **Coaching** popover); `update_profile` drops a key sent as null.
 - `subjects` + `facets` + `attempts` + `learn_fts` — the LEARNING log (the teacher
   server; logic in `learning/`, schema owned by `learning/db.py`, not `SCHEMA`). A
   *subject* is a thing being learned (a myth, a word, a case); a *facet* is one
