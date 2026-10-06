@@ -723,13 +723,13 @@
   // ── Rest timer ──────────────────────────────────────────────────────────────
   // Counts UP from the moment a set is logged: you rest as long as you need and see
   // how long that was, rather than racing a countdown. The RPE still sets a TARGET
-  // (9+ → 3:00, 8 → 2:30, else 1:30): passing it beeps/vibrates once and turns the
-  // clock yellow, and it keeps counting. Stored as a START timestamp in localStorage,
+  // (9+ → 3:00, 8 → 2:30, else 1:30), shown as a quiet hint beside the clock; passing
+  // it turns the clock yellow, and it keeps counting. No sound: the color is the cue. Stored as a START timestamp in localStorage,
   // not a ticking counter, so it survives a re-render, a reload and a locked phone.
   // Page-only state; the server never hears about it.
   var REST_KEY = 'trainer-rest';
   var REST_MAX = 20 * 60;  // a clock still running after 20 min is a forgotten one
-  var restTick = null, audioCtx = null;
+  var restTick = null;
 
   function restFor(rpe) { return rpe >= 9 ? 180 : rpe >= 8 ? 150 : 90; }
   function readRest() {
@@ -737,7 +737,7 @@
     try { r = JSON.parse(localStorage.getItem(REST_KEY) || 'null'); } catch (e) {}
     // A countdown stored by the previous version ({ends, total}) reads as its start.
     if (r && r.started == null && r.ends != null) {
-      r = { wid: r.wid, started: r.ends - (r.total || 0) * 1000, target: r.total, beeped: r.beeped };
+      r = { wid: r.wid, started: r.ends - (r.total || 0) * 1000, target: r.total };
     }
     return r;
   }
@@ -745,27 +745,8 @@
     try { if (v) localStorage.setItem(REST_KEY, JSON.stringify(v)); else localStorage.removeItem(REST_KEY); } catch (e) {}
   }
   function startRest(target) {
-    // The tap that logged the set is a user gesture, the one moment iOS lets a page
-    // unlock audio for the target beep.
-    try {
-      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-    } catch (e) {}
-    writeRest({ wid: wid, started: Date.now(), target: target, beeped: false });
+    writeRest({ wid: wid, started: Date.now(), target: target });
     paintRest();
-  }
-  function beep() {
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-    if (!audioCtx) return;
-    try {
-      [0, 0.25].forEach(function (t) {
-        var o = audioCtx.createOscillator(), g = audioCtx.createGain();
-        o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
-        g.gain.setValueAtTime(0.25, audioCtx.currentTime + t);
-        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + t + 0.18);
-        o.start(audioCtx.currentTime + t); o.stop(audioCtx.currentTime + t + 0.2);
-      });
-    } catch (e) {}
   }
   function mmss(sec) {
     sec = Math.max(0, Math.floor(sec));
@@ -779,23 +760,24 @@
     var elapsed = (Date.now() - r.started) / 1000;
     if (elapsed >= REST_MAX) { writeRest(null); slot.innerHTML = ''; return; }
     var over = r.target && elapsed >= r.target;
-    if (over && !r.beeped) { r.beeped = true; writeRest(r); beep(); }
     if (!slot.firstChild) {
       var wrap = el('div', 'flex items-center gap-3 mb-4 pb-4 border-b border-gray-100');
+      var clock = el('div', 'flex items-baseline gap-1.5 flex-1');
       var t = el('span', 'text-3xl font-bold tabular-nums tracking-tight');
       t.dataset.restTime = '1';
-      var lab = el('span', 'text-[10px] uppercase tracking-widest text-gray-400 flex-1 leading-snug');
-      lab.dataset.restLabel = '1';
+      var hint = el('span', 'text-sm text-gray-400 tabular-nums');
+      hint.dataset.restHint = '1';
+      clock.appendChild(t); clock.appendChild(hint);
       var hide = el('button', 'h-8 px-2.5 rounded-[4px] border border-gray-200 text-xs text-gray-500 hover:border-black hover:text-black transition-colors', 'Hide');
       hide.type = 'button';
       hide.addEventListener('click', function () { writeRest(null); paintRest(); });
-      wrap.appendChild(t); wrap.appendChild(lab); wrap.appendChild(hide);
+      wrap.appendChild(clock); wrap.appendChild(hide);
       slot.appendChild(wrap);
     }
-    var time = slot.querySelector('[data-rest-time]'), label = slot.querySelector('[data-rest-label]');
+    var time = slot.querySelector('[data-rest-time]'), hintEl = slot.querySelector('[data-rest-hint]');
     time.textContent = mmss(elapsed);
     time.className = 'text-3xl font-bold tabular-nums tracking-tight' + (over ? ' text-yellow-500' : '');
-    label.textContent = r.target ? 'Resting · aim ' + mmss(r.target) : 'Resting';
+    hintEl.textContent = r.target ? '/ ' + mmss(r.target) + ' rest' : 'rest';
   }
   function ensureTicker() {
     if (restTick) return;
