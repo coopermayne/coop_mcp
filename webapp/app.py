@@ -1206,7 +1206,7 @@ async def trainer_complete_set(request: Request, set_id: int):
     )
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(_with_pr(res, set_id))
+    return JSONResponse(data.with_history(_with_pr(res, set_id)))
 
 
 @app.post("/trainer/{workout_id:int}/finish")
@@ -1237,7 +1237,7 @@ async def trainer_update_set(request: Request, set_id: int):
     if reps is None:  # blank reps == clear the set
         res = server.clear_plan_set(set_id)
         code = 400 if isinstance(res, dict) and res.get("error") else 200
-        return JSONResponse(res, status_code=code)
+        return JSONResponse(data.with_history(res), status_code=code)
     res = server.update_set(
         set_id,
         weight_lbs=_num(body.get("weight_lbs")),
@@ -1246,8 +1246,8 @@ async def trainer_update_set(request: Request, set_id: int):
     )
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(_with_pr(server.get_workout_plan(
-        workout_id=res.get("workout_id")), set_id))
+    return JSONResponse(data.with_history(_with_pr(server.get_workout_plan(
+        workout_id=res.get("workout_id")), set_id)))
 
 
 @app.post("/trainer/{workout_id:int}/exercise/{exercise_id}/remove")
@@ -1258,7 +1258,7 @@ async def trainer_remove_exercise(request: Request, workout_id: int, exercise_id
     res = server.remove_plan_exercise(exercise_id, workout_id=workout_id)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(res)
+    return JSONResponse(data.with_history(res))
 
 
 @app.post("/trainer/{workout_id:int}/reorder")
@@ -1277,7 +1277,7 @@ async def trainer_reorder(request: Request, workout_id: int):
     res = server.reorder_plan_exercises(ids, workout_id=workout_id)
     if isinstance(res, dict) and res.get("error"):
         return JSONResponse(res, status_code=400)
-    return JSONResponse(res)
+    return JSONResponse(data.with_history(res))
 
 
 @app.post("/trainer/{workout_id:int}/discard")

@@ -8,8 +8,8 @@ A single-user **journal web app plus a trainer MCP server**, one process, one SQ
 DB. The user writes the journal by talking to the web app's own chat; Claude captures
 entries and resolves *who* they mean to stable person records, so later "everything
 about Tom my father" is an exact lookup that never pulls in the other Tom. Training
-(and a small daily water/protein log) is done entirely through the **trainer
-connector** in Claude.
+(and a small daily water/protein log) is planned through the **trainer connector**
+in Claude and logged set-by-set in the web app.
 
 **One MCP server, one in-process tool registry.** `trainer_mcp` is the only MCP
 endpoint — at `/trainer/mcp` on the main origin when authless, or on its own host
@@ -22,22 +22,20 @@ eating log and notes/collections, with the journal tools hidden — and a third
 notes & collections, and the teacher were all removed. Their tables stay in existing
 DBs, dormant.) `webapp/combined.py` composes the trainer and the UI onto one origin.
 
-**The trainer is MCP-only now; the app is legacy for it.** The user trains entirely
-through the trainer connector in Claude (planning the week, reporting sets between
-lifts, progress and advice) and keeps the web app for the journal. So nothing a
-training workflow needs may live only behind a webapp page: the four things that did
-each got a tool — `complete_sets` (a batch, because a conversation reports a whole
-exercise at once where the card tapped one set; the single-set `complete_set` stays as
-the card's plain helper), `remove_from_plan` (the card's per-exercise delete),
-`add_exercise` (the library's add panel — the library itself is gone now, see the
-`exercises` row) and
-`import_weigh_ins` (the `/weight` upload — see `body_weight`). `complete_sets` and
-`log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule applied per batch)
-because the confetti that used to announce a best has no screen to land on. The
+**Training has two surfaces over one DB: the trainer connector and the web app.** The
+user tried training through the connector alone and it didn't work well between sets,
+so the web training UI (`/workouts`, `/trainer/{id}`, `/weight`, `/graphs`, `/food`)
+was brought back and is the primary place to WORK a session: the `/trainer/{id}` page
+is built for logging between sets (see the `workouts` row). The connector stays the
+place to PLAN, review progress and get advice, and it can still do everything the
+pages do: `complete_sets` (a batch, because a conversation reports a whole exercise at
+once; the single-set `complete_set` stays as the card's plain helper),
+`remove_from_plan`, `add_exercise`, `import_weigh_ins`, `set_intake_targets`.
+`complete_sets` and `log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule
+applied per batch) so a best logged in conversation is still announced. The
 `trainer_mcp` instructions open by saying the conversation IS the interface (plan as a
 table, ids never shown, short mid-session replies). The trainer also carries the
-water/protein log (see `intake_items`). The `/trainer`, `/workouts`,
-`/weight` pages still work and still read the same DB; don't build new trainer UI there.
+water/protein log (see `intake_items`). Improving the web training UI is fair game.
 
 ## The one architectural rule
 
@@ -428,10 +426,23 @@ working.
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
   lifts, weight/reps NULL for cardio). A planned set also carries `target_rpe` — the
   difficulty the trainer programs for it (1-10), the target twin of the actual `rpe`. The
-  /trainer card surfaces difficulty as Easy/Med/Hard buttons (mapped Easy≈5, Med≈7,
-  Hard≈9, in `trainer.js`), prefilled from `target_rpe` on a pending set (or the actual
-  `rpe` when correcting a done one) — the user confirms a feel instead of typing a number,
-  and weight is a `[−5][−1][−.5] (n) [+.5][+1][+5]` stepper over a still-editable field.
+  /trainer session page is built around the between-sets loop (`trainer.js`): an UP NEXT
+  card holds the next pending set (target, set note, a "PR attempt"/"Top set" badge) with
+  weight/reps steppers and a row of RPE 6-10 buttons labelled with reps left in the tank,
+  where ONE tap rates the set AND logs it. It used to be Easy/Med/Hard stored as 5/7/9,
+  which couldn't tell an 8 from a grind to failure; the trainer judges the next weight
+  from this number, so the buttons give it the resolution. Logging starts a REST TIMER
+  sized by that RPE (9+ → 3:00, 8 → 2:30, else 1:30), kept as an end timestamp in
+  localStorage so it survives a reload or a locked phone, with a beep/vibrate at zero;
+  the page also holds a screen wake lock while a session is open. Each exercise shows a
+  "Last …· Best …" line from `data.with_history`, a webapp-only enrichment of the plan
+  payload (like `_with_pr`) kept off the model-facing `_plan_payload` return. The
+  session's `notes` render under the progress bar, heavy sets (target RPE 9+) carry the
+  accent border, a BODYWEIGHT-BASED exercise (any planned, logged or
+  historical weight ≤ 0 — pull-ups, dips) shows load signed relative to bodyweight
+  ("−40" assisted, "+25" added, "BW" for 0) and labels its weight field that way, and Finish stays quiet until
+  every set is logged. Tapping any chip still opens the inline editor (log out of order
+  or correct a done set, same 6-10 RPE row).
   The two-level log mirroring entries/mentions. A
   *planned* session (`status='active'`, from `start_workout_plan`) is UNDATED — its
   `workout_date` is the `''` not-yet-done sentinel until `finish_workout` stamps it with
