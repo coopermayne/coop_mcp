@@ -434,25 +434,30 @@ working.
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
   lifts, weight/reps NULL for cardio). A planned set also carries `target_rpe` — the
   difficulty the trainer programs for it (1-10), the target twin of the actual `rpe`. The
-  /trainer session page is built around the between-sets loop (`trainer.js`): an UP NEXT
-  card holds the next pending set (target, set note, a "PR attempt"/"Top set" badge) with
-  weight/reps steppers and a row of RPE 6-10 buttons labelled with reps left in the tank,
-  where ONE tap rates the set AND logs it. It used to be Easy/Med/Hard stored as 5/7/9,
-  which couldn't tell an 8 from a grind to failure; the trainer judges the next weight
-  from this number, so the buttons give it the resolution. Logging starts a REST CLOCK that
-  counts UP (the user's call: rest as long as needed and see how long it was), with a
-  target sized by that RPE (9+ → 3:00, 8 → 2:30, else 1:30) shown as a hint beside it; passing
-  it turns the clock yellow (no sound, the color is the cue); it's a start timestamp in localStorage so it
-  survives a reload or a locked phone;
-  the page also holds a screen wake lock while a session is open. Each exercise shows a
-  "Last …· Best …" line from `data.with_history`, a webapp-only enrichment of the plan
-  payload (like `_with_pr`) kept off the model-facing `_plan_payload` return. The
-  session's `notes` render under the progress bar, heavy sets (target RPE 9+) carry the
-  accent border, a BODYWEIGHT-BASED exercise (any planned, logged or
-  historical weight ≤ 0 — pull-ups, dips) shows load signed relative to bodyweight
-  ("−40" assisted, "+25" added, "BW" for 0) and labels its weight field that way, and Finish stays quiet until
-  every set is logged. Tapping any chip still opens the inline editor (log out of order
-  or correct a done set, same 6-10 RPE row).
+  /trainer/{id} session page is WORKOUT MODE (`trainer.js` + `trainer.html`): one fixed
+  full-viewport screen (site nav hidden, no page scroll, `100dvh`), because it's used
+  standing at a rack between sets and nothing should move under the thumb. Top to
+  bottom: a top bar (back, focus, progress, whole-plan, chat, ⋯ menu), a horizontal
+  exercise STRIP (tap to jump when a machine is busy), the STAGE (rest clock, "Set n of
+  m", a "PR attempt"/"Top set" badge, the exercise, target, set note, a "Last … · Best
+  …" line, this exercise's set chips, and a "Then: …" line), and the DOCK pinned to the
+  bottom: weight (−5/−2.5/+2.5/+5) and reps steppers and a row of RPE 6-10 buttons
+  labelled with reps left, where ONE tap rates the set AND logs it. After a log it stays
+  on the exercise while sets remain, then advances; if a set was done at a different
+  weight than planned and the next set has the same target, the dock starts from what
+  was actually lifted. Everything else is a bottom SHEET: the whole plan (reorder,
+  Replace via chat, Remove), editing a done set (Save / Clear set), the trainer's
+  notes, and the menu (Coaching preferences, Finish, Delete plan). RPE replaced
+  Easy/Med/Hard (stored as 5/7/9), which couldn't tell an 8 from a grind to failure.
+  Logging starts a REST CLOCK that counts UP, with a target sized by the RPE (9+ → 3:00,
+  8 → 2:30, else 1:30) shown as a quiet "/ 3:00" beside it; passing it turns the clock
+  yellow (no sound, the color is the cue). It's a start timestamp in localStorage so it
+  survives a reload or a locked phone, and the page holds a screen wake lock while a
+  session is open. "Last/Best" comes from `data.with_history`, a webapp-only enrichment
+  of the plan payload (like `_with_pr`) kept off the model-facing `_plan_payload`. A
+  BODYWEIGHT-BASED exercise (any planned, logged or historical weight ≤ 0: pull-ups,
+  dips) shows load signed relative to bodyweight ("−40" assisted, "+25" added, "BW"
+  for 0) and labels its weight field that way.
   The two-level log mirroring entries/mentions. A
   *planned* session (`status='active'`, from `start_workout_plan`) is UNDATED — its
   `workout_date` is the `''` not-yet-done sentinel until `finish_workout` stamps it with
