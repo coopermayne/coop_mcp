@@ -158,6 +158,52 @@ templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
 
 
 # --------------------------------------------------------------------------- #
+# Asset fingerprints. The service worker serves /static/ cache-first (so the PWA
+# works offline and opens fast), which meant a deploy reached a phone only on the
+# load AFTER the next one, and an installed app could sit on old JS for days. So
+# every script/stylesheet a template links goes through static_v(), which appends a
+# hash of the file's CONTENTS: a changed file is a new URL the cache has never seen,
+# an unchanged one keeps its cached copy. Hashed once per process (the files only
+# change on deploy, which restarts it). ASSET_BUILD, a hash over all of them, is the
+# service worker's VERSION, so a deploy that changes any asset also installs a new
+# worker, whose activate step drops the old cache.
+# --------------------------------------------------------------------------- #
+import hashlib  # noqa: E402
+
+_STATIC_DIR = os.path.join(HERE, "static")
+_asset_hashes: dict[str, str] = {}
+
+
+def _asset_hash(path: str) -> str:
+    if path not in _asset_hashes:
+        try:
+            with open(os.path.join(_STATIC_DIR, path), "rb") as f:
+                _asset_hashes[path] = hashlib.sha1(f.read()).hexdigest()[:10]
+        except OSError:
+            _asset_hashes[path] = "0"
+    return _asset_hashes[path]
+
+
+def static_v(path: str) -> str:
+    """`trainer.js` → `trainer.js?v=<content hash>`, for `{{ base }}/static/…` links."""
+    return f"{path}?v={_asset_hash(path)}"
+
+
+def _build_hash() -> str:
+    h = hashlib.sha1()
+    for dirpath, _dirs, files in sorted(os.walk(_STATIC_DIR)):
+        for name in sorted(files):
+            rel = os.path.relpath(os.path.join(dirpath, name), _STATIC_DIR)
+            h.update(rel.encode())
+            h.update(_asset_hash(rel).encode())
+    return h.hexdigest()[:10]
+
+
+ASSET_BUILD = _build_hash()
+templates.env.globals["static_v"] = static_v
+
+
+# --------------------------------------------------------------------------- #
 # Template filters
 # --------------------------------------------------------------------------- #
 
@@ -841,17 +887,17 @@ async def manifest(request: Request):
 # Tailwind, Inter, marked — no CDNs), so it's all precached and the app styles
 # itself offline. Bump VERSION to retire old caches on the next visit.
 _SERVICE_WORKER_TMPL = """\
-const VERSION = 'v9';
+const VERSION = '__VERSION__';
 const CACHE = 'journal-' + VERSION;
 const BASE = '__BASE__';
 const PRECACHE = [
   BASE + '/static/icon-192.png',
   BASE + '/static/favicon.svg',
-  BASE + '/static/tailwind.css',
+  BASE + '/static/__V:tailwind.css__',
   BASE + '/static/fonts/inter-latin.woff2',
-  BASE + '/static/vendor/marked.min.js',
-  BASE + '/static/vendor/purify.min.js',
-  BASE + '/static/body-symbols.svg',
+  BASE + '/static/__V:vendor/marked.min.js__',
+  BASE + '/static/__V:vendor/purify.min.js__',
+  BASE + '/static/__V:body-symbols.svg__',
   BASE + '/manifest.webmanifest',
 ];
 const OFFLINE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">`
@@ -921,7 +967,11 @@ self.addEventListener('fetch', (event) => {
 
 @app.get("/sw.js")
 async def service_worker(request: Request):
-    js = _SERVICE_WORKER_TMPL.replace("__BASE__", base_path(request))
+    js = (_SERVICE_WORKER_TMPL.replace("__BASE__", base_path(request))
+          .replace("__VERSION__", "v10-" + ASSET_BUILD))
+    # Precache the same fingerprinted URLs the pages request, or the precache
+    # would hold entries no page ever asks for.
+    js = re.sub(r"__V:([^_']+)__", lambda m: static_v(m.group(1)), js)
     return Response(
         js,
         media_type="application/javascript",

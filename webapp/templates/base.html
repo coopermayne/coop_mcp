@@ -55,7 +55,7 @@
      No CDNs: the app is an installable PWA and a personal journal, so styles
      must work offline and page loads shouldn't ping Google/Cloudflare. Rebuild
      with the command in webapp/tailwind.config.js after changing classes. #}
-  <link rel="stylesheet" href="{{ base }}/static/tailwind.css" />
+  <link rel="stylesheet" href="{{ base }}/static/{{ static_v('tailwind.css') }}" />
   {# Shared "is focus in a text field?" test — used by the global shortcuts
      (1-5 and "/") below, so the keys never
      hijack typing. Defined in <head>: page-level scripts run before the
@@ -613,15 +613,15 @@
      rather than only /trainer: it's ~3KB, costs nothing until something calls
      window.Confetti.burst(el), and the next thing worth celebrating won't be on the
      trainer card. #}
-  <script src="{{ base }}/static/confetti.js"></script>
-  <script src="{{ base }}/static/vendor/marked.min.js"></script>
+  <script src="{{ base }}/static/{{ static_v('confetti.js') }}"></script>
+  <script src="{{ base }}/static/{{ static_v('vendor/marked.min.js') }}"></script>
   {# DOMPurify sits between marked and innerHTML everywhere markdown renders (here
      and chat.js). marked passes raw inline HTML through untouched, and this prose is
      model-written — an entry/article/recipe that picked up a hostile fragment
      (prompt injection via a pasted page, …) must not script the
      authenticated session. Sanitizing the PARSED output (not the source) keeps
      markdown intact and also strips javascript: hrefs. #}
-  <script src="{{ base }}/static/vendor/purify.min.js"></script>
+  <script src="{{ base }}/static/{{ static_v('vendor/purify.min.js') }}"></script>
   <script>
     window.sanitizeHtml = function (html) {
       return (window.DOMPurify && window.DOMPurify.isSupported)

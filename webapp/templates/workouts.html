@@ -42,7 +42,7 @@
    of a shared 1448-tall canvas (0 0 724 1448); back is the right half. #}
 <script>
   (function () {
-    fetch('{{ base }}/static/body-symbols.svg')
+    fetch('{{ base }}/static/{{ static_v('body-symbols.svg') }}')
       .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
       .then(function (text) {
         var holder = document.createElement('div');
