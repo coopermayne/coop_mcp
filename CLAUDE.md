@@ -431,9 +431,11 @@ working.
   weight/reps steppers and a row of RPE 6-10 buttons labelled with reps left in the tank,
   where ONE tap rates the set AND logs it. It used to be Easy/Med/Hard stored as 5/7/9,
   which couldn't tell an 8 from a grind to failure; the trainer judges the next weight
-  from this number, so the buttons give it the resolution. Logging starts a REST TIMER
-  sized by that RPE (9+ → 3:00, 8 → 2:30, else 1:30), kept as an end timestamp in
-  localStorage so it survives a reload or a locked phone, with a beep/vibrate at zero;
+  from this number, so the buttons give it the resolution. Logging starts a REST CLOCK that
+  counts UP (the user's call: rest as long as needed and see how long it was), with a
+  target sized by that RPE (9+ → 3:00, 8 → 2:30, else 1:30) shown as a hint beside it; passing
+  it turns the clock yellow (no sound, the color is the cue); it's a start timestamp in localStorage so it
+  survives a reload or a locked phone;
   the page also holds a screen wake lock while a session is open. Each exercise shows a
   "Last …· Best …" line from `data.with_history`, a webapp-only enrichment of the plan
   payload (like `_with_pr`) kept off the model-facing `_plan_payload` return. The
