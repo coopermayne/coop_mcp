@@ -213,6 +213,14 @@ There is no exercise-selection or progression logic in the server either.
   `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
   (config + why in `webapp/tailwind.config.js`). Inter and `marked` are
   self-hosted (`static/fonts/`, `static/vendor/`) for the same reason.
+  **Asset links are FINGERPRINTED: write `{{ base }}/static/{{ static_v('x.js') }}`,
+  never a bare `/static/x.js`.** The service worker serves `/static/` cache-first, so
+  an unversioned link reached a phone only on the load after the next one, and an
+  installed PWA could sit on old JS for days. `static_v` appends a hash of the file's
+  contents (`app.py`, hashed once per process), and the worker's `VERSION` is
+  `ASSET_BUILD`, a hash over every static file, so a deploy that changes an asset
+  installs a new worker that drops the old cache. Its `PRECACHE` entries use the
+  same fingerprinted URLs (the `__V:path__` placeholders).
 - `webapp/requirements.txt` — the UI's extra deps (fastapi, uvicorn, jinja2, authlib,
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.

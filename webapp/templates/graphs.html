@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Graphs · Journal{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ base }}/static/vendor/uPlot.min.css" />
+<link rel="stylesheet" href="{{ base }}/static/{{ static_v('vendor/uPlot.min.css') }}" />
 <style>
   /* Quiet down uPlot's chrome to match the app: recessive axes, hairline grid,
      legend as small muted text. Colors are set per-theme by graphs.js (the chart
@@ -132,6 +132,6 @@
 <script type="application/json" id="graph-data">{{ graph | tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="{{ base }}/static/vendor/uPlot.iife.min.js"></script>
-<script src="{{ base }}/static/graphs.js" defer></script>
+<script src="{{ base }}/static/{{ static_v('vendor/uPlot.iife.min.js') }}"></script>
+<script src="{{ base }}/static/{{ static_v('graphs.js') }}" defer></script>
 {% endblock %}
