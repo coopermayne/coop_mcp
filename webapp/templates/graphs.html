@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Graphs · Journal{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ base }}/static/vendor/uPlot.min.css" />
+<style>
+  /* Quiet down uPlot's chrome to match the app: recessive axes, hairline grid,
+     legend as small muted text. Colors are set per-theme by graphs.js (the chart
+     is canvas, so CSS theme overrides can't reach the drawn pixels — the JS
+     rebuilds on theme flip); these rules cover the HTML parts (legend, cursor). */
+  .u-legend { font-size: 11px; color: #6b7280; }
+  .u-legend .u-marker { border-radius: 2px; }
+  .u-legend th { font-weight: 500; }
+  html[data-theme="dark"] .u-legend { color: #a3a3a3; }
+  html[data-theme="dark"] .u-select { background: rgba(250,250,250,.07); }
+  /* Toggle chips (range presets, panel + exercise toggles) */
+  .gchip {
+    display: inline-flex; align-items: center; gap: 0.375rem;
+    padding: 0.25rem 0.625rem; border: 1px solid #e5e7eb; border-radius: 9999px;
+    font-size: 12px; color: #6b7280; cursor: pointer; white-space: nowrap;
+    transition: color .15s, border-color .15s, background-color .15s;
+  }
+  .gchip:hover { color: #000; border-color: #9ca3af; }
+  .gchip[aria-pressed="true"] { color: #000; border-color: #000; }
+  .gchip .gdot { width: 8px; height: 8px; border-radius: 2px; background: transparent; }
+  .gchip[aria-pressed="true"] .gdot { background: var(--dot, #9ca3af); }
+  html[data-theme="dark"] .gchip { border-color: #262626; color: #a3a3a3; }
+  html[data-theme="dark"] .gchip:hover { color: #fafafa; border-color: #737373; }
+  html[data-theme="dark"] .gchip[aria-pressed="true"] { color: #fafafa; border-color: #fafafa; }
+</style>
+{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-8">
+  <h1 class="text-2xl font-bold tracking-tight">Graphs</h1>
+  {# Entering a weigh-in is its own page now — the chart here is DERIVED from that
+     log, so this points at the record rather than duplicating a form beside it. #}
+  <a href="{{ base }}/weight" class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-black transition-colors">
+    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a4 4 0 0 0-3.87 3H6a3 3 0 0 0-3 2.6l-1 9A3 3 0 0 0 5 21h14a3 3 0 0 0 3-3.4l-1-9A3 3 0 0 0 18 6h-2.13A4 4 0 0 0 12 3z"/><path d="M12 10v4"/></svg>
+    <span>Weigh-ins</span>
+  </a>
+</div>
+
+<div data-graphs>
+  {# Range presets — one row of filters above every chart, shared by all panels. #}
+  <div class="flex flex-wrap gap-1.5 mb-4" data-range-chips role="group" aria-label="Date range">
+    <button type="button" class="gchip" data-range="30">30d</button>
+    <button type="button" class="gchip" data-range="90">90d</button>
+    <button type="button" class="gchip" data-range="182">6m</button>
+    <button type="button" class="gchip" data-range="365">1y</button>
+    <button type="button" class="gchip" data-range="0">All</button>
+  </div>
+
+  {# Which panels are on. Bodyweight is its own panel; all strength exercises share
+     the lbs panel below.
+     Cursor is synced across panels, so together they read as one timeline. #}
+  <div class="flex flex-wrap gap-1.5 mb-6" data-panel-chips role="group" aria-label="Data shown">
+    <button type="button" class="gchip" data-panel="weight"><span class="gdot"></span>Bodyweight</button>
+    <button type="button" class="gchip" data-panel="exercises"><span class="gdot"></span>Exercises</button>
+  </div>
+
+  <section data-panel-el="weight" hidden class="mb-8">
+    <div class="flex items-baseline justify-between gap-3 mb-2">
+      <h2 class="text-sm font-semibold">Bodyweight <span class="text-gray-400 font-normal">lbs</span></h2>
+      {# Goal control: the current goal reads as quiet text; tapping it opens the
+         edit form. Saved into the trainer profile (see /graphs/goal), so the
+         trainer chat can also see and discuss it. #}
+      <button type="button" data-goal-toggle class="text-xs text-gray-400 hover:text-black transition-colors">
+        {%- if graph.weight_goal -%}
+          goal {{ graph.weight_goal.target_lbs | num }} lbs{% if graph.weight_goal.target_date %} by {{ graph.weight_goal.target_date | short_date }}{% endif %} ✎
+        {%- else -%}
+          + set goal
+        {%- endif -%}
+      </button>
+    </div>
+    <form method="post" action="{{ base }}/graphs/goal" hidden data-goal-form
+          class="flex flex-wrap items-end gap-2 mb-3 border border-gray-200 rounded-[4px] px-3 py-2.5">
+      <label class="text-xs text-gray-500">
+        <span class="block mb-1">Goal weight (lbs)</span>
+        <input type="number" name="target_lbs" step="0.1" min="1" required
+               value="{{ graph.weight_goal.target_lbs if graph.weight_goal else '' }}"
+               class="w-28 border border-gray-200 rounded-[4px] px-2 py-1 text-sm" />
+      </label>
+      <label class="text-xs text-gray-500">
+        <span class="block mb-1">By (optional)</span>
+        <input type="date" name="target_date"
+               value="{{ graph.weight_goal.target_date or '' if graph.weight_goal else '' }}"
+               class="border border-gray-200 rounded-[4px] px-2 py-1 text-sm" />
+      </label>
+      <button type="submit" name="action" value="save"
+              class="text-xs font-medium border border-black rounded-[4px] px-3 py-1.5 hover:bg-black hover:text-white transition-colors">Save</button>
+      {% if graph.weight_goal %}
+      <button type="submit" name="action" value="clear"
+              class="text-xs text-gray-400 hover:text-red-500 px-1.5 py-1.5 transition-colors">Clear</button>
+      {% endif %}
+    </form>
+    <div data-chart="weight"></div>
+  </section>
+
+  <section data-panel-el="exercises" hidden class="mb-8">
+    <div class="flex items-baseline justify-between gap-3 mb-2">
+      <h2 class="text-sm font-semibold">Exercises <span class="text-gray-400 font-normal">lbs</span></h2>
+      {# Which deterministic aggregate of a session to plot. #}
+      <select data-ex-metric class="text-xs border border-gray-200 rounded-[4px] px-2 py-1 text-gray-600 bg-white">
+        <option value="top">Top set</option>
+        <option value="e1rm">Est. 1RM</option>
+        <option value="vol">Volume</option>
+      </select>
+    </div>
+    {# One exercise at a time, so the y-axis is scaled to that lift. Cycle with
+       the arrows (also ←/→ on a keyboard) through every movement with logged
+       weighted sets, most recently trained first; the dropdown jumps straight
+       to one. graphs.js fills the options. #}
+    <div class="flex items-center gap-2 mb-2">
+      <button type="button" data-ex-prev aria-label="Previous exercise" title="Previous exercise (←)"
+              class="shrink-0 w-8 h-8 flex items-center justify-center rounded-full border border-gray-200 text-gray-400 hover:text-black hover:border-gray-400 transition-colors">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <select data-ex-pick aria-label="Exercise"
+              class="flex-1 min-w-0 text-sm font-medium border border-gray-200 rounded-[4px] px-2 py-1.5 bg-white"></select>
+      <button type="button" data-ex-next aria-label="Next exercise" title="Next exercise (→)"
+              class="shrink-0 w-8 h-8 flex items-center justify-center rounded-full border border-gray-200 text-gray-400 hover:text-black hover:border-gray-400 transition-colors">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+    </div>
+    <div data-chart="exercises"></div>
+    <p class="text-[11px] text-gray-400 mt-2" data-ex-meta></p>
+  </section>
+
+  <p class="text-sm text-gray-400" data-graphs-empty hidden>Nothing to plot yet.</p>
+</div>
+
+<script type="application/json" id="graph-data">{{ graph | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="{{ base }}/static/vendor/uPlot.iife.min.js"></script>
+<script src="{{ base }}/static/graphs.js" defer></script>
+{% endblock %}

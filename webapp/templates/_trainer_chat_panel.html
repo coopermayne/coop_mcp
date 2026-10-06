@@ -1,0 +1,123 @@
+{# Trainer AI chat as a slide-in panel on the /trainer page. Mirrors the journal's
+   _chat_panel.html (shared static/chat.js) but is bound to the `trainer` agent and,
+   on every write, refreshes the live plan card via window.TrainerPlan.refresh().
+   Self-contained: it carries its own floating opener button. #}
+
+{# Floating opener — bottom-right, above the safe area. Solid yellow circle with a
+   white chat icon (the shared opener treatment across journal/workouts/trainer). The
+   yellow is theme-independent (not .bg-black, so the dark-mode swap leaves it alone),
+   reading on both the light and dark page backgrounds. #}
+<button type="button" data-chat-open aria-label="Ask the trainer" title="Ask the trainer"
+        class="fixed z-30 bottom-5 right-5 h-12 w-12 flex items-center justify-center bg-yellow-400 text-white rounded-full shadow-lg hover:bg-yellow-300 transition-colors"
+        style="margin-bottom: env(safe-area-inset-bottom);">
+  <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
+</button>
+
+{# Backdrop — taps outside the panel to close. Hidden until open. #}
+<div data-chat-backdrop class="fixed inset-0 z-40 bg-black/30 opacity-0 pointer-events-none transition-opacity duration-300 hidden"></div>
+
+{# The panel. Slides up on mobile, in from the right on desktop. `inert` while
+   closed: it sits in the DOM translated off-screen, so without it a keyboard
+   user tabs into an invisible composer. #}
+<div data-chat-panel inert
+     class="fixed z-50 flex flex-col bg-white
+            inset-x-0 bottom-0 top-10 rounded-t-2xl border-t border-gray-200
+            sm:inset-y-0 sm:left-auto sm:right-0 sm:top-0 sm:w-[440px] sm:rounded-none sm:border-t-0 sm:border-l
+            translate-y-full sm:translate-y-0 sm:translate-x-full
+            transition-transform duration-300 motion-reduce:transition-none"
+     role="dialog" aria-label="Trainer chat" aria-modal="true">
+
+  <div class="flex items-center justify-between px-4 sm:px-5 h-14 border-b border-gray-100 shrink-0">
+    <span class="text-sm font-semibold tracking-tight">Trainer</span>
+    <div class="flex items-center gap-4 text-gray-400">
+      <button type="button" data-chat-reset
+              class="text-xs uppercase tracking-widest hover:text-black transition-colors">New</button>
+      <button type="button" data-chat-close aria-label="Close" title="Close"
+              class="hover:text-black transition-colors">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  {# Transcript. #}
+  <div data-chat-log class="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-5">
+    <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
+      Ask me to build today’s routine (“give me a push day”), log sets as you go
+      (“did 10 at 100, felt like an 8”), swap an exercise if a machine’s taken, or ask
+      how to do a movement. Your plan stays on this page as we go.
+    </p>
+  </div>
+
+  {# Composer. #}
+  <div class="px-4 sm:px-5 pt-3 pb-4 border-t border-gray-100 shrink-0"
+       style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+    <form data-chat-form class="flex items-end gap-2">
+      <textarea data-chat-input rows="1" autocomplete="off"
+                placeholder="Message the trainer…"
+                class="flex-1 resize-none border border-gray-200 rounded-[4px] px-3.5 py-2.5 text-[15px] leading-relaxed focus:outline-none focus:border-black transition-colors max-h-40"></textarea>
+      <button type="submit" data-chat-send aria-label="Send"
+              class="shrink-0 h-[42px] w-[42px] flex items-center justify-center bg-black text-white rounded-[4px] hover:bg-gray-800 transition-colors disabled:opacity-30">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      </button>
+    </form>
+  </div>
+</div>
+
+<script src="{{ base }}/static/chat.js"></script>
+<script>
+(function () {
+  var panel = document.querySelector('[data-chat-panel]');
+  var backdrop = document.querySelector('[data-chat-backdrop]');
+  var openBtn = document.querySelector('[data-chat-open]');
+  var closeBtn = panel.querySelector('[data-chat-close]');
+  var input = panel.querySelector('[data-chat-input]');
+  var closed = ['translate-y-full', 'sm:translate-y-0', 'sm:translate-x-full'];
+
+  function open() {
+    panel.inert = false;  // closed panel is inert (out of the tab order)
+    panel.classList.remove.apply(panel.classList, closed);
+    backdrop.classList.remove('hidden');
+    requestAnimationFrame(function () {
+      backdrop.classList.remove('opacity-0');
+      backdrop.classList.add('pointer-events-auto');
+    });
+    setTimeout(function () { input.focus(); }, 200);
+  }
+  function close() {
+    panel.inert = true;
+    panel.classList.add.apply(panel.classList, closed);
+    backdrop.classList.add('opacity-0');
+    backdrop.classList.remove('pointer-events-auto');
+    setTimeout(function () { backdrop.classList.add('hidden'); }, 300);
+  }
+
+  openBtn.addEventListener('click', open);
+  closeBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !backdrop.classList.contains('hidden')) close();
+  });
+  // Let the plan card open the chat (its empty-state CTA).
+  document.addEventListener('trainer:open-chat', open);
+
+  var widget = ChatWidget.init({
+    root: panel,
+    endpoint: {{ base | tojson }} + '/chat/trainer',
+    // A trainer write (built/logged/swapped/finished) landed. On a session page the
+    // plan card re-renders in place; on the Training page there's no card — the write
+    // may have added a whole day to the upcoming list, which is server-rendered, so
+    // reload to pick it up rather than leaving the page silently stale.
+    onWrite: function () {
+      if (window.TrainerPlan) window.TrainerPlan.refresh();
+      else window.location.reload();
+    },
+  });
+
+  // Handle for the plan card: open the panel and (optionally) fire a prefilled
+  // message — used by the per-exercise "..." → Replace action.
+  window.TrainerChat = {
+    open: open,
+    send: function (text) { open(); if (widget && widget.send) widget.send(text); },
+  };
+})();
+</script>

@@ -14,7 +14,8 @@ surface = less latency, the same reason the MCP servers are split):
 
   - `journal` — the journal server's people/entry tools. Lives as a slide-in
     panel on the journal page.
-  (The trainer is used through its MCP connector in Claude, not a panel here.)
+  - `trainer` — the trainer server's workout + water/protein tools. A panel on the
+    Training hub and on each session page.
 
 The system prompt and tool definitions are not hand-written: they're lifted
 straight from the live server — each instance's `instructions` is the system
@@ -49,6 +50,17 @@ _JOURNAL_BLURB = (
     "recorded. Use the tools to both capture entries and answer recall questions "
     "about people and past days."
 )
+_TRAINER_BLURB = (
+    "\n\nYou are running inside the trainer's own web app — the user is talking to you "
+    "on their phone, often mid-workout. Everything about HOW to train them is in the "
+    "server instructions above and their profile; this only describes the screen. On a "
+    "SESSION page (/trainer/{id}) a live PLAN CARD sits beside this chat showing that "
+    "session's routine; they log most sets by tapping it, so only call complete_sets "
+    "for sets they tell you about, and pass the session's `workout_id` when acting on "
+    "a plan other than the one they're standing on. On the TRAINING page (/workouts) "
+    "they see upcoming sessions above their history — that's where a week gets "
+    "planned. Be concise; they're between sets."
+)
 
 
 # The agent registry. A server-bound entry binds a chat surface to one FastMCP instance
@@ -58,6 +70,7 @@ _JOURNAL_BLURB = (
 # Extend, don't special-case.
 _AGENTS = {
     "journal":  {"server": server.mcp, "blurb": _JOURNAL_BLURB},
+    "trainer":  {"server": server.trainer_mcp, "exclude": set(), "blurb": _TRAINER_BLURB},
 }
 
 
@@ -200,7 +213,12 @@ def _repair_tail(messages: list) -> None:
 _WRITE_TOOLS = {
     "add_journal_entry", "update_entry", "reorder_entries", "save_person",
     "link_mentions", "merge_people", "update_contact",
-    "journal_delete_entry",
+    "delete_record", "journal_delete_entry",
+    "log_intake", "update_intake",
+    "log_workout", "update_workout", "update_set", "delete_record",
+    "update_profile", "add_exercise", "update_exercise", "archive_exercise",
+    "start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
+    "reorder_plan", "finish_workout", "remove_from_plan", "import_weigh_ins",
 }
 
 
@@ -316,15 +334,68 @@ def _tool_chip(name: str, args: dict, result: dict) -> dict:
     elif name == "merge_people":
         href = "/people"
         summary = "Merged two people"
+    elif name == "delete_record":  # trainer server's kind-scoped delete
+        summary = f"Deleted a {g('kind', 'record')}"
     elif name == "journal_delete_entry":
         href = "/journal"
         summary = "Deleted an entry"
+    elif name == "log_intake":
+        href = "/food"
+        bits = [f"{v}{u}" for k, u in (("water_oz", "oz water"), ("protein_g", "g protein"))
+                if (v := g(k))]
+        summary = "Logged " + (" + ".join(bits) or "intake")
+    elif name == "update_intake":
+        href = "/food"
+        summary = "Corrected a logged item"
+    elif name == "get_intake":
+        summary = "Loaded water & protein"
     elif name in ("search_entries", "get_entry"):
         summary = "Searched the journal"
     elif name in ("list_people", "get_person_history", "get_related_people"):
         summary = "Looked up people"
     elif name in ("get_briefing", "list_pending_mentions"):
         summary = "Loaded journal context"
+    # Trainer tools (used on the trainer page).
+    elif name == "log_workout":
+        href = "/workouts"
+        summary = "Logged a workout"
+    elif name in ("update_workout", "update_set"):
+        href = "/workouts"
+        summary = "Updated the workout"
+    elif name in ("add_exercise", "update_exercise", "archive_exercise"):
+        href = "/workouts"
+        nm = r.get("name") or g("name")
+        if r.get("error"):
+            kind, summary = "read", "Exercise not changed"
+        elif name == "archive_exercise":
+            verb = "Archived" if r.get("archived", g("archived", True)) else "Restored"
+            summary = f"{verb} {nm}" if nm else f"{verb} an exercise"
+        else:
+            verb = "Added" if name == "add_exercise" else "Updated"
+            summary = f"{verb} {nm}" if nm else f"{verb} an exercise"
+    elif name == "list_exercises":
+        summary = "Looked up exercises"
+    elif name == "get_fitness_briefing":
+        summary = "Loaded training context"
+    # Trainer plan tools. Several sessions can be planned at once, so a chip links to
+    # the one this call actually touched (its payload carries the workout_id) rather
+    # than to a bare /trainer that would resolve to whichever is next due.
+    elif name in ("start_workout_plan", "complete_sets", "swap_exercise", "add_to_plan",
+                  "finish_workout", "get_workout_plan"):
+        wid = r.get("workout_id")
+        href = f"/trainer/{wid}" if wid else "/workouts"
+        summary = {
+            "start_workout_plan": "Built a routine",
+            "complete_sets": "Logged sets",
+            "swap_exercise": "Swapped an exercise",
+            "add_to_plan": "Added to the plan",
+            "finish_workout": "Finished the workout",
+            "get_workout_plan": "Loaded the plan",
+        }[name]
+        # A finished session isn't a plan page any more — it's history.
+        if name == "finish_workout":
+            href = "/workouts"
+
     return {"name": name, "summary": summary, "kind": kind, "href": href}
 
 

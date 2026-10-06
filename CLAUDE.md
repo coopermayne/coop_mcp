@@ -22,18 +22,22 @@ eating log and notes/collections, with the journal tools hidden — and a third
 notes & collections, and the teacher were all removed. Their tables stay in existing
 DBs, dormant.) `webapp/combined.py` composes the trainer and the UI onto one origin.
 
-**The web app is the journal, and only the journal.** The user trains entirely
+**The trainer is MCP-only now; the app is legacy for it.** The user trains entirely
 through the trainer connector in Claude (planning the week, reporting sets between
-lifts, progress and advice, water/protein, weigh-ins), so the web training UI — the
-`/workouts` hub, the `/trainer` plan cards, `/weight`, `/graphs`, the `/food`
-water/protein page and the trainer chat panel — was removed. Every workflow those
-pages served has a trainer tool: `complete_sets`, `remove_from_plan`, `add_exercise`,
-`import_weigh_ins`, `set_intake_targets`. `complete_sets` and `log_workout` return
-`new_prs` (see the `workouts` row) because there's no screen to celebrate on. The
+lifts, progress and advice) and keeps the web app for the journal. So nothing a
+training workflow needs may live only behind a webapp page: the four things that did
+each got a tool — `complete_sets` (a batch, because a conversation reports a whole
+exercise at once where the card tapped one set; the single-set `complete_set` stays as
+the card's plain helper), `remove_from_plan` (the card's per-exercise delete),
+`add_exercise` (the library's add panel — the library itself is gone now, see the
+`exercises` row) and
+`import_weigh_ins` (the `/weight` upload — see `body_weight`). `complete_sets` and
+`log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule applied per batch)
+because the confetti that used to announce a best has no screen to land on. The
 `trainer_mcp` instructions open by saying the conversation IS the interface (plan as a
-table, ids never shown, short mid-session replies). Don't add trainer UI to the web
-app. The one non-journal web endpoint left is `/api/today.json` (the SwiftBar
-water/protein widget).
+table, ids never shown, short mid-session replies). The trainer also carries the
+water/protein log (see `intake_items`). The `/trainer`, `/workouts`,
+`/weight` pages still work and still read the same DB; don't build new trainer UI there.
 
 ## The one architectural rule
 
@@ -153,6 +157,13 @@ There is no exercise-selection or progression logic in the server either.
   connector, kinds that don't overlap. Both call the shared `_delete_record` helper,
   so the table mapping and the set-renumbering live in one place. Weigh-ins are not a
   kind — they're import-only (see `body_weight`).
+- **A write says where the thing now lives.** Training happens in a Claude
+  conversation while the data is READ in the web app, so `log_intake` returns a `url`
+  (`_app_url`: `PUBLIC_URL` + the `/app` mount, per `webapp/combined.py`) → `/food`.
+  `PUBLIC_URL` unset (stdio, dev) OMITS the key rather than emitting a dead link, and
+  corrections (`update_intake`) return totals, no url — the returns are tuned
+  token-compact.
+
 ## Files
 
 - `server.py` — everything: schema, matching, both FastMCP instances (`trainer_mcp` =
@@ -163,18 +174,27 @@ There is no exercise-selection or progression logic in the server either.
   browser UI (`/app`, with `/` redirecting there) and `/health` on the main origin, and
   the trainer MCP either on its own host (`TRAINER_PUBLIC_URL` set → Starlette `Host`
   routing) or grafted at `/trainer/mcp` on the main origin (authless fallback).
-- `webapp/app.py` — the FastAPI UI: the journal's pages (feed, entry, people, person,
-  groups, pending mentions with their inline resolver), login + the journal lock, the
-  `/chat` panel mount, the backup export, and `/api/today.json`.
+- `webapp/app.py` — the FastAPI UI: routes + page rendering for the browser app (mostly
+  read-only browse pages, plus the
+  handful of website-only write carve-outs (`/food/targets`, `/weight` and its `/{id}`
+  edit + delete, `/graphs/goal`, `/trainer/profile`) and the
+  `/chat` panel mount).
 - `webapp/data.py` — the UI's read-query layer (the SQL behind the browse pages; keeps
   `app.py` thin). Read-only — writes go through `server.py`'s tools.
 - `webapp/chat.py` — the in-app AI chat: web-app-as-MCP-client agent loop (see the
-  architectural-rule note). Its one agent, `journal`, lifts its system prompt + tool
-  schemas live from the journal FastMCP instance's `instructions` + tool docstrings, so
-  changing a docstring updates the chat. Off unless `ANTHROPIC_API_KEY` is set; model
-  via `CHAT_MODEL`.
+  architectural-rule note). Server-bound agents (`journal`, `trainer`) lift their system
+  prompt + tool schemas live from a FastMCP instance's `instructions` + tool docstrings,
+  so changing a docstring updates the chat. (A server-bound agent can narrow its
+  lifted tools with `exclude` or `include`; neither uses one today.) (The webapp-defined `exercise` agent that backed the
+  library's add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is
+  set; model via `CHAT_MODEL`.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
-  `chat.js`, manifest); the app is an installable PWA.
+  `chat.js`, manifest); the app is an installable PWA. `static/confetti.js` is the
+  app's one celebratory flourish (`window.Confetti.burst(el)`, thrown at a lifting PR
+  or an all-time-low weigh-in — see the `sets` and `body_weight` rows): hand-written
+  rather than vendored, loaded on every page because it costs nothing until called, and
+  driven by requestAnimationFrame on a canvas rather than a CSS animation for the same
+  Low Power Mode reason as the rep-loop crossfade.
   **THEME is two attributes on `<html>`, and the split is the design.**
   `data-theme-choice` is what the user PICKED (`system|light|dark`, stored in
   `localStorage` under `theme-choice`); `data-theme` is what that RESOLVES to
@@ -188,8 +208,8 @@ There is no exercise-selection or progression logic in the server either.
   leaning. And the old `theme` key is DROPPED on read rather than migrated —
   written by that toggle, its value records no intent that can be read back, and
   a bare `"light"` in it is indistinguishable from a deliberate one. `static/vendor/`
-  holds the third-party JS, self-hosted rather than CDN'd: `marked` and DOMPurify.
-  Styles are COMPILED
+  holds the third-party JS/CSS, self-hosted rather than CDN'd: `marked`, DOMPurify and
+  uPlot. Styles are COMPILED
   Tailwind (`static/tailwind.css`, checked in — no CDN, the app styles itself
   offline); after adding/removing classes in templates or static JS, rebuild:
   `cd webapp && npx -y tailwindcss@3.4.17 -i tailwind.input.css -o static/tailwind.css --minify`
@@ -231,7 +251,7 @@ no trailing slash, no `/mcp` — enables the trainer on its own subdomain; unset
 trainer falls back to `/trainer/mcp` on the main origin, authless only). Google
 redirect URIs: `<TRAINER_PUBLIC_URL>/auth/callback` for the trainer and
 `<PUBLIC_URL>/app/auth/callback` for the web app's own login. `PUBLIC_URL` is the web
-app's bare origin. Webapp-only:
+app's bare origin (also used for the `url` that `log_intake` returns). Webapp-only:
 `ANTHROPIC_API_KEY` (enables the `/chat` surface; unset = chat off, rest of the app runs
 normally), `CHAT_MODEL` (chat agent model, defaults to `claude-sonnet-4-6`), `SHOW_LOGOUT`
 (show the logout control in the UI), and `BACKUP_TOKEN` (strong random token that unlocks
@@ -348,13 +368,19 @@ working.
   since one absurd row silently skews the day). Write returns carry `day_totals` plus
   `targets`, and `get_fitness_briefing` carries `intake_today`, so the trainer answers
   "how's my water" from the DB, never from a chat-side tally.
-  **Targets** are `INTAKE_TARGET_DEFAULTS` overridden by what's stored in
-  `settings.eating_profile.targets`, written by the trainer tool `set_intake_targets`
-  (0 drops an override back to the default); `_day_targets` is the one read of them.
-  A target is just a target — no ceiling/floor direction anywhere. (The rest of the
-  eating_profile blob — goal/context prose, `targets_note` — is dormant from the
-  food-tracker days.) There is no web page for it; `/api/today.json` (WIDGET_TOKEN)
-  serves today's two sums + targets for the SwiftBar plugin.
+  **Targets** live in `settings.eating_profile.targets`, written by ONE function,
+  the trainer tool `set_intake_targets` (0 hands a goal back to the
+  `INTAKE_TARGET_DEFAULTS` default), which `/food`'s **Targets** popover also calls
+  (a blank box sends `null`, mapped to 0). `_day_targets` is the one merged read;
+  `_stored_targets` is the set-only view the popover needs. A target is just a
+  target — no ceiling/floor direction anywhere. (The rest of the eating_profile blob —
+  goal/context prose, `targets_note` — is dormant from the food-tracker days.)
+  The webapp page is `/food` ("Water & protein" in the nav): outside the journal lock,
+  no chat panel, STRICTLY READ-ONLY for content — one line per item and two rings
+  (`macros.eating_block` / `nutrient_ring`, unit labels in `macros.NUTRIENT_UNITS`),
+  each item/ring opening the shared display-only detail modal
+  (`templates/_detail_modal.html`). `/api/today.json` (WIDGET_TOKEN) serves the same
+  two sums for the SwiftBar plugin.
 - `nutrition` — LEGACY, dormant. The first shape of the intake log: one row per day.
   Its rows fold into `intake_items` once on the first `init_db` (spelled-out legacy
   column list, so the fold stays lossless); the table is kept, not dropped.
@@ -401,7 +427,11 @@ working.
 - `workouts` + `sets` — session + per-set `weight_lbs`/`reps`/`rpe` (1-10 RPE), plus
   `duration_seconds`/`distance_miles` for cardio (running/walking/rowing — all NULL for
   lifts, weight/reps NULL for cardio). A planned set also carries `target_rpe` — the
-  difficulty the trainer programs for it (1-10), the target twin of the actual `rpe`.
+  difficulty the trainer programs for it (1-10), the target twin of the actual `rpe`. The
+  /trainer card surfaces difficulty as Easy/Med/Hard buttons (mapped Easy≈5, Med≈7,
+  Hard≈9, in `trainer.js`), prefilled from `target_rpe` on a pending set (or the actual
+  `rpe` when correcting a done one) — the user confirms a feel instead of typing a number,
+  and weight is a `[−5][−1][−.5] (n) [+.5][+1][+5]` stepper over a still-editable field.
   The two-level log mirroring entries/mentions. A
   *planned* session (`status='active'`, from `start_workout_plan`) is UNDATED — its
   `workout_date` is the `''` not-yet-done sentinel until `finish_workout` stamps it with
@@ -424,8 +454,9 @@ working.
   Two consequences of many-active. `_current_plan` is the ordering that decides which
   plan a caller who named none gets: next-due first, with an unscheduled plan
   competing as TODAY's (else an ad-hoc session would queue behind Friday) and ties on
-  the oldest id. Every plan tool keeps an optional `workout_id` and falls back to it,
-  because "the active plan" is no longer a thing that exists. And recovery gets a gap the server refuses to
+  the oldest id. Every plan tool keeps an optional `workout_id` and falls back to it;
+  the WEBAPP always passes one (see `/trainer/{id}` below), because "the active plan"
+  is no longer a thing that exists. And recovery gets a gap the server refuses to
   paper over: `muscle_recency` counts COMPLETED work only, so the days already
   programmed this week are invisible to it. Rather than fold plans into recency —
   which would make a factual "days since last trained" partly hypothetical —
@@ -435,43 +466,136 @@ working.
   The other thing that shifts per day is `get_fitness_briefing(as_of=…)`, which
   re-anchors `days_since` to the day you're planning FOR, so what's "due" reflects the
   extra rest; planning a week is that, one day at a time.
-  **A personal best** is a deterministic fact: weight EXCEEDS the heaviest ever for
-  that movement, or TIES it and beats the most reps done at it. No e1rm (an estimate
-  isn't a thing that happened); cardio never counts; the first weighted set of a
-  movement never counts. `_new_bests` applies it per batch and `complete_sets` /
-  `log_workout` return the result as `new_prs`; `get_personal_records` is the read.
+  **The UI is a hub and per-session pages.** `/workouts` ("Training") is the hub: the
+  upcoming plans (`data.upcoming_plans`) listed ABOVE the completed history
+  (`data.workouts_full`), and each row links into `/trainer/{workout_id}` — the
+  tap-to-log plan card for that day. There is no "Trainer" link any more, because a
+  singleton `/trainer` can't name which of five plans it means; a bare `/trainer`
+  redirects to `_current_plan` (or to the hub when nothing is planned), so the `6`
+  shortcut and any old link still land somewhere sensible. The upcoming rows are
+  DELIBERATELY condensed to day + focus + counts: nothing has been lifted yet, so
+  there are no set chips and no muscle diagram to draw, and a stack of full cards for
+  work that hasn't happened would outweigh the history under it. That makes `focus`
+  load-bearing — it's the only title a row has, which is why the trainer contract
+  insists on one. Every trainer write route carries the id in its PATH
+  (`/trainer/{id}/finish`, `/reorder`, `/discard`, `/plan.json`,
+  `/exercise/{eid}/remove`) and `trainer.js` builds them from the plan payload's
+  `workout_id`; the two SET-scoped routes keep their flat URLs, since a `set_id`
+  already identifies its workout — but they must return THAT set's plan, which is why
+  `update_set` now returns a `workout_id` at all. The trainer chat panel is on BOTH
+  surfaces: the hub is where a week gets planned, a session page is where it gets
+  tweaked mid-workout. Its `onWrite` forks on that — the session page re-renders the
+  card in place, the hub has no card and reloads, because the upcoming list is
+  server-rendered and a chat that just added Thursday must not leave the page stale.
+  **A personal best is a deterministic fact, computed by `pr_for_set` — a NON-tool,
+  website-only path like `set_archived` and `clear_plan_set`.** It answers one question
+  the /trainer card asks after a tap ("was the set just logged a best?") so the page can
+  throw confetti at the chip; the MODEL already has `get_personal_records`, which is why
+  this isn't a tool and why the rule sits beside it rather than in `webapp/data.py` — two
+  "heaviest ever" queries in one repo is exactly how they drift apart. The rule: weight
+  EXCEEDS the heaviest ever for that movement, or TIES it and beats the most reps done at
+  it. No e1rm (an estimate isn't a thing that happened); cardio never counts; the first
+  weighted set of a movement never counts. The flag reaches the browser as a webapp-only
+  `celebrate` key merged on by `webapp/app.py`'s `_with_pr` — `_plan_payload` is the
+  return of five MCP tools, so a key added THERE would ride along on every model-facing
+  plan return. DEDUPING is the
+  browser's (`trainer.js`), not the server's: a corrected set that is still the heaviest
+  ever IS still a best, and the data layer should keep saying so.
   Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
   `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
   `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the
   workout (all the exercise's sets share it; NULL = insertion order). `_plan_payload`
   orders exercises by it, so the active plan honors a user-chosen order; it's set by
-  `reorder_plan` (a trainer tool, names → order, so chat can sequence the session) via
-  the deterministic `reorder_plan_exercises` helper. Newly-added exercises keep
+  `reorder_plan` (a trainer tool, names → order, so chat can sequence the session) and by
+  the deterministic `reorder_plan_exercises` helper behind the /trainer card's reorder UX
+  (↑/↓ arrows → `POST /trainer/reorder` with exercise ids). Newly-added exercises keep
   `ex_position` NULL and fall in after the positioned ones.
 - `body_weight` — bodyweight readings, one row per weigh-in, keyed by `weigh_date`
-  (weight is a daily metric you may log on rest days too, and the point is the trend).
-  The latest reading on a day is "the" weight for that day; a day with no row simply
-  wasn't weighed. `get_fitness_briefing` surfaces the latest reading + 30-day change.
-  There is NO weight-goal/target logic in the server — the coaching is the model's.
+  (the drinks pattern, not a `workouts` column: weight is a daily metric you may log on
+  rest days too, and the point is the trend). The latest reading on a day is "the"
+  weight for that day; a day with no row simply wasn't weighed. `get_fitness_briefing`
+  surfaces the latest reading + 30-day change; the longer trend lives in the webapp, not
+  a dedicated server tool. There is NO weight-goal/target logic in the server — the
+  coaching is the model's, as everywhere else.
   **A weigh-in is a MORNING reading taken by a CONNECTED SCALE, and there is exactly
-  ONE way one gets in: the trainer tool `import_weigh_ins`**, where the model reads the
-  scale app's export the user attaches and passes its rows. A number the user merely
-  says is not a reading (the trainer's instructions say so) — a hand-typed 186 that
-  disagrees with the scale's 185.4 is a fork, not a correction; a wrong reading is
-  fixed AT THE SCALE'S APP and re-exported. (The web `/weight` upload page and its
-  stdlib .xlsx parser were removed with the rest of the web training UI.)
-  The load-bearing consequence of import-only is IDEMPOTENCE. Exports OVERLAP — the
-  scale app hands you "the last 30 days", not the delta — so re-importing must insert
-  only what's new. `source_key` is the reading's identity in its export
-  (`"wyze:2026.08.22 06:39 AM"`, the vendor plus the stamp), RE-RENDERED from the parsed
-  stamp in the export's own format (`%Y.%m.%d %I:%M %p`) rather than trusted as given,
-  since a spreadsheet reader may hand the cell back as ISO. UNIQUE but NULLABLE so the
-  hand-entered rows that predate the scale (all NULL) don't collide. The index is
-  created in `init_db`, NOT in `SCHEMA`, because the schema script runs BEFORE the
-  `ALTER TABLE` that adds the column. A re-import reports `imported: 0` calmly. The
-  stamp is the scale app's LOCAL time — the user's own — so its calendar day IS the
-  Pacific day; a stamp no known format parses SKIPS its row rather than guessing.
-  Only weight is stored; the export's other columns (body fat, BMR, …) are dropped.
+  ONE way one gets in: importing the scale app's export.** It has two doors now, both
+  imports: the `/weight` upload, and the trainer tool `import_weigh_ins`, where the
+  model reads the export the user attaches and passes its rows. Same `source_key`
+  identity, but the tool RE-RENDERS the key from the parsed stamp in the export's own
+  format (`%Y.%m.%d %I:%M %p`) rather than trusting the string, since a spreadsheet
+  reader may hand the cell back as ISO and a second spelling of one reading would store
+  it twice. A number the user merely says is still not a reading. The user weighs in every
+  morning on a smart scale that writes to its vendor's app; every so often they upload
+  that app's `.xlsx` on `/weight` (**Import scale export** → `POST /weight/import` →
+  `server.import_bodyweight`, a NON-tool website-only path like `set_archived`). Everything else is DELETED, not left dark: the entry form, the
+  per-row ✎ and ×, `log_bodyweight` (the trainer's one weigh-in WRITE tool),
+  `set_bodyweight`, `POST /weight`, `POST /weight/{id}`, `POST /weight/{id}/delete`, the
+  `"weight"` kind in `_delete_record` and in the trainer's `delete_record`, and the
+  `log_bodyweight` branch in `webapp/chat.py`'s tool chips. The reason is one rule: a
+  reading is a MEASUREMENT now, and a second door onto a measurement is a second version
+  of the truth — a hand-typed 186 that disagrees with the scale's 185.4 is not a
+  correction, it's a fork. A wrong reading is fixed AT THE SCALE'S APP and re-exported.
+  The trainer's instructions say so (a mentioned weight is not a reading).
+  The load-bearing consequence of import-only is IDEMPOTENCE, and it's why the table
+  grew a column. Exports OVERLAP — the scale app hands you "the last 30 days", not the
+  delta since your last upload — so re-importing must insert only what's new.
+  `source_key` is the reading's identity in its export (`"wyze:2026.08.22 06:39 AM"`,
+  the vendor plus the stamp), UNIQUE but NULLABLE so the hand-entered rows that predate
+  the scale (all NULL) don't collide — SQLite allows any number of NULLs in a unique
+  index. The index is created in `init_db`, NOT in `SCHEMA`, because the schema script
+  runs BEFORE the `ALTER TABLE` that adds the column and would fail on an existing DB.
+  A re-upload reports `imported: 0` calmly rather than erroring; it's the normal way
+  this is used, not a mistake.
+  The parser (`_xlsx_rows` + `_parse_scale_export`) is stdlib `zipfile` + `ElementTree`
+  rather than openpyxl — one small sheet of text doesn't earn a fourth pin — and reads
+  both ways a string reaches a cell (an inline `<is>`, which is what this scale writes,
+  and a `<v>` index into `sharedStrings`, which most other writers use). It is
+  header-DRIVEN, not positional: the export leads with a merged title row, and a vendor
+  adding a column would silently shift a positional read onto the wrong number, so the
+  header row is found by its date column and weight is taken from `Weight(lb)` — or
+  `Weight(kg)` converted, since a metric export is still a weigh-in. Values arrive as
+  strings WITH units (`"185.4lb"`), so the number is pulled out by regex. The stamp is
+  the scale app's LOCAL time, which is the user's own, so its calendar day IS the
+  Pacific day with no conversion to get wrong; a stamp no known format parses SKIPS its
+  row rather than guessing (a misread date is a reading on the wrong day, which is worse
+  than a reading that never arrives).
+  **Every other column is DROPPED.** The scale exports body fat, muscle mass, body
+  water, bone mass, BMR, metabolic age and a dozen more; `body_weight` is a weight log,
+  the graph plots weight, and a stored column nothing reads is the dormant-data trap
+  this repo already has a scar from (see `drinks`). Adding one later means a consumer
+  first.
+  The upload goes up as the RAW request body, not multipart — one upload in the whole
+  app doesn't justify adding `python-multipart` for a single route. The page is
+  upload-then-reload (the `/food` Targets shape) rather than patching rows in: each row
+  shows its delta against the next-older reading, so a live patch would mean a second
+  copy of that arithmetic in JS. The ONE thing that must not be cut off by that reload
+  is the confetti, so a new low holds it ~2.4s — but only when a burst actually STARTED.
+  `Confetti.burst()` returns whether it threw anything, because it declines under
+  `prefers-reduced-motion`, and holding the page for an animation nobody will see is a
+  dead wait inflicted on exactly the person who asked for less motion.
+  `new_low` on the import return is the one fact the browser cannot derive from the rows
+  it is about to re-render: nothing else on this path ever sees the all-time minimum.
+  It's true when any of the NEWLY imported readings beats every reading that was already
+  there, and never on a first-ever import (nothing to beat) — the same rule the deleted
+  hand-entry path applied one reading at a time. It's also the graphs row's confetti cue.
+  **The log has its OWN PAGE, `/weight`** — the import box on top, every reading below,
+  read-only. Its own page rather than a strip on `/graphs` because a daily habit is a
+  destination, not a widget above someone else's chart, and because the reading is the
+  RECORD while the trend is what's derived from it; `/graphs` keeps the chart and the
+  goal and links here (as does the `/workouts` header, next to Library — not because
+  weighing is training, but because that's the header you look in for "the other thing I
+  log"). It used to live on the `/trainer` plan card — a box under the sets, submitted
+  only when you tapped Finish — which tied a DAILY measurement to whether you happened to
+  train that day; that box, `POST /trainer/{id}/bodyweight`, `_with_bodyweight` and
+  `data.bodyweight_on` are all long deleted, and the plan card is about sets.
+  The list is deliberately EVERY ROW (`data.bodyweight_log`), not `graph_data`'s
+  one-point-per-day: a scale can record twice in a morning (a re-weigh, someone else
+  stepping on it), and the second reading vanishes from a day view — latest wins — while
+  still sitting in the table owning `MIN(weight_lbs)`, which is the figure every "lowest
+  ever" is measured against. Seeing it is now the only thing you can do about it from
+  here, which is the accepted cost of one door. The per-session "Weight:" line on
+  `/workouts` stays — it's a same-day join (`data.workouts_full`), so it reads as what
+  you weighed that morning.
 - `collections` + `items` (+ `items_fts`) — DORMANT. The notes & collections layer
   (an inbox of notes promotable into model-defined collections, with list/table/
   cards/map views) was removed with the journal connector; existing DBs keep the
@@ -479,8 +603,12 @@ working.
 - `settings` — generic JSON KV; holds `profile` (`goals`, `split`, `session`,
   `injuries`, `coaching`, free-form beyond those) merged via `update_profile` and surfaced by `get_fitness_briefing`,
   and `eating_profile`, whose one live key is `targets` — the flat {nutrient: number}
-  water/protein goals, written by `set_intake_targets`, validated by `_bad_targets`
-  (a real nutrient key, a positive number), and read through `_day_targets`. Its other keys (goal/context prose, `targets_note` with its
+  water/protein goals, written by `set_intake_targets` (the trainer tool, also behind
+  /food's Targets popover), validated by `_bad_targets` (a real nutrient key, a positive
+  number — the rings silently skip anything else, so an unvalidated write would
+  report success while the ring kept the old number), and read by the rings
+  (`data.nutrient_targets()` → `_day_targets`, merged over `INTAKE_TARGET_DEFAULTS`) and the trainer's
+  intake returns. Its other keys (goal/context prose, `targets_note` with its
   `{calories}` placeholders) are dormant from the food-tracker days.
   **The trainer has exactly TWO homes for guidance: the code's `instructions` for the
   RULES, the `profile` for the PERSON.** It used to have five — the instructions, a
@@ -498,9 +626,11 @@ working.
   initialize handshake). There are NO generic preference defaults in code: an empty
   profile makes the trainer ASK (the instructions' SETUP rule) rather than coach to
   a stranger's numbers, because a default the user never chose is exactly the kind of
-  quiet second copy this cleanup removed. `profile.coaching` is written by
-  `update_profile` (the model, when the user asks in so many words); `update_profile`
-  drops a key sent as null.
+  quiet second copy this cleanup removed. Surface blurbs (`_TRAINER_BLURB`)
+  describe the SCREEN only — never how to train. `profile.coaching`
+  still has two doors onto one copy: `update_profile` (the model, when the user asks
+  in so many words) and `server.set_trainer_profile` (the /trainer page's legacy
+  **Coaching** popover); `update_profile` drops a key sent as null.
 - `subjects` + `facets` + `attempts` + `learn_fts` — DORMANT. The teacher server's
   spaced-repetition log was removed (it lives on as a separate project); existing DBs
   keep the tables, nothing reads them.

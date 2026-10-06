@@ -66,16 +66,15 @@ JOURNAL_DB="$COPY" MCP_TRANSPORT=http PORT=$PORT ANTHROPIC_API_KEY= \
 pid=$!
 for _ in $(seq 1 30); do sleep 1; curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; done
 h=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health")
-# /api/today.json, not /journal: the journal page sits behind the lock and 307s to
-# it, which proves routing but never reads a row. The widget endpoint is outside the
-# lock (and open when auth is off, as here), and it queries intake_items — so a 200
-# with its JSON shape means the restored DB was actually read.
-f=$(curl -s -o "$WORK/today.json" -w '%{http_code}' "http://127.0.0.1:$PORT/app/api/today.json")
+# /food, not /journal: the journal page sits behind the lock and 307s to it, which
+# proves routing but never renders a row. /food is outside the lock by design, so a
+# 200 here means the restored DB was actually read and drawn.
+f=$(curl -s -o "$WORK/food.html" -w '%{http_code}' "http://127.0.0.1:$PORT/app/food")
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
-if [ "$h" = "200" ] && [ "$f" = "200" ] && grep -q "nutrients" "$WORK/today.json"; then
-  ok "health $h, /app/api/today.json reads the DB"
+if [ "$h" = "200" ] && [ "$f" = "200" ] && grep -q "protein" "$WORK/food.html"; then
+  ok "health $h, /app/food renders"
 else
-  bad "health $h, today.json $f — see $WORK/app.log"; tail -15 "$WORK/app.log"
+  bad "health $h, food $f — see $WORK/app.log"; tail -15 "$WORK/app.log"
 fi
 
 echo
