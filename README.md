@@ -86,9 +86,9 @@ OAuth). Over stdio a bare `server.py` launch runs it. With `TRAINER_PUBLIC_URL` 
   items — so "that shake was 30g, not 50" is `update_intake(item_id, protein_g=30)` with
   no recomputing, and removing one is `delete_record(kind="intake")`. `get_intake` reads
   days back with ids, totals and averages; today's totals also ride along in
-  `get_fitness_briefing` as `intake_today`. Daily targets default to 130g protein /
-  88oz water; change one by asking (`set_intake_targets`; 0 hands it back to the
-  default).
+  `get_fitness_briefing` as `intake_today`. Daily targets are set on the web app's
+  `/food` page (**Targets** popover; blank hands a goal back to its default) or by
+  asking the trainer (`set_intake_targets`). The page itself is read-only: two rings plus the day's items.
   (This used to be a full food tracker — calories, macros, sodium, fiber, alcohol. Those
   columns and the legacy `drinks`/`nutrition` tables are kept, dormant, with their
   history; nothing reads them.)
@@ -124,15 +124,16 @@ OAuth). Over stdio a bare `server.py` launch runs it. With `TRAINER_PUBLIC_URL` 
   clobbering earlier ones) resurface in `get_fitness_briefing`, so observations made
   mid-workout become cautions next time.
 - **Bodyweight is IMPORTED, not typed.** A connected scale records every morning to its
-  vendor's app; every so often you export that app's spreadsheet and hand it to the
-  trainer, which imports its rows with `import_weigh_ins`. That is the only door — no
-  form, no typed weigh-in, no per-row edit — because a reading is a measurement, and a second way to state
+  vendor's app; every so often you export that app's spreadsheet and upload it with
+  **Import scale export** on `/weight`. That is the only door — no form, no MCP write
+  tool, no per-row edit — because a reading is a measurement, and a second way to state
   one is a second version of the truth. To fix a bad reading, fix it in the scale's app
   and re-export. The import is idempotent (each reading is keyed by its timestamp in the
   export), so re-uploading an overlapping file inserts only what's new and says so;
   overlapping exports are the expected way to use it. Storage is date-keyed (its own
   daily metric, not a column on a workout), so rest-day weigh-ins are just readings.
-  The latest reading + 30-day change ride along in `get_fitness_briefing`.
+  The latest reading + 30-day change ride along in `get_fitness_briefing`, and `/graphs`
+  plots the trend against the goal.
 
 **Where the trainer's instructions live — two places, nothing else.** The RULES (how the
 tools work, what to call when) are the server's own instructions, in code. Everything
@@ -144,7 +145,8 @@ put there belongs in your profile, where you change it by just saying so.
 
 ## Remote deployment — phone access via Coolify
 
-One container serves the **web app** (the journal) at `https://YOUR-DOMAIN/app` and the **trainer MCP server** for Claude. The
+One container serves the **web app** (journal, water & protein, training history,
+graphs) at `https://YOUR-DOMAIN/app` and the **trainer MCP server** for Claude. The
 trainer connector works on your phone once added at claude.ai (you can't add a new
 connector from the mobile app). On Coolify:
 
@@ -269,9 +271,10 @@ curl -H "Authorization: Bearer $WIDGET_TOKEN" https://YOUR-DOMAIN/app/api/today.
                "water_oz":  {"total": 48, "target": 128}}}
 ```
 
-`total` is `null` when nothing logged carries that figure ("not logged" rather than a
-claimed zero). Targets are the same ones the trainer reads. Units aren't included —
-the plugin formats them.
+`total` is `null` when nothing logged carries that figure — the same distinction the
+`/food` rings draw between "0 so far" and "not logged", so a client can show an unknown
+state rather than claiming a zero. Units aren't included: they're a rendering choice that lives in `macros.html`, and a
+second server-side copy is how the two drift.
 
 > **`WIDGET_TOKEN` is deliberately NOT `BACKUP_TOKEN`.** This token sits on every device
 > that wants a number on screen; `BACKUP_TOKEN` downloads the entire journal. Keep the
@@ -305,21 +308,21 @@ on every dropped wifi connection is a bar you learn to ignore.
 
 ## Web frontend
 
-`webapp/` is the journal: entries (with FTS search), people and groups, and the AI chat
-you write it in. Training has no web UI — it's all in the trainer connector. The
-browse pages are **read-only**: they read the **same** SQLite DB and reuse `server.py`'s
+`webapp/` is a small browser UI for reviewing what's been recorded — journal entries
+(with FTS search), workout sessions, water/protein, and people. The browse/reading
+pages are **read-only**: they read the **same** SQLite DB and reuse `server.py`'s
 retrieval functions directly (the single source of truth for data shapes), so they never
-duplicate query logic. Writes go through the AI **chat panel** (plus the inline
-pending-mention resolver and the journal lock).
+duplicate query logic. Writes are confined to a few purpose-built surfaces: the AI
+**chat panels**, plus small settings carve-outs (targets, goals, display prefs).
 
 Stack: FastAPI + Jinja2, server-rendered. Design deliberately mirrors the
 `workout_tracker` app — Inter, white/black + grayscale, thin-bordered cards,
 uppercase `tracking-widest` labels, stat-tile grids.
 
-Pages: journal (+ `?q=` search, + AI chat panel) · entry detail · people · person
-detail · groups · pending mentions.
+Pages: journal (+ `?q=` search, + AI chat panel) · water & protein (`/food`) ·
+entry detail · workouts · graphs · people · person detail · weight.
 
-### In-app AI chat
+### In-app AI chat — toolset-scoped
 
 Off by default; turns on only when `ANTHROPIC_API_KEY` is set. It's the web app acting as
 an MCP *client*: an agent loop (`webapp/chat.py`) streams `anthropic.messages` and
@@ -331,9 +334,15 @@ live from each server's `instructions` + `list_tools()`, so editing a docstring 
 `(agent, session)` (lost on restart — fine for a single user). Tool calls surface as
 chips linking to the affected page.
 
-It's bound to the journal's people/entry tools and lives as a **slide-in panel** on the
-`/journal` page (near-fullscreen on mobile, a right-edge side panel on desktop). Posts
-to `/chat/journal/send`.
+Each surface is bound to **one** toolset (smaller tool surface = less latency, the same
+reason the MCP servers are split):
+
+- **`journal`** — the journal server's people/entry tools. Lives as a **slide-in panel** on the `/journal` page
+  (near-fullscreen on mobile, a right-edge side panel on desktop). Posts to
+  `/chat/journal/send`.
+- **`trainer`** — the trainer server's workout + water/protein tools. Will get its **own page** linked
+  from the workout page (longer, workout-length conversations). Wired in `chat.py`; the
+  page itself is a later round.
 
 Env: `ANTHROPIC_API_KEY` (required to enable), `CHAT_MODEL` (default
 `claude-sonnet-4-6`). Adds `anthropic` to `webapp/requirements.txt`. The web app also
@@ -404,6 +413,7 @@ authless) carries the rest, including the water/protein log, plus its own
 | `journal_delete_entry` | Delete one entry and its mentions — irreversible. App chat only; not advertised on the connector |
 | `log_intake` | *(trainer)* Log ONE thing consumed — `water_oz` and/or `protein_g`, optional label; returns the day's totals + targets |
 | `get_intake` | *(trainer)* Water/protein days back: items *with ids*, day totals, averages, targets |
+| `set_intake_targets` | *(trainer)* Set the daily water/protein targets when asked (0 = back to default); also behind `/food`'s Targets popover |
 | `update_intake` | *(trainer)* Correct one logged item by id — the day's totals re-derive themselves |
 | `list_exercises` | Your exercises: `active` (what the trainer programs from) and `archived` (done before, with a note on why you stopped), each with muscles, last done, session count |
 | `add_exercise` | Add a movement ahead of using it (planning/logging a new name with its `muscles` creates it on the fly anyway); refuses an existing name, asks "did you mean?" on a near-duplicate unless `new=True` |

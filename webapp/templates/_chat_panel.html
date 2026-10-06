@@ -18,7 +18,7 @@
 {% set chat_person_id  = chat_person_id  | default(none, true) %}
 
 {# Floating opener — bottom-right, above the safe area. Solid yellow circle with a
-   white chat icon (the app's chat opener). The
+   white chat icon (the shared opener treatment across journal/workouts/trainer). The
    yellow is theme-independent (not .bg-black, so the dark-mode swap leaves it alone),
    reading on both the light and dark page backgrounds. #}
 <button type="button" data-chat-open aria-label="{{ chat_open_label }}" title="{{ panel_title }}"
