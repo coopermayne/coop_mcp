@@ -397,7 +397,10 @@ working.
   is worth keeping: reference data about movements is what the MODEL already knows, so
   storing it bought a closed catalog the user had to curate in a browser before they
   could log anything new. Now a row is just `name`, `category` (`strength`|`cardio`),
-  `archived`, and a `note`, plus its muscles.
+  `archived`, a `note`, and a `mechanic` (`compound`|`isolation`, the one library
+  column brought back: the model sets it via `add_exercise`/`update_exercise` or on a
+  lift born on the fly, and the /trainer page sizes the rest target by it; NULL = not
+  classified yet, treated as compound), plus its muscles.
   **Two states.** ACTIVE (`archived=0`) is what the trainer programs from — the
   briefing's `exercises`. ARCHIVED is what the user did and stopped, kept as a record
   rather than deleted, with `note` saying why ("bugged my left shoulder"); the model
@@ -449,8 +452,9 @@ working.
   Replace via chat, Remove), editing a done set (Save / Clear set), the trainer's
   notes, and the menu (Coaching preferences, Finish, Delete plan). RPE replaced
   Easy/Med/Hard (stored as 5/7/9), which couldn't tell an 8 from a grind to failure.
-  Logging starts a REST CLOCK that counts UP, with a target sized by the RPE (9+ → 3:00,
-  8 → 2:30, else 1:30) shown as a quiet "/ 3:00" beside it; passing it turns the clock
+  Logging starts a REST CLOCK that counts UP, with a target sized by the lift's
+  `mechanic` and the RPE (compound 9+ → 3:00, 8 → 2:30, else 1:30; isolation 9+ → 1:30,
+  8 → 1:15, else 1:00; unclassified counts as compound) shown as a quiet "/ 3:00" beside it; passing it turns the clock
   yellow (no sound, the color is the cue). It's a start timestamp in localStorage so it
   survives a reload or a locked phone, and the page holds a screen wake lock while a
   session is open. "Last/Best" comes from `data.with_history`, a webapp-only enrichment

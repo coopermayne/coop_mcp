@@ -749,12 +749,16 @@
   // Log a pending set, start the rest clock, advance the stage, and throw confetti at
   // the chip if it was a personal best.
   async function logSet(setId, weight, reps, rpe, onError) {
+    var mechanic = null;
+    visibleExercises().forEach(function (ex) {
+      if (ex.sets.some(function (x) { return x.set_id === setId; })) mechanic = hist(ex).mechanic || null;
+    });
     var r = await postJSON(base + '/trainer/set/' + setId + '/complete', {
       weight_lbs: weight, reps: reps, rpe: rpe,
     });
     if (!r.ok || (r.data && r.data.error)) { if (onError) onError(); return; }
     var p = r.data.progress || {};
-    if (p.total && p.done < p.total) startRest(restFor(rpe || 7));
+    if (p.total && p.done < p.total) startRest(restFor(rpe || 7, mechanic));
     else writeRest(null);
     selSetId = null;
     currentPlan = r.data;
@@ -855,8 +859,8 @@
   }
 
   // ── Rest clock ────────────────────────────────────────────────────────────────
-  // Counts UP from the moment a set is logged. The RPE sets a target (9+ → 3:00,
-  // 8 → 2:30, else 1:30), shown as a quiet "/ 3:00" beside the clock; passing it turns
+  // Counts UP from the moment a set is logged. The lift's kind and the RPE set a target
+  // (see restFor: compound 3:00 / 2:30 / 1:30, isolation 1:30 / 1:15 / 1:00), shown as a quiet "/ 3:00" beside the clock; passing it turns
   // the clock yellow, and it keeps counting. No sound: the color is the cue. Stored as
   // a START timestamp in localStorage so it survives a re-render, a reload and a locked
   // phone. Page-only state; the server never hears about it.
@@ -864,7 +868,14 @@
   var REST_MAX = 20 * 60;  // a clock still running after 20 min is a forgotten one
   var restTick = null;
 
-  function restFor(rpe) { return rpe >= 9 ? 180 : rpe >= 8 ? 150 : 90; }
+  // Rest target by the KIND of lift and how hard the set was. A heavy compound set
+  // (rows, presses, squats) needs 2-3 min for the next set to hold its reps; a
+  // one-joint isolation set recovers in about a minute. An exercise the trainer
+  // hasn't classified yet is treated as compound, the conservative side.
+  function restFor(rpe, mechanic) {
+    if (mechanic === 'isolation') return rpe >= 9 ? 90 : rpe >= 8 ? 75 : 60;
+    return rpe >= 9 ? 180 : rpe >= 8 ? 150 : 90;
+  }
   function readRest() {
     var r = null;
     try { r = JSON.parse(localStorage.getItem(REST_KEY) || 'null'); } catch (e) {}

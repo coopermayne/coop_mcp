@@ -117,12 +117,15 @@ class LoggedExercise(TypedDict):
     """One exercise of a completed session: its name plus the sets performed. A name
     the user has never done before is created on the fly — give `muscles` (primary,
     canonical labels) and optionally `secondary_muscles`, or category "cardio". `new`
-    confirms a name that's close to an existing one really is a different movement."""
+    confirms a name that's close to an existing one really is a different movement.
+    `mechanic` (compound | isolation) is stored on a newly created lift; see
+    add_exercise."""
     name: str
     sets: NotRequired[list[LoggedSet]]
     muscles: NotRequired[list[str]]
     secondary_muscles: NotRequired[list[str]]
     category: NotRequired[Literal["strength", "cardio"]]
+    mechanic: NotRequired[Literal["compound", "isolation"]]
     new: NotRequired[bool]
 
 
@@ -149,6 +152,7 @@ class PlannedExercise(TypedDict):
     muscles: NotRequired[list[str]]
     secondary_muscles: NotRequired[list[str]]
     category: NotRequired[Literal["strength", "cardio"]]
+    mechanic: NotRequired[Literal["compound", "isolation"]]
     new: NotRequired[bool]
 
 
@@ -420,7 +424,8 @@ common mistakes and cautions come from YOUR knowledge, in conversation, when the
     with its `muscles` (primary) and `secondary_muscles`, in these canonical labels:
     abdominals, abductors, adductors, biceps, calves, chest, forearms, glutes,
     hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
-    triceps (cardio: category "cardio", no muscles). Use the name the user uses.
+    triceps (cardio: category "cardio", no muscles), and its `mechanic` (compound |
+    isolation; the app sizes rest between sets by it). Use the name the user uses.
     add_exercise does the same thing ahead of time. A name close to an existing one
     comes back `unmatched` with candidates — it's usually the same lift; use the
     existing name.
@@ -428,7 +433,8 @@ common mistakes and cautions come from YOUR knowledge, in conversation, when the
     "Bring back X" → archive_exercise(archived=False). Logging an archived lift brings
     it back on its own (it's being done again). Nothing is ever deleted; history and
     PRs survive archiving.
-  - update_exercise fixes a name, the muscles, or a note.
+  - update_exercise fixes a name, the muscles, a note, or the mechanic. An active lift
+    listed without a `mechanic` hasn't been classified: set it when you see one.
 
 WEIGH-INS come from a connected scale. When the user attaches the scale app's export,
 read it and pass every row to import_weigh_ins (it skips what's already on file). A
@@ -2409,15 +2415,24 @@ def _bad_muscles(*tiers: Optional[list[str]]) -> Optional[str]:
 
 def _create_exercise(conn: sqlite3.Connection, name: str, muscles: Optional[list[str]],
                      secondary_muscles: Optional[list[str]] = None,
-                     category: Optional[str] = None, note: Optional[str] = None) -> int:
+                     category: Optional[str] = None, note: Optional[str] = None,
+                     mechanic: Optional[str] = None) -> int:
     """Insert a new ACTIVE exercise + its muscle links. Callers validate first."""
     eid = conn.execute(
-        "INSERT INTO exercises(name, category, note, in_rotation, hearted, archived, "
-        "created_at) VALUES (?,?,?,1,1,0,?)",
-        (name.strip(), (category or "strength").lower(), note, now()),
+        "INSERT INTO exercises(name, category, note, mechanic, in_rotation, hearted, "
+        "archived, created_at) VALUES (?,?,?,?,1,1,0,?)",
+        (name.strip(), (category or "strength").lower(), note,
+         mechanic if mechanic in MECHANICS else None, now()),
     ).lastrowid
     _set_muscles(conn, eid, muscles or [], secondary_muscles or [])
     return eid
+
+
+# Compound (several joints, heavy, slow to recover from) vs isolation (one joint). The
+# model classifies a lift when it creates or updates it; the /trainer page reads it to
+# size the rest target (an isolation set needs far less rest than a heavy compound one).
+# It reuses the dormant library column of the same name; NULL = not classified yet.
+MECHANICS = ("compound", "isolation")
 
 
 def _set_archived(conn: sqlite3.Connection, eid: int, archived: bool) -> None:
@@ -2462,7 +2477,8 @@ def _resolve_or_create(conn: sqlite3.Connection, spec: dict, events: dict):
     if reason := _bad_muscles(muscles, secondary):
         events.setdefault("unmatched", []).append({"name": name, "fix": reason})
         return None
-    eid = _create_exercise(conn, name, muscles, secondary, spec.get("category"))
+    eid = _create_exercise(conn, name, muscles, secondary, spec.get("category"),
+                           mechanic=spec.get("mechanic"))
     events.setdefault("created", []).append(name)
     return conn.execute("SELECT * FROM exercises WHERE id=?", (eid,)).fetchone()
 
@@ -2878,7 +2894,7 @@ def set_intake_targets(protein_g: Optional[float] = None,
 def _exercise_rows(conn: sqlite3.Connection, archived: Optional[bool]) -> list[dict]:
     where = "" if archived is None else f"WHERE e.archived={int(archived)}"
     rows = conn.execute(
-        f"""SELECT e.id, e.name, e.category, e.archived, e.note,
+        f"""SELECT e.id, e.name, e.category, e.archived, e.note, e.mechanic,
                    MAX(NULLIF(w.workout_date,'')) AS last_done,
                    COUNT(DISTINCT CASE WHEN s.status='done' THEN w.id END) AS sessions
             FROM exercises e
@@ -2895,6 +2911,8 @@ def _exercise_rows(conn: sqlite3.Connection, archived: Optional[bool]) -> list[d
                 "sessions": r["sessions"]}
         if m["secondary"] or m["tertiary"]:
             item["secondary_muscles"] = m["secondary"] + m["tertiary"]
+        if r["mechanic"]:
+            item["mechanic"] = r["mechanic"]
         if r["note"]:
             item["note"] = r["note"]
         out.append(item)
@@ -2928,6 +2946,7 @@ def _exercise_by(conn: sqlite3.Connection, name: Optional[str],
 def add_exercise(name: str, muscles: list[str],
                  secondary_muscles: Optional[list[str]] = None,
                  category: Optional[str] = None, note: Optional[str] = None,
+                 mechanic: Optional[Literal["compound", "isolation"]] = None,
                  new: bool = False) -> dict:
     """Add a movement to the user's ACTIVE exercises ahead of using it ("I want to start
     doing landmine presses"). You rarely need this: planning or logging an unknown name
@@ -2937,7 +2956,10 @@ def add_exercise(name: str, muscles: list[str],
     both in the canonical labels: abdominals, abductors, adductors, biceps, calves,
     chest, forearms, glutes, hamstrings, lats, lower back, middle back, neck,
     quadriceps, shoulders, traps, triceps. `category` is "strength" (default) or
-    "cardio" (cardio carries no muscles — pass muscles=[]).
+    "cardio" (cardio carries no muscles — pass muscles=[]). `mechanic` is "compound"
+    (multi-joint: presses, rows, pull-ups, squats, leg press, hip thrust) or
+    "isolation" (one joint: curls, raises, flyes, pushdowns, leg extensions/curls);
+    give it for every strength lift, since the app sizes the rest between sets by it.
 
     A name that already exists is refused with the existing entry (an archived one:
     bring it back with archive_exercise(archived=False)). A near-duplicate is refused
@@ -2948,6 +2970,8 @@ def add_exercise(name: str, muscles: list[str],
         return {"error": "name is required"}
     if reason := _bad_muscles(muscles, secondary_muscles):
         return {"error": reason}
+    if mechanic is not None and mechanic not in MECHANICS:
+        return {"error": f"mechanic must be one of {list(MECHANICS)}"}
     if not muscles and (category or "").lower() != "cardio":
         return {"error": "give at least one primary muscle (or category='cardio')"}
     with db() as conn:
@@ -2961,7 +2985,8 @@ def add_exercise(name: str, muscles: list[str],
             return {"error": f"{name!r} looks close to an existing exercise — use that "
                              "one, or pass new=True if it's genuinely different",
                     "candidates": near}
-        eid = _create_exercise(conn, name, muscles, secondary_muscles, category, note)
+        eid = _create_exercise(conn, name, muscles, secondary_muscles, category, note,
+                               mechanic)
     return {"exercise_id": eid, "name": name, "created": True}
 
 
@@ -2971,11 +2996,13 @@ def update_exercise(name: Optional[str] = None, exercise_id: Optional[int] = Non
                     muscles: Optional[list[str]] = None,
                     secondary_muscles: Optional[list[str]] = None,
                     category: Optional[str] = None,
-                    note: Optional[str] = None) -> dict:
+                    note: Optional[str] = None,
+                    mechanic: Optional[Literal["compound", "isolation"]] = None) -> dict:
     """Fix an exercise: `rename` it (history follows — sets point at the row, not the
     name), correct its `muscles`/`secondary_muscles` (passing either rewrites both
-    tiers, so send both), change `category`, or set its `note` ("" clears). Only what you
-    pass changes. To take a lift out of (or back into) the program, use
+    tiers, so send both), change `category`, set its `note` ("" clears), or set its
+    `mechanic` (compound | isolation, see add_exercise; a lift listed without one
+    hasn't been classified yet). Only what you pass changes. To take a lift out of (or back into) the program, use
     archive_exercise."""
     if reason := _bad_muscles(muscles, secondary_muscles):
         return {"error": reason}
@@ -3000,6 +3027,11 @@ def update_exercise(name: Optional[str] = None, exercise_id: Optional[int] = Non
         if note is not None:
             conn.execute("UPDATE exercises SET note=? WHERE id=?", (note or None, row["id"]))
             changed.append("note")
+        if mechanic is not None:
+            if mechanic not in MECHANICS:
+                return {"error": f"mechanic must be one of {list(MECHANICS)}"}
+            conn.execute("UPDATE exercises SET mechanic=? WHERE id=?", (mechanic, row["id"]))
+            changed.append("mechanic")
         if muscles is not None or secondary_muscles is not None:
             _set_muscles(conn, row["id"], muscles or [], secondary_muscles or [])
             changed.append("muscles")

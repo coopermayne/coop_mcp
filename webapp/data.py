@@ -678,6 +678,9 @@ def with_history(plan: dict) -> dict:
             ).fetchone()
             if best:
                 entry["best"] = dict(best)
+            mech = conn.execute("SELECT mechanic FROM exercises WHERE id=?", (eid,)).fetchone()
+            if mech and mech["mechanic"]:
+                entry["mechanic"] = mech["mechanic"]  # sizes the page's rest target
             if entry:
                 hist[str(eid)] = entry
     plan["history"] = hist
