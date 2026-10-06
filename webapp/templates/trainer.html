@@ -5,12 +5,14 @@
 <style>
   /* Workout mode takes the whole screen: the site nav and page scroll are hidden and
      #plan-root is a fixed full-viewport layer (static/trainer.js lays out the top
-     bar, exercise strip, stage and the dock pinned to the bottom). dvh, not vh, so
-     the dock sits above the mobile browser's toolbar instead of behind it. */
+     bar, exercise strip, stage and the dock pinned to the bottom). It is sized by its
+     edges (inset: 0) plus the script below, NOT by 100dvh: in the installed Android
+     app 100dvh measured the whole screen including the system navigation bar, so the
+     RPE row sat underneath it. */
   html, body { overflow: hidden; overscroll-behavior: none; }
   body > header { display: none; }
   #plan-root {
-    position: fixed; inset: 0; z-index: 20; height: 100dvh;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 20;
     padding-top: env(safe-area-inset-top);
   }
   /* The chat opens from the top bar here; the floating bubble would sit on the RPE row. */
@@ -26,6 +28,23 @@
 <div id="plan-root" class="bg-white" data-base="{{ base }}" data-workout-id="{{ plan.workout_id }}"
      data-chat="{{ '1' if chat_enabled else '0' }}"></div>
 <script type="application/json" id="plan-data">{{ plan | tojson }}</script>
+<script>
+  // Belt and braces for the height: pin the screen to the area the browser says is
+  // actually visible (the smaller of innerHeight and the visual viewport), re-measured
+  // on rotate/resize, so the dock can't end up under a system bar or toolbar.
+  (function () {
+    var r = document.getElementById('plan-root');
+    function fit() {
+      var h = window.innerHeight;
+      if (window.visualViewport) h = Math.min(h, window.visualViewport.height);
+      r.style.bottom = 'auto';
+      r.style.height = h + 'px';
+    }
+    fit();
+    window.addEventListener('resize', fit);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', fit);
+  })();
+</script>
 
 {# Coaching preferences — the standing instructions the trainer reads at the top of
    every session. Opened from the workout menu (window.TrainerCoaching.open). It saves
