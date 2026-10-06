@@ -629,8 +629,59 @@ def active_plan(workout_id: int | None = None) -> dict:
     server.get_workout_plan): {"active": False} or the full plan with exercises, sets
     (target + actual + status), and a done/total progress count. `workout_id` names the
     session (every /trainer route carries it now that a week can be planned at once);
-    omitted, it's the next-due plan."""
-    return server.get_workout_plan(workout_id=workout_id)
+    omitted, it's the next-due plan. Carries the page-only `history` (with_history)."""
+    return with_history(server.get_workout_plan(workout_id=workout_id))
+
+
+def with_history(plan: dict) -> dict:
+    """Add a `history` map to a /trainer plan payload: per exercise id, the LAST
+    completed session's sets (date + weight/reps/rpe) and the BEST set before this
+    session (heaviest weight, most reps at it — the same rule as server._new_bests).
+    It's what you glance at between sets to pick a weight and to know what a PR
+    attempt has to beat. A webapp-only enrichment, like app._with_pr: _plan_payload
+    is the model-facing return of every plan tool, and the model already has
+    get_exercise_history, so the extra rows stay off the connector. Both look-ups
+    exclude this session's own sets, so logging a set here doesn't move its own
+    "last"/"best" mid-workout. Cardio carries no weight, so it gets only `last`."""
+    if not isinstance(plan, dict) or not plan.get("active"):
+        return plan
+    wid = plan.get("workout_id")
+    ids = [ex["exercise_id"] for ex in plan.get("exercises", [])]
+    hist = {}
+    if not ids:
+        plan["history"] = hist
+        return plan
+    with server.db() as conn:
+        for eid in ids:
+            last = conn.execute(
+                """SELECT w.id, w.workout_date FROM sets s JOIN workouts w ON w.id = s.workout_id
+                   WHERE s.exercise_id=? AND s.status='done' AND w.status='done' AND w.id != ?
+                   ORDER BY w.workout_date DESC, w.id DESC LIMIT 1""",
+                (eid, wid),
+            ).fetchone()
+            entry = {}
+            if last:
+                rows = conn.execute(
+                    """SELECT weight_lbs, reps, rpe, duration_seconds, distance_miles
+                       FROM sets WHERE workout_id=? AND exercise_id=? AND status='done'
+                       ORDER BY set_index""",
+                    (last["id"], eid),
+                ).fetchall()
+                entry["last"] = {"date": last["workout_date"],
+                                 "sets": [dict(r) for r in rows]}
+            best = conn.execute(
+                """SELECT weight_lbs, reps FROM sets
+                   WHERE exercise_id=? AND status='done' AND workout_id != ?
+                     AND weight_lbs IS NOT NULL AND reps IS NOT NULL
+                   ORDER BY weight_lbs DESC, reps DESC LIMIT 1""",
+                (eid, wid),
+            ).fetchone()
+            if best:
+                entry["best"] = dict(best)
+            if entry:
+                hist[str(eid)] = entry
+    plan["history"] = hist
+    return plan
 
 
 def upcoming_plans() -> list:

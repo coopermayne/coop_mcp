@@ -714,7 +714,7 @@ CREATE TABLE IF NOT EXISTS sets (
     distance_miles   REAL,            -- cardio: distance covered; NULL for lifts
     target_weight_lbs REAL,           -- plan target (lift); NULL for ad-hoc logged sets
     target_reps       INTEGER,        -- plan target (lift)
-    target_rpe        REAL,           -- plan target difficulty (1-10); prefills the /trainer card's Easy/Med/Hard buttons
+    target_rpe        REAL,           -- plan target difficulty (1-10); prefills the /trainer card's RPE buttons
     status      TEXT NOT NULL DEFAULT 'done',  -- 'pending' | 'done' | 'skipped'
     ex_position INTEGER,              -- exercise's slot in the workout (all its sets share it); NULL = insertion order
     note        TEXT

@@ -1,6 +1,9 @@
 /*
  * Trainer plan card. Renders the active workout plan into #plan-root and handles the
- * write paths the page owns directly: tap-to-complete a planned set, edit a logged
+ * write paths the page owns directly. The between-sets loop is the UP NEXT card at
+ * the top: the next pending set with its target, steppers to adjust, and a row of
+ * RPE buttons where ONE tap both rates the set and logs it, which then starts a rest
+ * timer. Below it the full plan: tap any set chip to log it out of order, edit a logged
  * ('done') set to fix a data-entry error, drop or replace an exercise (the per-exercise
  * "..." menu), and finish the session. Building/swapping the routine happens in the chat, which calls
  * window.TrainerPlan.refresh() after each write (see _trainer_chat_panel).
@@ -24,7 +27,7 @@
   var reorderList = null;  // working copy of the visible exercises while reordering
 
   // A programmatic focus() pops the mobile soft keyboard, which covers the weight
-  // steppers and the Easy/Med/Hard buttons — the very controls that let you log a
+  // steppers and the RPE buttons — the very controls that let you log a
   // set without typing. So on a touch-primary device we skip auto-focusing the
   // editor's inputs; on a mouse/desktop there's no keyboard to get in the way, so
   // focusing still helps (Enter-to-submit, caret ready for typing).
@@ -36,19 +39,20 @@
     return (+x).toString();
   }
 
-  // Difficulty is entered as Easy/Med/Hard but stored as RPE (1-10), the server's field.
-  // These are the canonical mappings; rpeToLabel buckets any RPE (e.g. one set via chat)
-  // to its nearest word for display + prefilling the buttons.
-  var DIFFICULTY = [{ key: 'Easy', rpe: 5 }, { key: 'Med', rpe: 7 }, { key: 'Hard', rpe: 9 }];
-  function rpeToLabel(rpe) {
+  // Difficulty is RPE, entered on a 6-10 scale with "reps left in the tank" under each
+  // number (10 = nothing left, 8 = two more). It used to be Easy/Med/Hard stored as
+  // 5/7/9, which the trainer couldn't tell apart from a grind to failure; the trainer
+  // picks the next weight from this number, so the buttons give it the resolution.
+  var RPE_CHOICES = [6, 7, 8, 9, 10];
+  function rirLabel(rpe) { return rpe >= 10 ? 'max' : (10 - rpe) + ' left'; }
+  // The button an RPE prefills to. Halves round DOWN (a 9.5 target prefills 9), so a
+  // planned near-max never prefills as an actual failure.
+  function nearestRpe(rpe) {
     if (rpe === null || rpe === undefined) return null;
-    var best = null, bestDist = Infinity;
-    DIFFICULTY.forEach(function (d) {
-      var dist = Math.abs(d.rpe - rpe);
-      if (dist < bestDist) { bestDist = dist; best = d.key; }
-    });
-    return best;
+    return Math.min(10, Math.max(6, Math.ceil(rpe - 0.5)));
   }
+  // A heavy set: the trainer programmed it at RPE 9+ (top sets, PR attempts).
+  function isHeavy(s) { return s.target_rpe != null && s.target_rpe >= 9; }
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -69,12 +73,20 @@
   // Label for a set: weight × reps for lifts, distance · time for cardio (+ @rpe),
   // using actuals when done, targets when not. Cardio metrics are actual-only (no
   // target columns), so they show whenever present. Mirrors app.py's set_label.
+  // Weight as shown: 0 is bodyweight and a negative is assistance (the signed-weight
+  // convention), so a pull-up reads "BW × 8", not "0 × 8".
+  function wLabel(w) {
+    if (+w === 0) return 'BW';
+    if (+w < 0) return 'BW−' + num(-w);
+    return num(w);
+  }
+
   function setText(s, done) {
     var w = done ? s.weight_lbs : s.target_weight_lbs;
     var r = done ? s.reps : s.target_reps;
     var dur = s.duration_seconds, dist = s.distance_miles;
     var parts;
-    if (w != null && r != null) parts = num(w) + ' × ' + r;
+    if (w != null && r != null) parts = wLabel(w) + ' × ' + r;
     else if (r != null) parts = r + ' rep' + (r === 1 ? '' : 's');
     else if (w != null) parts = num(w) + ' lb';
     else if (dist != null || dur != null) {
@@ -84,7 +96,7 @@
       parts = cardio.join(' · ');
     }
     else parts = '—';
-    if (done && s.rpe != null) parts += '  · ' + rpeToLabel(s.rpe);
+    if (done && s.rpe != null) parts += ' @' + num(s.rpe);
     return parts;
   }
 
@@ -124,6 +136,12 @@
     left.appendChild(el('p', 'text-lg font-semibold tracking-tight',
       pr.done + ' / ' + pr.total + ' sets'));
     head.appendChild(left);
+    left.className = 'flex-1 min-w-0 mr-4';
+    var bar = el('div', 'mt-2 h-1 rounded-full bg-gray-100 overflow-hidden');
+    var fill = el('div', 'h-full bg-yellow-400 transition-all duration-500');
+    fill.style.width = (pr.total ? Math.round(100 * pr.done / pr.total) : 0) + '%';
+    bar.appendChild(fill);
+    left.appendChild(bar);
     if (reordering) {
       head.appendChild(reorderDoneBtn());
     } else {
@@ -144,8 +162,26 @@
       return;
     }
 
+    // The trainer's notes for the session (the PR targets, a cue, why it's light) — the
+    // intent behind the numbers, which the model writes when it builds the plan.
+    if (plan.notes) {
+      var notes = el('div', 'mb-4 border-l-2 border-yellow-400 pl-3 py-0.5');
+      notes.appendChild(el('p', 'text-[13px] text-gray-600 leading-relaxed whitespace-pre-line', plan.notes));
+      root.appendChild(notes);
+    }
+
+    var next = nextPending(visible);
+    if (next) root.appendChild(renderUpNext(next.ex, next.set, plan));
+    else if (pr.done) root.appendChild(renderAllDone());
+
     // Exercises (fully swapped-out ones are hidden).
-    visible.forEach(function (ex) { root.appendChild(renderExercise(ex)); });
+    visible.forEach(function (ex) {
+      root.appendChild(renderExercise(ex, next && next.ex.exercise_id === ex.exercise_id));
+    });
+
+    paintRest();
+    ensureTicker();
+    holdWake();
 
     // The big full-width Finish ("Done") button at the bottom. No weigh-in box: a
     // bodyweight is a MORNING reading, not a gym artifact, so it's entered on /graphs
@@ -340,9 +376,17 @@
   }
 
   // The big full-width Finish button — bold white "Done" on yellow, anchoring the card.
+  // Finish is quiet while sets remain (one stray tap there drops the rest of the
+  // session) and becomes the big yellow call to action once everything is logged.
   function renderFinish() {
-    var b = el('button', 'w-full py-5 mt-1 rounded-[4px] bg-yellow-400 hover:bg-yellow-500 ' +
-      'text-white font-bold text-lg uppercase tracking-widest transition-colors', 'Done');
+    var pr = (currentPlan && currentPlan.progress) || { done: 0, total: 0 };
+    var complete = pr.total > 0 && pr.done >= pr.total;
+    var b = el('button', complete
+      ? 'w-full py-5 mt-1 rounded-[4px] bg-yellow-400 hover:bg-yellow-500 ' +
+        'text-white font-bold text-lg uppercase tracking-widest transition-colors'
+      : 'w-full py-3 mt-1 rounded-[4px] border border-gray-200 text-gray-400 ' +
+        'text-xs uppercase tracking-widest hover:border-black hover:text-black transition-colors',
+      'Finish workout');
     b.type = 'button';
     b.addEventListener('click', onFinish);
     return b;
@@ -359,11 +403,16 @@
     return b;
   }
 
-  function renderExercise(ex) {
-    var box = el('div', 'border border-gray-200 rounded-[4px] px-5 sm:px-6 py-4 mb-3');
+  function renderExercise(ex, isCurrent) {
+    var box = el('div', 'border rounded-[4px] px-5 sm:px-6 py-4 mb-3 ' +
+      (isCurrent ? 'border-black' : 'border-gray-200'));
 
-    var head = el('div', 'flex items-center justify-between mb-3 gap-2');
-    head.appendChild(el('p', 'text-sm font-medium', ex.name));
+    var head = el('div', 'flex items-start justify-between mb-3 gap-2');
+    var title = el('div', 'min-w-0');
+    title.appendChild(el('p', 'text-sm font-medium', ex.name));
+    var hl = historyLine(ex);
+    if (hl) title.appendChild(el('p', 'text-[11px] text-gray-400 mt-0.5 leading-snug', hl));
+    head.appendChild(title);
     var ctrls = el('div', 'flex items-center gap-1 shrink-0');
     var menu = iconBtn('More options for ' + ex.name);
     menu.addEventListener('click', function () { toggleMenu(ex); });
@@ -407,9 +456,13 @@
     if (s.status === 'skipped') {
       return el('span', 'set-pill text-gray-300 line-through', setText(s, false));
     }
-    // pending → tappable
-    var chip = el('button', 'set-pill hover:border-black hover:text-black transition-colors',
-      setText(s, false));
+    // pending → tappable. A heavy set (target RPE 9+) gets the accent border and its
+    // target RPE, so the top set and a PR attempt don't look like warm-ups.
+    var heavy = isHeavy(s);
+    var chip = el('button', 'set-pill hover:border-black hover:text-black transition-colors' +
+      (heavy ? ' !border-yellow-400' : ''),
+      setText(s, false) + (heavy ? ' @' + num(s.target_rpe) : ''));
+    if (s.note) chip.title = s.note;
     chip.dataset.setId = String(s.set_id);
     chip.addEventListener('click', function () { openEditor(ex, s); });
     return chip;
@@ -484,41 +537,255 @@
     return { wrap: w, input: inp };
   }
 
-  // Difficulty as an Easy/Med/Hard toggle, mapped to RPE behind the scenes. Prefilled from
-  // the set's RPE (done) or the trainer's planned target_rpe (pending); tapping the active
-  // choice again clears it. getRpe() yields the stored number, or null when none is picked.
+  // RPE as a 6-10 toggle with "reps left" under each number. Prefilled from the set's
+  // RPE (done) or the trainer's target (pending); tapping the active choice clears it.
+  // getRpe() yields the number, or null when none is picked.
   function difficultyField(initialRpe) {
     var w = el('div', 'flex flex-col gap-1');
-    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'Difficulty'));
-    var row = el('div', 'flex gap-2');
-    var selected = rpeToLabel(initialRpe);
-    var BASE = 'flex-1 h-9 rounded-[4px] text-sm transition-colors ';
+    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'RPE'));
+    var row = el('div', 'flex gap-1.5');
+    var selected = nearestRpe(initialRpe);
+    var BASE = 'flex-1 h-11 rounded-[4px] flex flex-col items-center justify-center leading-none transition-colors ';
     var ON = 'bg-black text-white';
     var OFF = 'border border-gray-200 text-gray-500 hover:border-black hover:text-black';
     var btns = [];
     function paint() {
-      btns.forEach(function (o) { o.btn.className = BASE + (o.d.key === selected ? ON : OFF); });
+      btns.forEach(function (o) { o.btn.className = BASE + (o.rpe === selected ? ON : OFF); });
     }
-    DIFFICULTY.forEach(function (d) {
-      var b = el('button', '', d.key);
+    RPE_CHOICES.forEach(function (rpe) {
+      var b = el('button', '');
       b.type = 'button';
+      b.appendChild(el('span', 'text-sm font-medium', String(rpe)));
+      b.appendChild(el('span', 'text-[9px] mt-1 opacity-60', rirLabel(rpe)));
       b.addEventListener('click', function () {
-        selected = (selected === d.key) ? null : d.key;
+        selected = (selected === rpe) ? null : rpe;
         paint();
       });
-      btns.push({ btn: b, d: d });
+      btns.push({ btn: b, rpe: rpe });
       row.appendChild(b);
     });
     paint();
     w.appendChild(row);
-    return {
-      wrap: w,
-      getRpe: function () {
-        var hit = DIFFICULTY.filter(function (d) { return d.key === selected; })[0];
-        return hit ? hit.rpe : null;
-      },
-    };
+    return { wrap: w, getRpe: function () { return selected; } };
   }
+
+  // ── Up next ─────────────────────────────────────────────────────────────────
+
+  // The first pending set, in the plan's exercise order then set order.
+  function nextPending(visible) {
+    for (var i = 0; i < visible.length; i++) {
+      var sets = visible[i].sets;
+      for (var j = 0; j < sets.length; j++) {
+        if (sets[j].status === 'pending') return { ex: visible[i], set: sets[j] };
+      }
+    }
+    return null;
+  }
+
+  function hist(ex) {
+    return (currentPlan && currentPlan.history && currentPlan.history[String(ex.exercise_id)]) || {};
+  }
+
+  function shortDate(iso) {
+    if (!iso) return '';
+    var d = new Date(iso + 'T12:00:00');
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  // "Last Sep 28: 160×8 @8, 160×7 @9 · Best 170×5" — the reference you want mid-set.
+  function historyLine(ex) {
+    var h = hist(ex), parts = [];
+    if (h.last && h.last.sets && h.last.sets.length) {
+      parts.push('Last ' + shortDate(h.last.date) + ': ' + h.last.sets.map(function (s) {
+        return setText(s, true).replace(' × ', '×');
+      }).join(', '));
+    }
+    if (h.best) parts.push('Best ' + wLabel(h.best.weight_lbs) + '×' + h.best.reps);
+    return parts.join(' · ');
+  }
+
+  // Would this target beat the best before this session? Same rule as the server's
+  // personal-best check: heavier, or the same weight for more reps.
+  function isPrAttempt(ex, s) {
+    var b = hist(ex).best;
+    var w = s.target_weight_lbs, r = s.target_reps;
+    if (!b || w == null || r == null) return false;
+    return w > b.weight_lbs || (w === b.weight_lbs && r > b.reps);
+  }
+
+  function renderUpNext(ex, s, plan) {
+    var card = el('div', 'border-2 border-black rounded-[6px] px-4 sm:px-5 pt-4 pb-5 mb-5');
+    var timerSlot = el('div');
+    timerSlot.dataset.restSlot = '1';
+    card.appendChild(timerSlot);
+
+    var top = el('div', 'flex items-center gap-2 mb-1');
+    var pos = ex.sets.filter(function (x) { return x.status !== 'skipped'; });
+    var idx = pos.indexOf(s) + 1;
+    top.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400',
+      'Up next · set ' + idx + ' of ' + pos.length));
+    if (isPrAttempt(ex, s)) {
+      top.appendChild(el('span', 'text-[10px] uppercase tracking-widest font-semibold px-1.5 py-0.5 rounded bg-yellow-400 text-black', 'PR attempt'));
+    } else if (isHeavy(s)) {
+      top.appendChild(el('span', 'text-[10px] uppercase tracking-widest font-semibold px-1.5 py-0.5 rounded border border-yellow-400 text-yellow-600 dark:text-yellow-300', 'Top set'));
+    }
+    card.appendChild(top);
+    card.appendChild(el('p', 'text-xl font-bold tracking-tight', ex.name));
+
+    var target = setText(s, false);
+    if (s.target_rpe != null) target += ' @' + num(s.target_rpe);
+    card.appendChild(el('p', 'text-sm text-gray-500 mt-0.5', 'Target ' + target));
+    if (s.note) card.appendChild(el('p', 'text-[13px] text-gray-600 mt-2 leading-snug', s.note));
+    var hl = historyLine(ex);
+    if (hl) card.appendChild(el('p', 'text-[11px] text-gray-400 mt-1 leading-snug', hl));
+
+    var isCardio = s.target_weight_lbs == null && s.target_reps == null;
+    if (isCardio) {
+      // Cardio has no targets to adjust; log it from its chip (the editor) instead.
+      var open = el('button', 'mt-4 w-full h-11 rounded-[4px] bg-black text-white text-sm', 'Log it');
+      open.type = 'button';
+      open.addEventListener('click', function () { openEditor(ex, s); });
+      card.appendChild(open);
+      return card;
+    }
+
+    var form = el('div', 'flex flex-col gap-3 mt-4');
+    var weight = weightField(s.target_weight_lbs);
+    var reps = repsField(s.target_reps);
+    form.appendChild(weight.wrap);
+    form.appendChild(reps.wrap);
+
+    // The log row: ONE tap rates the set and logs it with the numbers above.
+    var lw = el('div', 'flex flex-col gap-1');
+    lw.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400',
+      'Done — how hard? (tap to log)'));
+    var row = el('div', 'flex gap-1.5');
+    RPE_CHOICES.forEach(function (rpe) {
+      var b = el('button', 'flex-1 h-14 rounded-[4px] flex flex-col items-center justify-center leading-none ' +
+        'bg-black text-white hover:bg-gray-800 transition-colors disabled:opacity-40');
+      b.type = 'button';
+      b.appendChild(el('span', 'text-lg font-semibold', String(rpe)));
+      b.appendChild(el('span', 'text-[9px] mt-1 opacity-70', rirLabel(rpe)));
+      b.addEventListener('click', function () {
+        row.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+        logSet(s, weight.input.value, reps.input.value, rpe, function () {
+          row.querySelectorAll('button').forEach(function (x) { x.disabled = false; });
+        });
+      });
+      row.appendChild(b);
+    });
+    lw.appendChild(row);
+    form.appendChild(lw);
+    card.appendChild(form);
+    return card;
+  }
+
+  function renderAllDone() {
+    var box = el('div', 'border-2 border-yellow-400 rounded-[6px] px-5 py-4 mb-5');
+    var slot = el('div'); slot.dataset.restSlot = '1';
+    box.appendChild(slot);
+    box.appendChild(el('p', 'text-base font-semibold', 'Every set is logged.'));
+    box.appendChild(el('p', 'text-sm text-gray-500 mt-0.5', 'Finish the workout to save it to your history.'));
+    return box;
+  }
+
+  // ── Rest timer ──────────────────────────────────────────────────────────────
+  // Starts when a set is logged, sized by how hard the set was (RPE 9+ → 3:00, 8 → 2:30,
+  // else 1:30). It's an end TIMESTAMP kept in localStorage, not a ticking counter, so it
+  // survives a re-render, a reload and a locked phone. Page-only state; the server
+  // never hears about it.
+  var REST_KEY = 'trainer-rest';
+  var restTick = null, audioCtx = null;
+
+  function restFor(rpe) { return rpe >= 9 ? 180 : rpe >= 8 ? 150 : 90; }
+  function readRest() {
+    try { return JSON.parse(localStorage.getItem(REST_KEY) || 'null'); } catch (e) { return null; }
+  }
+  function writeRest(v) {
+    try { if (v) localStorage.setItem(REST_KEY, JSON.stringify(v)); else localStorage.removeItem(REST_KEY); } catch (e) {}
+  }
+  function startRest(seconds) {
+    // The tap that logged the set is a user gesture, the one moment iOS lets a page
+    // unlock audio for the end-of-rest beep.
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {}
+    writeRest({ wid: wid, ends: Date.now() + seconds * 1000, total: seconds, beeped: false });
+    paintRest();
+  }
+  function beep() {
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    if (!audioCtx) return;
+    try {
+      [0, 0.25].forEach(function (t) {
+        var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
+        g.gain.setValueAtTime(0.25, audioCtx.currentTime + t);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + t + 0.18);
+        o.start(audioCtx.currentTime + t); o.stop(audioCtx.currentTime + t + 0.2);
+      });
+    } catch (e) {}
+  }
+  function mmss(sec) {
+    sec = Math.max(0, Math.round(sec));
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+  function paintRest() {
+    var slot = root.querySelector('[data-rest-slot]');
+    var r = readRest();
+    if (!slot) return;
+    if (!r || String(r.wid) !== String(wid)) { slot.innerHTML = ''; return; }
+    var left = (r.ends - Date.now()) / 1000;
+    if (left <= -60) { writeRest(null); slot.innerHTML = ''; return; }  // stale: gone after a minute
+    if (left <= 0 && !r.beeped) { r.beeped = true; writeRest(r); beep(); }
+    if (!slot.firstChild) {
+      var wrap = el('div', 'flex items-center gap-3 mb-4 pb-4 border-b border-gray-100');
+      var t = el('span', 'text-3xl font-bold tabular-nums tracking-tight');
+      t.dataset.restTime = '1';
+      var lab = el('span', 'text-[10px] uppercase tracking-widest text-gray-400 flex-1');
+      lab.dataset.restLabel = '1';
+      var plus = el('button', 'h-8 px-2.5 rounded-[4px] border border-gray-200 text-xs text-gray-500 hover:border-black hover:text-black transition-colors', '+30s');
+      plus.type = 'button';
+      plus.addEventListener('click', function () {
+        var c = readRest(); if (!c) return;
+        c.ends = Math.max(c.ends, Date.now()) + 30000; c.beeped = false; writeRest(c); paintRest();
+      });
+      var skip = el('button', 'h-8 px-2.5 rounded-[4px] border border-gray-200 text-xs text-gray-500 hover:border-black hover:text-black transition-colors', 'Skip');
+      skip.type = 'button';
+      skip.addEventListener('click', function () { writeRest(null); paintRest(); });
+      wrap.appendChild(t); wrap.appendChild(lab); wrap.appendChild(plus); wrap.appendChild(skip);
+      slot.appendChild(wrap);
+    }
+    var time = slot.querySelector('[data-rest-time]'), label = slot.querySelector('[data-rest-label]');
+    if (left > 0) {
+      time.textContent = mmss(left);
+      time.className = 'text-3xl font-bold tabular-nums tracking-tight';
+      label.textContent = 'Rest';
+    } else {
+      time.textContent = 'Go';
+      time.className = 'text-3xl font-bold tracking-tight text-yellow-500';
+      label.textContent = 'Rest’s up';
+    }
+  }
+  function ensureTicker() {
+    if (restTick) return;
+    restTick = setInterval(paintRest, 500);
+  }
+
+  // ── Keep the screen awake ───────────────────────────────────────────────────
+  // A phone that locks between sets costs you an unlock on every log. Hold a screen
+  // wake lock while a session is open; the browser drops it when the tab hides, so
+  // re-take it on return. Silently absent where the API isn't supported.
+  var wakeLock = null;
+  async function holdWake() {
+    if (!('wakeLock' in navigator) || !currentPlan || !currentPlan.active) return;
+    if (wakeLock && !wakeLock.released) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') { holdWake(); paintRest(); }
+  });
 
   function openEditor(ex, s) {
     closePanels();
@@ -596,14 +863,23 @@
 
   async function completeSet(setId, weightInp, repsInp, diff, btn) {
     btn.disabled = true;
-    var r = await postJSON(base + '/trainer/set/' + setId + '/complete', {
-      weight_lbs: weightInp.value, reps: repsInp.value, rpe: diff.getRpe(),
-    });
-    if (!r.ok || (r.data && r.data.error)) {
+    var s = { set_id: setId };
+    logSet(s, weightInp.value, repsInp.value, diff.getRpe(), function () {
       btn.disabled = false; btn.textContent = 'Error';
-      return;
-    }
+    });
+  }
+
+  // Log a pending set (Up next or the chip editor), start the rest timer off its RPE,
+  // re-render, and throw confetti if it was a personal best.
+  async function logSet(s, weight, reps, rpe, onError) {
+    var r = await postJSON(base + '/trainer/set/' + s.set_id + '/complete', {
+      weight_lbs: weight, reps: reps, rpe: rpe,
+    });
+    if (!r.ok || (r.data && r.data.error)) { if (onError) onError(); return; }
     editingSetId = null;
+    var p = r.data.progress || {};
+    if (p.total && p.done < p.total) startRest(restFor(rpe || 7));
+    else writeRest(null);
     render(r.data); // response is the updated plan
     celebratePR(r.data);
   }

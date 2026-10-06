@@ -116,8 +116,16 @@
       legend: { live: true },
       scales: {
         // half-day pad each side so edge points aren't clipped by the plot border
+        // and a week's minimum span, so a range holding ONE session centers its point.
+        // The span is read off the data, not the arguments: for a single point uPlot
+        // has already widened min/max by ~1000 days before calling this, which is
+        // what drew a 2027-2029 axis around one October session.
         x: { time: true, range: function (u_, min, max) {
-          return min == null ? [0, 1] : [min - DAY / 2, max + DAY / 2];
+          var xs = (u_.data && u_.data[0]) || [];
+          if (xs.length) { min = xs[0]; max = xs[xs.length - 1]; }
+          if (min == null) return [0, 1];
+          var pad = Math.max(DAY / 2, (7 * DAY - (max - min)) / 2);
+          return [min - pad, max + pad];
         } },
         y: {
           range: function (u_, min, max) {
