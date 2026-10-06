@@ -73,20 +73,36 @@
   // Label for a set: weight × reps for lifts, distance · time for cardio (+ @rpe),
   // using actuals when done, targets when not. Cardio metrics are actual-only (no
   // target columns), so they show whenever present. Mirrors app.py's set_label.
-  // Weight as shown: 0 is bodyweight and a negative is assistance (the signed-weight
-  // convention), so a pull-up reads "BW × 8", not "0 × 8".
-  function wLabel(w) {
+  // Weight as shown. On a BODYWEIGHT-BASED exercise (pull-ups, dips: see isBodyweight)
+  // the number is load relative to bodyweight under the signed-weight convention, so it
+  // reads signed: "−40" is 40 lb of assistance, "+25" is 25 added, "BW" is neither.
+  // Everything else is a plain load ("135").
+  function wLabel(w, bw) {
+    if (!bw) return num(w);
     if (+w === 0) return 'BW';
-    if (+w < 0) return 'BW−' + num(-w);
-    return num(w);
+    return (+w < 0 ? '−' + num(-w) : '+' + num(w));
   }
 
-  function setText(s, done) {
+  // An exercise is bodyweight-based when ANY weight it has carried — planned, logged
+  // this session, or in its history — is 0 or below. No barbell lift is ever loaded
+  // with ≤0, so one assisted or bodyweight set marks the movement for good, which is
+  // what keeps a pull-up reading "+25" (not a bare "25") once assistance gives way
+  // to added weight.
+  function isBodyweight(ex) {
+    var ws = [];
+    ex.sets.forEach(function (s) { ws.push(s.weight_lbs, s.target_weight_lbs); });
+    var h = hist(ex);
+    if (h.last) h.last.sets.forEach(function (s) { ws.push(s.weight_lbs); });
+    if (h.best) ws.push(h.best.weight_lbs);
+    return ws.some(function (w) { return w != null && +w <= 0; });
+  }
+
+  function setText(s, done, bw) {
     var w = done ? s.weight_lbs : s.target_weight_lbs;
     var r = done ? s.reps : s.target_reps;
     var dur = s.duration_seconds, dist = s.distance_miles;
     var parts;
-    if (w != null && r != null) parts = wLabel(w) + ' × ' + r;
+    if (w != null && r != null) parts = wLabel(w, bw) + ' × ' + r;
     else if (r != null) parts = r + ' rep' + (r === 1 ? '' : 's');
     else if (w != null) parts = num(w) + ' lb';
     else if (dist != null || dur != null) {
@@ -448,20 +464,20 @@
       var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', 'M20 6 9 17l-5-5'); check.appendChild(path);
       done.appendChild(check);
-      done.appendChild(document.createTextNode(setText(s, true)));
+      done.appendChild(document.createTextNode(setText(s, true, isBodyweight(ex))));
       done.dataset.setId = String(s.set_id);  // where a PR burst aims after the re-render
       done.addEventListener('click', function () { openEditor(ex, s); });
       return done;
     }
     if (s.status === 'skipped') {
-      return el('span', 'set-pill text-gray-300 line-through', setText(s, false));
+      return el('span', 'set-pill text-gray-300 line-through', setText(s, false, isBodyweight(ex)));
     }
     // pending → tappable. A heavy set (target RPE 9+) gets the accent border and its
     // target RPE, so the top set and a PR attempt don't look like warm-ups.
     var heavy = isHeavy(s);
     var chip = el('button', 'set-pill hover:border-black hover:text-black transition-colors' +
       (heavy ? ' !border-yellow-400' : ''),
-      setText(s, false) + (heavy ? ' @' + num(s.target_rpe) : ''));
+      setText(s, false, isBodyweight(ex)) + (heavy ? ' @' + num(s.target_rpe) : ''));
     if (s.note) chip.title = s.note;
     chip.dataset.setId = String(s.set_id);
     chip.addEventListener('click', function () { openEditor(ex, s); });
@@ -500,9 +516,12 @@
   // Weight as a centered editable number flanked by graduated steppers — −5/−1/−.5 on the
   // left, +.5/+1/+5 on the right — so a working weight is a few taps, not a keyboard entry,
   // while the field itself stays editable for anything the buttons don't cover.
-  function weightField(value) {
+  // On a bodyweight-based exercise the label spells out the sign, since "−" on the
+  // stepper means MORE assistance (easier), not less weight on the bar.
+  function weightField(value, bw) {
     var w = el('div', 'flex flex-col gap-1');
-    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400', 'Weight'));
+    w.appendChild(el('span', 'text-[10px] uppercase tracking-widest text-gray-400',
+      bw ? 'Weight (− assist · + added)' : 'Weight'));
     var row = el('div', 'flex items-center gap-1.5');
     var inp = el('input', 'flex-1 min-w-0 text-center border border-gray-200 rounded-[4px] ' +
       'px-2 py-1.5 text-sm focus:outline-none focus:border-black transition-colors');
@@ -594,13 +613,13 @@
 
   // "Last Sep 28: 160×8 @8, 160×7 @9 · Best 170×5" — the reference you want mid-set.
   function historyLine(ex) {
-    var h = hist(ex), parts = [];
+    var h = hist(ex), parts = [], bw = isBodyweight(ex);
     if (h.last && h.last.sets && h.last.sets.length) {
       parts.push('Last ' + shortDate(h.last.date) + ': ' + h.last.sets.map(function (s) {
-        return setText(s, true).replace(' × ', '×');
+        return setText(s, true, bw).replace(' × ', '×');
       }).join(', '));
     }
-    if (h.best) parts.push('Best ' + wLabel(h.best.weight_lbs) + '×' + h.best.reps);
+    if (h.best) parts.push('Best ' + wLabel(h.best.weight_lbs, bw) + '×' + h.best.reps);
     return parts.join(' · ');
   }
 
@@ -632,7 +651,7 @@
     card.appendChild(top);
     card.appendChild(el('p', 'text-xl font-bold tracking-tight', ex.name));
 
-    var target = setText(s, false);
+    var target = setText(s, false, isBodyweight(ex));
     if (s.target_rpe != null) target += ' @' + num(s.target_rpe);
     card.appendChild(el('p', 'text-sm text-gray-500 mt-0.5', 'Target ' + target));
     if (s.note) card.appendChild(el('p', 'text-[13px] text-gray-600 mt-2 leading-snug', s.note));
@@ -650,7 +669,7 @@
     }
 
     var form = el('div', 'flex flex-col gap-3 mt-4');
-    var weight = weightField(s.target_weight_lbs);
+    var weight = weightField(s.target_weight_lbs, isBodyweight(ex));
     var reps = repsField(s.target_reps);
     form.appendChild(weight.wrap);
     form.appendChild(reps.wrap);
@@ -805,7 +824,7 @@
     // Done sets prefill their actuals (you're correcting them); pending prefill targets —
     // weight, reps, and the planned difficulty (target_rpe) the trainer set.
     // Weight is signed: negative = assistance (band/machine), 0 = bodyweight, positive = added.
-    var weight = weightField(done ? s.weight_lbs : s.target_weight_lbs);
+    var weight = weightField(done ? s.weight_lbs : s.target_weight_lbs, isBodyweight(ex));
     var reps = repsField(done ? s.reps : s.target_reps);
     var diff = difficultyField(done ? s.rpe : s.target_rpe);
 

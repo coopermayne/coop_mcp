@@ -440,7 +440,9 @@ working.
   "Last …· Best …" line from `data.with_history`, a webapp-only enrichment of the plan
   payload (like `_with_pr`) kept off the model-facing `_plan_payload` return. The
   session's `notes` render under the progress bar, heavy sets (target RPE 9+) carry the
-  accent border, a 0/negative weight reads "BW"/"BW−n", and Finish stays quiet until
+  accent border, a BODYWEIGHT-BASED exercise (any planned, logged or
+  historical weight ≤ 0 — pull-ups, dips) shows load signed relative to bodyweight
+  ("−40" assisted, "+25" added, "BW" for 0) and labels its weight field that way, and Finish stays quiet until
   every set is logged. Tapping any chip still opens the inline editor (log out of order
   or correct a done set, same 6-10 RPE row).
   The two-level log mirroring entries/mentions. A
