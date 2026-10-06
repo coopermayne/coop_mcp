@@ -8,8 +8,8 @@ A single-user **journal web app plus a trainer MCP server**, one process, one SQ
 DB. The user writes the journal by talking to the web app's own chat; Claude captures
 entries and resolves *who* they mean to stable person records, so later "everything
 about Tom my father" is an exact lookup that never pulls in the other Tom. Training
-(and a small daily water/protein log) is done entirely through the **trainer
-connector** in Claude.
+(and a small daily water/protein log) is planned through the **trainer connector**
+in Claude and logged set-by-set in the web app.
 
 **One MCP server, one in-process tool registry.** `trainer_mcp` is the only MCP
 endpoint — at `/trainer/mcp` on the main origin when authless, or on its own host
@@ -22,22 +22,20 @@ eating log and notes/collections, with the journal tools hidden — and a third
 notes & collections, and the teacher were all removed. Their tables stay in existing
 DBs, dormant.) `webapp/combined.py` composes the trainer and the UI onto one origin.
 
-**The trainer is MCP-only now; the app is legacy for it.** The user trains entirely
-through the trainer connector in Claude (planning the week, reporting sets between
-lifts, progress and advice) and keeps the web app for the journal. So nothing a
-training workflow needs may live only behind a webapp page: the four things that did
-each got a tool — `complete_sets` (a batch, because a conversation reports a whole
-exercise at once where the card tapped one set; the single-set `complete_set` stays as
-the card's plain helper), `remove_from_plan` (the card's per-exercise delete),
-`add_exercise` (the library's add panel — the library itself is gone now, see the
-`exercises` row) and
-`import_weigh_ins` (the `/weight` upload — see `body_weight`). `complete_sets` and
-`log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule applied per batch)
-because the confetti that used to announce a best has no screen to land on. The
+**Training has two surfaces over one DB: the trainer connector and the web app.** The
+user tried training through the connector alone and it didn't work well between sets,
+so the web training UI (`/workouts`, `/trainer/{id}`, `/weight`, `/graphs`, `/food`)
+was brought back and is the primary place to WORK a session: the `/trainer/{id}` page
+is built for logging between sets (see the `workouts` row). The connector stays the
+place to PLAN, review progress and get advice, and it can still do everything the
+pages do: `complete_sets` (a batch, because a conversation reports a whole exercise at
+once; the single-set `complete_set` stays as the card's plain helper),
+`remove_from_plan`, `add_exercise`, `import_weigh_ins`, `set_intake_targets`.
+`complete_sets` and `log_workout` return `new_prs` (`_new_bests`, `pr_for_set`'s rule
+applied per batch) so a best logged in conversation is still announced. The
 `trainer_mcp` instructions open by saying the conversation IS the interface (plan as a
 table, ids never shown, short mid-session replies). The trainer also carries the
-water/protein log (see `intake_items`). The `/trainer`, `/workouts`,
-`/weight` pages still work and still read the same DB; don't build new trainer UI there.
+water/protein log (see `intake_items`). Improving the web training UI is fair game.
 
 ## The one architectural rule
 
