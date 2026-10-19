@@ -531,9 +531,18 @@ working.
   plan return. DEDUPING is the
   browser's (`trainer.js`), not the server's: a corrected set that is still the heaviest
   ever IS still a best, and the data layer should keep saying so.
-  Cardio exercises carry no `exercise_muscles` rows, so they're summarized by
-  `get_fitness_briefing`'s `cardio_recency` (minutes/miles, last 7 days) rather than
-  `muscle_recency`. A set also carries `ex_position` — its exercise's slot in the
+  Cardio is summarized by `get_fitness_briefing`'s `cardio_recency` (minutes/miles/
+  sessions, last 7 days). A plain run or walk carries no `exercise_muscles` rows, but
+  an OUTSIDE ACTIVITY (a surf, a long hike, climbing) is a cardio exercise WITH muscles,
+  so the next plan accounts for it: those muscles move `muscle_recency`'s
+  `last_trained`/`days_since`, and the activity is named in that muscle's
+  `activities_last_7d`. It is deliberately NOT counted in `sets_last_7d`, because a
+  two-hour paddle logged as one set would read as a light week; how much it took out of
+  the user is the model's judgment from the activity's minutes and rpe, not a server
+  conversion of activity time into "equivalent sets" (that would be progression logic
+  in the server). The muscle mapping is the model's too, made when the activity is
+  first logged; the policy (log it, map it, plan around it) lives in `trainer_mcp`'s
+  OUTSIDE ACTIVITIES. A set also carries `ex_position` — its exercise's slot in the
   workout (all the exercise's sets share it; NULL = insertion order). `_plan_payload`
   orders exercises by it, so the active plan honors a user-chosen order; it's set by
   `reorder_plan` (a trainer tool, names → order, so chat can sequence the session) and by
