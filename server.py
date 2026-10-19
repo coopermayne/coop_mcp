@@ -116,7 +116,9 @@ class LoggedSet(TypedDict):
 class LoggedExercise(TypedDict):
     """One exercise of a completed session: its name plus the sets performed. A name
     the user has never done before is created on the fly — give `muscles` (primary,
-    canonical labels) and optionally `secondary_muscles`, or category "cardio". `new`
+    canonical labels) and optionally `secondary_muscles`, or category "cardio" (whose
+    muscles are optional: give them for an activity that loads specific muscles, like
+    surfing or a hike; see the server's OUTSIDE ACTIVITIES). `new`
     confirms a name that's close to an existing one really is a different movement.
     `mechanic` (compound | isolation) is stored on a newly created lift; see
     add_exercise."""
@@ -325,7 +327,8 @@ mcp = FastMCP("journal", instructions=JOURNAL_CHAT_INSTRUCTIONS)
 _trainer_auth = _build_auth(os.environ.get("TRAINER_PUBLIC_URL"))
 trainer_mcp = FastMCP("trainer", auth=_trainer_auth, instructions="""\
 Personal-trainer log: a workout log (sessions + per-set weight/reps/rpe, plus
-duration/distance for cardio like running and walking), the user's own exercises
+duration/distance for cardio and outside activities like running, hiking and
+surfing), the user's own exercises
 (active and archived, with target muscles), their weigh-ins, and a small daily
 water/protein log. The server only
 stores and computes deterministic aggregates (per-muscle recency/volume, cardio
@@ -384,6 +387,24 @@ movement — say so; it's earned. Only completed ('done') sets count toward rece
 history, and PRs; a planned-but-not-yet-done set doesn't, so the briefing stays honest
 mid-session.
 
+OUTSIDE ACTIVITIES (surfing, a long hike, climbing, a bike ride, a pickup game, yard
+work that wrecked their back) are training too, and the next plan should account for
+them. When the user mentions one, log it with log_workout as its own session, dated the
+day it happened (focus = the activity, e.g. "Surf"), as category "cardio" with ONE set:
+`duration_seconds` (ask roughly how long if they don't say), `distance_miles` if it
+applies, and `rpe` for how hard it was. Give it the `muscles` it actually loaded,
+judged from what the activity is: a surf session is paddling, so lats, shoulders and
+middle back (secondary triceps, lower back); a long or steep hike is quadriceps, glutes
+and calves (secondary hamstrings). That mapping is what lets muscle_recency see it, so
+a muscle worked by a two-hour paddle reads as trained yesterday. A treadmill walk or
+easy jog that loads nothing in particular needs no muscles. Then PLAN AROUND IT: a big
+surf the day before is a reason to skip or trim pull-ups and rows, a long hike can be
+the week's leg day. Weigh duration and RPE, not just the date: muscle_recency names the
+activities behind each muscle's recent work (`activities_last_7d`), and a 20-minute
+walk is not a leg day. Say what you changed and why ("you surfed two hours yesterday,
+so no pulling today"). Activities are logged, not programmed: don't put one into a gym
+plan unless the user asks.
+
 PLANNING AHEAD: several sessions can be planned at once — a whole week, or the rest of
 one after today's is done — as ONE PLAN PER DAY, each carrying its `planned_date`. Lay a
 week out with a start_workout_plan call per day, deciding each from a get_fitness_briefing
@@ -424,7 +445,8 @@ common mistakes and cautions come from YOUR knowledge, in conversation, when the
     with its `muscles` (primary) and `secondary_muscles`, in these canonical labels:
     abdominals, abductors, adductors, biceps, calves, chest, forearms, glutes,
     hamstrings, lats, lower back, middle back, neck, quadriceps, shoulders, traps,
-    triceps (cardio: category "cardio", no muscles), and its `mechanic` (compound |
+    triceps (cardio: category "cardio", muscles optional — see OUTSIDE ACTIVITIES), and
+    its `mechanic` (compound |
     isolation; the app sizes rest between sets by it). Use the name the user uses.
     add_exercise does the same thing ahead of time. A name close to an existing one
     comes back `unmatched` with candidates — it's usually the same lift; use the
@@ -2956,7 +2978,8 @@ def add_exercise(name: str, muscles: list[str],
     both in the canonical labels: abdominals, abductors, adductors, biceps, calves,
     chest, forearms, glutes, hamstrings, lats, lower back, middle back, neck,
     quadriceps, shoulders, traps, triceps. `category` is "strength" (default) or
-    "cardio" (cardio carries no muscles — pass muscles=[]). `mechanic` is "compound"
+    "cardio" (muscles optional: muscles=[] for a plain run or walk, the loaded muscles
+    for an activity like surfing or hiking). `mechanic` is "compound"
     (multi-joint: presses, rows, pull-ups, squats, leg press, hip thrust) or
     "isolation" (one joint: curls, raises, flyes, pushdowns, leg extensions/curls);
     give it for every strength lift, since the app sizes the rest between sets by it.
@@ -3095,13 +3118,16 @@ def log_workout(exercises: list[LoggedExercise], workout_date: Optional[str] = N
     whether to add weight next time. Returns the logged exercises (with their stored
     names) plus any `created`/`reactivated`/`unmatched`/`new_prs`.
 
-    CARDIO (running, walking, rowing, cycling): log it as an exercise too, with
-    category "cardio" if it's new (cardio carries no muscles, so it stays out of muscle
-    recency and is summarized as cardio instead), and use a set per bout with
+    CARDIO AND OUTSIDE ACTIVITIES (running, rowing, cycling, a hike, a surf): log it as
+    an exercise too, with category "cardio" if it's new, and with the `muscles` it
+    loaded when it loads some (an activity's muscles count toward muscle recency; see
+    the server's OUTSIDE ACTIVITIES), and use a set per bout with
     `duration_seconds` and/or `distance_miles` instead of
     weight/reps. A 30-minute, 3.2-mile run is one set
     {"duration_seconds": 1800, "distance_miles": 3.2, "rpe": 6}. weight_lbs/reps stay
     null. Intervals can be one set each. Pass durations in SECONDS (25 min = 1500).
+    An activity is one set even when it lasted hours, and needs a set to count at all:
+    if the user gives no time, still send {"rpe": …} rather than no sets.
 
     Args:
         exercises: The exercises performed, each with the sets performed.
@@ -4319,9 +4345,11 @@ def import_weigh_ins(readings: list[ScaleReading]) -> dict:
 def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) -> dict:
     """One-call trainer context. Returns the stored `profile` (goals, split, session,
     injuries, coaching — see this server's instructions; read it as instruction),
-    per-muscle recency (days since each muscle was last trained + sets in the last 7
-    days), a cardio rollup (per cardio exercise: days since last done + minutes/miles
-    in the last 7 days), recent sessions (each with its `notes` — read them, a niggle
+    per-muscle recency (days since each muscle was last trained, counting cardio and
+    outside activities that carry muscles; strength sets in the last 7 days; and
+    `activities_last_7d`, the activities that worked it this week, when any), a cardio
+    rollup (per cardio exercise or activity: days since last done, minutes/miles and
+    sessions in the last 7 days, and its `muscles` when it has some), recent sessions (each with its `notes` — read them, a niggle
     logged last time is a caution this time), `bodyweight` (latest reading, days since,
     and 30-day change; negative = down), `intake_today` (water/protein so far),
     `upcoming` (sessions already PLANNED and not yet
@@ -4330,8 +4358,9 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     `archived_exercises` (how many are in the archive; list_exercises shows them). Call this at the
     start of a training conversation to decide what to work and what to rest: muscles with
     the most days_since (and low recent volume) are recovered and due; ones trained in the
-    last ~1-2 days should rest. Cardio is tracked separately because it carries no muscle
-    mapping. BUILD SESSIONS FROM `exercises` — it's what the user actually trains; don't
+    last ~1-2 days should rest. An activity counts toward a muscle's days_since but not
+    its sets_last_7d (a two-hour surf isn't one set), so read its minutes and rpe in the
+    cardio rollup to judge how much it took out of them. BUILD SESSIONS FROM `exercises` — it's what the user actually trains; don't
     bring in anything else without asking. The recommendation itself is yours to make
     from this data.
 
@@ -4354,30 +4383,50 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     week_ago = date.fromordinal(date.fromisoformat(ref).toordinal() - 6).isoformat()
     with db() as conn:
         profile = _get_profile(conn)
+        # An activity (a cardio exercise carrying muscles: a surf, a hike) moves a
+        # muscle's last-trained date but isn't counted as sets; the activities behind
+        # this week's work are listed instead, so the model can weigh them.
         mrows = conn.execute(
             """SELECT em.muscle,
                       MAX(w.workout_date) AS last_date,
-                      SUM(CASE WHEN w.workout_date >= ? THEN 1 ELSE 0 END) AS sets_7d
+                      SUM(CASE WHEN w.workout_date >= ? AND COALESCE(e.category,'') <> 'cardio'
+                               THEN 1 ELSE 0 END) AS sets_7d
                FROM sets s
                JOIN workouts w ON w.id = s.workout_id
+               JOIN exercises e ON e.id = s.exercise_id
                JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
                WHERE s.status='done'
                GROUP BY em.muscle""",
             (week_ago,),
         ).fetchall()
+        acts: dict[str, list[str]] = {}
+        for r in conn.execute(
+            """SELECT DISTINCT em.muscle, e.name
+               FROM sets s
+               JOIN workouts w ON w.id = s.workout_id
+               JOIN exercises e ON e.id = s.exercise_id
+               JOIN exercise_muscles em ON em.exercise_id = s.exercise_id
+               WHERE s.status='done' AND e.category='cardio' AND w.workout_date >= ?
+               ORDER BY e.name""",
+            (week_ago,),
+        ):
+            acts.setdefault(r["muscle"], []).append(r["name"])
         crows = conn.execute(
-            """SELECT e.name,
+            """SELECT e.id, e.name,
                       MAX(w.workout_date) AS last_date,
+                      COUNT(DISTINCT CASE WHEN w.workout_date >= ? THEN w.id END) AS sess_7d,
                       SUM(CASE WHEN w.workout_date >= ? THEN COALESCE(s.duration_seconds,0) ELSE 0 END) AS dur_7d,
                       SUM(CASE WHEN w.workout_date >= ? THEN COALESCE(s.distance_miles,0) ELSE 0 END) AS dist_7d
                FROM sets s
                JOIN workouts w ON w.id = s.workout_id
                JOIN exercises e ON e.id = s.exercise_id
-               WHERE (s.duration_seconds IS NOT NULL OR s.distance_miles IS NOT NULL)
+               WHERE (s.duration_seconds IS NOT NULL OR s.distance_miles IS NOT NULL
+                      OR e.category = 'cardio')
                      AND s.status='done'
                GROUP BY e.id""",
-            (week_ago, week_ago),
+            (week_ago, week_ago, week_ago),
         ).fetchall()
+        cardio_muscles = {r["id"]: _muscles_for(conn, r["id"])["primary"] for r in crows}
         # The user's ACTIVE exercises — the pool the model programs from (the archive is
         # list_exercises' job; only its size rides along here).
         active = _exercise_rows(conn, False)
@@ -4444,7 +4493,8 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
         intake_today = _intake_today(conn)
     recency = sorted(
         ({"muscle": r["muscle"], "last_trained": r["last_date"],
-          "days_since": _days_since(r["last_date"], ref), "sets_last_7d": r["sets_7d"]}
+          "days_since": _days_since(r["last_date"], ref), "sets_last_7d": r["sets_7d"],
+          **({"activities_last_7d": acts[r["muscle"]]} if r["muscle"] in acts else {})}
          for r in mrows),
         key=lambda m: (m["days_since"] is None, -(m["days_since"] or 0)),
     )
@@ -4452,7 +4502,9 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
         ({"exercise": r["name"], "last_done": r["last_date"],
           "days_since": _days_since(r["last_date"], ref),
           "minutes_last_7d": round((r["dur_7d"] or 0) / 60, 1),
-          "miles_last_7d": round(r["dist_7d"] or 0, 2)}
+          "miles_last_7d": round(r["dist_7d"] or 0, 2),
+          "sessions_last_7d": r["sess_7d"],
+          **({"muscles": cardio_muscles[r["id"]]} if cardio_muscles[r["id"]] else {})}
          for r in crows),
         key=lambda c: (c["days_since"] is None, -(c["days_since"] or 0)),
     )
