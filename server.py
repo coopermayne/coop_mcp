@@ -778,6 +778,33 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+-- The web chat's transcripts, kept for improving the app (not read by any tool).
+-- A thread is one in-memory conversation from its first turn to its reset/rollover.
+-- Review is a WATERMARK, not a flag: `reviewed_through` is the last chat_messages.id
+-- a review saw, so a thread that carries on after it was reviewed comes back
+-- holding only its new messages instead of being re-read whole or missed.
+CREATE TABLE IF NOT EXISTS chat_threads (
+    id               INTEGER PRIMARY KEY,
+    agent            TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    context_key      TEXT,             -- e.g. "person:12" for a profile-page panel
+    model            TEXT,
+    started_at       TEXT NOT NULL,
+    last_at          TEXT NOT NULL,
+    reviewed_through INTEGER NOT NULL DEFAULT 0,
+    reviewed_at      TEXT,
+    review_note      TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY,
+    thread_id  INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL,          -- user|assistant|error
+    content    TEXT NOT NULL,          -- JSON: the API message content, verbatim
+    meta       TEXT,                   -- JSON: stop_reason, usage (assistant turns)
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, id);
+
 -- (The notes & collections layer's `collections` / `items` / `items_fts` tables
 -- are no longer created: the feature was removed. Existing DBs keep them, and
 -- their rows, dormant — nothing reads or writes them.)
@@ -1155,6 +1182,93 @@ def current_clock() -> dict:
         "timezone": "America/Los_Angeles (Pacific)",
         "iso": dt.isoformat(),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Chat log — the web chat's transcripts, stored for later review. Plain helpers,
+# NOT tools: no model reads its own logs; a reviewer does, through
+# /api/chats (webapp/app.py) or scripts/chat_review.py.
+# --------------------------------------------------------------------------- #
+
+def chat_log_thread(agent: str, session_id: str, context_key: Optional[str],
+                    model: Optional[str]) -> int:
+    """Open a new chat thread row; returns its id."""
+    ts = now()
+    with db() as conn:
+        return conn.execute(
+            "INSERT INTO chat_threads (agent, session_id, context_key, model, "
+            "started_at, last_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (agent, session_id, context_key, model, ts, ts)).lastrowid
+
+
+def chat_log_message(thread_id: int, role: str, content, meta: Optional[dict] = None) -> None:
+    """Append one message (content as the API saw it — a string or block list)."""
+    ts = now()
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO chat_messages (thread_id, role, content, meta, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (thread_id, role, json.dumps(content, default=str),
+             json.dumps(meta, default=str) if meta else None, ts))
+        conn.execute("UPDATE chat_threads SET last_at = ? WHERE id = ?", (ts, thread_id))
+
+
+def chat_threads(reviewed: Optional[bool] = False, limit: int = 50,
+                 include_messages: bool = True) -> list[dict]:
+    """Chat threads, oldest activity first. `reviewed=False` (the default) is the
+    review queue: threads with any message past their watermark, each carrying
+    only those unreviewed messages. `True` = fully reviewed threads; `None` = all
+    (with every message). Each message has `new` = past the watermark, so a
+    reviewer can see context without re-reviewing it."""
+    where = {False: "WHERE m.last_id > t.reviewed_through",
+             True: "WHERE m.last_id <= t.reviewed_through",
+             None: ""}[reviewed]
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT t.*, m.last_id, m.n FROM chat_threads t JOIN ("
+            f"  SELECT thread_id, MAX(id) AS last_id, COUNT(*) AS n "
+            f"  FROM chat_messages GROUP BY thread_id) m ON m.thread_id = t.id "
+            f"{where} ORDER BY t.last_at LIMIT ?", (limit,)).fetchall()
+        out = []
+        for r in rows:
+            t = {k: r[k] for k in ("id", "agent", "context_key", "model", "started_at",
+                                   "last_at", "reviewed_through", "reviewed_at",
+                                   "review_note")}
+            t["started_day"] = pacific_day(r["started_at"])
+            t["message_count"] = r["n"]
+            t["last_message_id"] = r["last_id"]
+            if include_messages:
+                floor = r["reviewed_through"] if reviewed is False else 0
+                t["messages"] = [
+                    {"id": m["id"], "role": m["role"], "created_at": m["created_at"],
+                     "new": m["id"] > r["reviewed_through"],
+                     "content": json.loads(m["content"]),
+                     "meta": json.loads(m["meta"]) if m["meta"] else None}
+                    for m in conn.execute(
+                        "SELECT * FROM chat_messages WHERE thread_id = ? AND id > ? "
+                        "ORDER BY id", (r["id"], floor))]
+            out.append(t)
+        return out
+
+
+def chat_mark_reviewed(thread_id: int, through: Optional[int] = None,
+                       note: Optional[str] = None) -> dict:
+    """Advance a thread's review watermark to message id `through` (default: its
+    latest message). Pass the last id the reviewer actually SAW, so a message that
+    landed mid-review stays in the queue. Never moves the watermark backwards."""
+    with db() as conn:
+        t = conn.execute("SELECT reviewed_through FROM chat_threads WHERE id = ?",
+                         (thread_id,)).fetchone()
+        if not t:
+            return {"error": f"no chat thread {thread_id}"}
+        last = conn.execute("SELECT MAX(id) FROM chat_messages WHERE thread_id = ?",
+                            (thread_id,)).fetchone()[0] or 0
+        mark = max(t["reviewed_through"], min(through if through is not None else last, last))
+        conn.execute("UPDATE chat_threads SET reviewed_through = ?, reviewed_at = ?, "
+                     "review_note = COALESCE(?, review_note) WHERE id = ?",
+                     (mark, now(), note, thread_id))
+        return {"thread_id": thread_id, "reviewed_through": mark,
+                "fully_reviewed": mark >= last}
 
 
 # --------------------------------------------------------------------------- #

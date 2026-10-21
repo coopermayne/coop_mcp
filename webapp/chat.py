@@ -26,7 +26,10 @@ only thing that drives it — so its `instructions` ARE the panel's system promp
 
 Disabled unless ANTHROPIC_API_KEY is set; model defaults to Sonnet 4.6
 (CHAT_MODEL overrides). Conversations live in memory, keyed by (agent, session) —
-single-user app, lost on restart, which is fine for v1.
+single-user app, lost on restart, which is fine for v1. Every message is ALSO
+written to the `chat_threads`/`chat_messages` log (see `_append`) so chats can be
+reviewed later to improve the app; the log is write-only from here — it never
+feeds back into a conversation.
 """
 
 import asyncio
@@ -128,6 +131,37 @@ _CONVERSATIONS: dict[tuple, list] = {}
 # turn arrives we drop the stale transcript so day-old dates baked into the history
 # can't pull "today" back to the previous day. See `_maybe_rollover`.
 _CONV_DATE: dict[tuple, str] = {}
+# The chat-log thread row each live conversation writes to. Opened lazily on the
+# first message, and dropped wherever the transcript is (rollover, reset), so the
+# log's threads line up with the conversations the model actually saw.
+_THREAD_IDS: dict[tuple, int] = {}
+
+
+def _jsonable(content):
+    """A message's content as plain JSON: SDK blocks (assistant turns) dumped,
+    dicts and strings as they are."""
+    if isinstance(content, list):
+        return [b.model_dump(mode="json", exclude_none=True) if hasattr(b, "model_dump")
+                else b for b in content]
+    return content
+
+
+def _append(key: tuple, messages: list, msg: dict, meta: dict | None = None,
+            log_role: str | None = None) -> None:
+    """Append `msg` to the live transcript and copy it to the chat log. Logging
+    is best-effort: a failed write prints and moves on, never breaks the turn.
+    `log_role` logs without appending (the error rows, which aren't API messages)."""
+    if log_role is None:
+        messages.append(msg)
+    try:
+        tid = _THREAD_IDS.get(key)
+        if tid is None:
+            agent, session_id = key[0], key[1]
+            tid = _THREAD_IDS[key] = server.chat_log_thread(
+                agent, session_id, key[2] if len(key) > 2 else None, MODEL)
+        server.chat_log_message(tid, log_role or msg["role"], _jsonable(msg["content"]), meta)
+    except Exception as e:
+        print(f"chat log write failed: {e}")
 
 
 def _convo_key(agent: str, session_id: str, context: dict | None) -> tuple:
@@ -166,6 +200,7 @@ def _maybe_rollover(key: tuple) -> None:
     cur = server.today()
     if _CONV_DATE.get(key) not in (None, cur):
         _CONVERSATIONS.pop(key, None)
+        _THREAD_IDS.pop(key, None)
     _CONV_DATE[key] = cur
 
 
@@ -182,30 +217,31 @@ def _turn_lock(key: tuple) -> asyncio.Lock:
     return _TURN_LOCKS.setdefault(key, asyncio.Lock())
 
 
-def _repair_tail(messages: list) -> None:
+def _repair_tail(messages: list) -> dict | None:
     """Heal a transcript a previous turn left mid-hop. If the consumer disconnects
     (phone locks, user navigates) while a tool is executing, the generator is
     cancelled between appending the assistant's tool_use turn and appending its
     tool_results — and the API rejects every subsequent request on that thread
     ("tool_use without tool_result") until /new or midnight. Before starting a
     turn, answer any dangling tool_use blocks with synthetic errored results so
-    the thread is valid again; the model sees "interrupted" and moves on."""
+    the thread is valid again; the model sees "interrupted" and moves on. Returns
+    that healing message for the caller to append, or None."""
     if not messages:
-        return
+        return None
     last = messages[-1]
     if last.get("role") != "assistant":
-        return
+        return None
     content = last.get("content") or []
     dangling = [b for b in content if _bget(b, "type") == "tool_use"]
     if not dangling:
-        return
-    messages.append({"role": "user", "content": [
+        return None
+    return {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": _bget(b, "id"),
          "content": json.dumps({"error": "interrupted — the user disconnected "
                                 "before this tool call finished"}),
          "is_error": True}
         for b in dangling
-    ]})
+    ]}
 
 
 # Write tools mutate the DB; everything else is read-only retrieval. Used only to
@@ -434,8 +470,10 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
     async with _turn_lock(convo_key):
         _maybe_rollover(convo_key)  # new Pacific day → drop the stale transcript
         messages = _CONVERSATIONS.setdefault(convo_key, [])
-        _repair_tail(messages)  # heal a previously interrupted turn's dangling tool_use
-        messages.append({"role": "user", "content": user_text})
+        heal = _repair_tail(messages)  # answer a previously interrupted turn's dangling tool_use
+        if heal:
+            _append(convo_key, messages, heal)
+        _append(convo_key, messages, {"role": "user", "content": user_text})
 
         try:
             for _hop in range(MAX_TOOL_HOPS):
@@ -453,7 +491,9 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
                     final = await stream.get_final_message()
 
                 # Persist the assistant turn verbatim (text + any tool_use blocks).
-                messages.append({"role": "assistant", "content": final.content})
+                _append(convo_key, messages, {"role": "assistant", "content": final.content},
+                        meta={"stop_reason": final.stop_reason,
+                              "usage": final.usage.model_dump(mode="json", exclude_none=True)})
 
                 tool_uses = [b for b in final.content if b.type == "tool_use"]
                 if final.stop_reason != "tool_use" or not tool_uses:
@@ -480,11 +520,14 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
                         "content": json.dumps(result, default=str),
                         "is_error": is_err,
                     })
-                messages.append({"role": "user", "content": tool_results})
+                _append(convo_key, messages, {"role": "user", "content": tool_results})
 
+            _append(convo_key, messages, {"content": "stopped after MAX_TOOL_HOPS"},
+                    log_role="error")
             yield {"type": "text", "text": "\n\n_(stopped after too many tool steps.)_"}
             yield {"type": "done"}
         except Exception as e:
+            _append(convo_key, messages, {"content": str(e)}, log_role="error")
             yield {"type": "error", "message": str(e)}
 
 
@@ -492,6 +535,7 @@ def reset(agent: str, session_id: str, context: dict | None = None) -> None:
     key = _convo_key(agent, session_id, context)
     _CONVERSATIONS.pop(key, None)
     _CONV_DATE.pop(key, None)
+    _THREAD_IDS.pop(key, None)
 
 
 def _bget(blk, k, default=None):

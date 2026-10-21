@@ -344,6 +344,18 @@ reason the MCP servers are split):
   from the workout page (longer, workout-length conversations). Wired in `chat.py`; the
   page itself is a later round.
 
+**Chat log, for improving the app.** Every message (user words, assistant text,
+tool calls with inputs, tool results, errors, token usage) is also written to the
+`chat_threads` / `chat_messages` tables — one thread per conversation, from its first
+turn to its reset or Pacific-midnight rollover. Review is a per-thread *watermark*
+(`reviewed_through` = last message id a review saw), so a thread that keeps going
+after it was reviewed comes back holding only its new messages. Read the queue and
+mark threads done with `scripts/chat_review.py` (`list`, then `mark <ids>`), which
+talks to `GET /api/chats?status=unreviewed|reviewed|all` and
+`POST /api/chats/{id}/reviewed` — gated by a browser session or `REVIEW_TOKEN` (its
+own token, since it can write). `--db PATH` works on a DB file directly.
+
+
 Env: `ANTHROPIC_API_KEY` (required to enable), `CHAT_MODEL` (default
 `claude-sonnet-4-6`). Adds `anthropic` to `webapp/requirements.txt`. The web app also
 auto-loads a git-ignored `.env` at the project root (a tiny zero-dep loader in

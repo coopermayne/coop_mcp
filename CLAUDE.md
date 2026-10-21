@@ -185,7 +185,9 @@ There is no exercise-selection or progression logic in the server either.
   so changing a docstring updates the chat. (A server-bound agent can narrow its
   lifted tools with `exclude` or `include`; neither uses one today.) (The webapp-defined `exercise` agent that backed the
   library's add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is
-  set; model via `CHAT_MODEL`.
+  set; model via `CHAT_MODEL`. Every message it appends also goes to the chat log
+  (`_append` → `chat_threads`/`chat_messages`), best-effort — a failed log write never
+  breaks a turn.
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
   `chat.js`, manifest); the app is an installable PWA. `static/confetti.js` is the
   app's one celebratory flourish (`window.Confetti.burst(el)`, thrown at a lifting PR
@@ -225,7 +227,7 @@ There is no exercise-selection or progression logic in the server either.
   httpx, and `anthropic` for the chat); install alongside the root `requirements.txt`,
   which it imports `server.py` from.
 - `scripts/` — `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
-  the PWA icon set), `swiftbar/` (the menu-bar water/protein plugin), `backup/`.
+  the PWA icon set), `chat_review.py` (pull the unreviewed chat log, mark it reviewed), `swiftbar/` (the menu-bar water/protein plugin), `backup/`.
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
 - `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
@@ -267,7 +269,9 @@ restore"), and `WIDGET_TOKEN` (unlocks `GET /api/today.json` — today's water/p
 sums only — for an ambient display like the SwiftBar plugin in `scripts/swiftbar/`; a
 SEPARATE token from `BACKUP_TOKEN` on purpose, since it lives on every device that
 wants a glanceable figure while `BACKUP_TOKEN` downloads the whole journal; see README
-"Menu-bar macros"). The web app auto-loads `.env` (see `.env.example`); shell-exported
+"Menu-bar macros"), and `REVIEW_TOKEN` (unlocks the chat-log review API, `/api/chats…`,
+for `scripts/chat_review.py`; its own token because it WRITES review watermarks, which
+`BACKUP_TOKEN`'s read-only promise rules out). The web app auto-loads `.env` (see `.env.example`); shell-exported
 vars win.
 
 ## Test
@@ -670,6 +674,18 @@ working.
   still has two doors onto one copy: `update_profile` (the model, when the user asks
   in so many words) and `server.set_trainer_profile` (the /trainer page's legacy
   **Coaching** popover); `update_profile` drops a key sent as null.
+- `chat_threads` + `chat_messages` — the web chat's transcripts, kept for reviewing
+  how the app behaves (app-improvement analysis, not journal data any tool reads —
+  no model ever sees its own log). A thread is one live conversation (first turn →
+  reset/rollover); a message's `content` is the API content verbatim as JSON
+  (tool_use inputs, tool_result outputs), `meta` holds stop_reason + usage, and
+  `role='error'` rows record failed turns. **Reviewed is a watermark, not a flag**:
+  `reviewed_through` is the last `chat_messages.id` a review saw, so a thread that
+  continues after review re-enters the queue carrying only its new messages, and a
+  message that lands mid-review isn't swallowed (the reviewer passes the id it saw;
+  the mark never moves backwards). Every web chat agent is logged; conversations on
+  the trainer CONNECTOR happen in Claude, so they are NOT in this log. Helpers `chat_log_*` / `chat_threads` /
+  `chat_mark_reviewed` in `server.py` (plain functions, not tools).
 - `subjects` + `facets` + `attempts` + `learn_fts` — DORMANT. The teacher server's
   spaced-repetition log was removed (it lives on as a separate project); existing DBs
   keep the tables, nothing reads them.

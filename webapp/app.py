@@ -98,6 +98,12 @@ BACKUP_TOKEN = (os.environ.get("BACKUP_TOKEN") or "").strip()
 # Unset = the endpoint is browser/session-only.
 WIDGET_TOKEN = (os.environ.get("WIDGET_TOKEN") or "").strip()
 
+# Unlocks the chat-log review API (/api/chats…) for a headless reviewer — a
+# Claude Code session running scripts/chat_review.py. Its own token because it can
+# WRITE (advance review watermarks), which BACKUP_TOKEN's "read-only backups"
+# promise rules out. Unset = the review API is browser/session-only.
+REVIEW_TOKEN = (os.environ.get("REVIEW_TOKEN") or "").strip()
+
 # --------------------------------------------------------------------------- #
 # Journal lock — a second, local gate on top of Google auth.
 #
@@ -515,7 +521,8 @@ PUBLIC_PATHS = {"/login", "/auth/login", "/auth/callback", "/health",
                 "/api/today.json"}
 
 # Path PREFIXES that are public, for the same reason but where the tail varies.
-PUBLIC_PREFIXES = ("/static",)
+# /api/chats does its own auth (session or REVIEW_TOKEN) in-route, like the above.
+PUBLIC_PREFIXES = ("/static", "/api/chats")
 
 oauth = None
 if AUTH_ENABLED:
@@ -809,6 +816,47 @@ async def today_json(request: Request):
             for key in server.NUTRIENTS
         },
     })
+
+
+def _review_authorized(request: Request) -> bool:
+    """Authorize the chat-log review API — session or REVIEW_TOKEN."""
+    return _token_authorized(request, REVIEW_TOKEN, "x-review-token")
+
+
+@app.get("/api/chats")
+async def chats_list(request: Request, status: str = "unreviewed", limit: int = 50):
+    """The web chat's logged threads, for an app-improvement review.
+
+    `status=unreviewed` (default) is the queue: threads with messages past their
+    review watermark, each carrying only those messages. `reviewed` / `all` for
+    the rest. Messages are the API content verbatim (text, tool_use with inputs,
+    tool_result with outputs). Mark a thread done with POST /api/chats/{id}/reviewed."""
+    from fastapi.responses import JSONResponse
+    if not _review_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
+    flag = {"unreviewed": False, "reviewed": True, "all": None}.get(status)
+    if status not in ("unreviewed", "reviewed", "all"):
+        return JSONResponse({"error": "status must be unreviewed|reviewed|all"},
+                            status_code=400)
+    threads = server.chat_threads(reviewed=flag, limit=max(1, min(limit, 500)))
+    return JSONResponse({"threads": threads})
+
+
+@app.post("/api/chats/{thread_id}/reviewed")
+async def chats_mark_reviewed(request: Request, thread_id: int):
+    """Advance a thread's review watermark. Body (optional JSON): `through` — the
+    last message id the reviewer saw (default: the thread's latest), `note`."""
+    from fastapi.responses import JSONResponse
+    if not _review_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    res = server.chat_mark_reviewed(thread_id, body.get("through"), body.get("note"))
+    return JSONResponse(res, status_code=404 if "error" in res else 200)
 
 
 @app.get("/export/journal.db")
