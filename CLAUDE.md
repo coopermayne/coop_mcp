@@ -679,7 +679,9 @@ working.
   no model ever sees its own log). A thread is one live conversation (first turn →
   reset/rollover); a message's `content` is the API content verbatim as JSON
   (tool_use inputs, tool_result outputs), `meta` holds stop_reason + usage, and
-  `role='error'` rows record failed turns. **Reviewed is a watermark, not a flag**:
+  `role='error'` rows record failed turns — and DROPPED ones: a client that goes away
+  mid-turn (phone locked) cancels it silently, so the cancel is logged with the stage
+  it stopped at (`_interrupted_at`). **Reviewed is a watermark, not a flag**:
   `reviewed_through` is the last `chat_messages.id` a review saw, so a thread that
   continues after review re-enters the queue carrying only its new messages, and a
   message that lands mid-review isn't swallowed (the reviewer passes the id it saw;

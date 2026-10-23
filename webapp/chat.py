@@ -475,6 +475,7 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
             _append(convo_key, messages, heal)
         _append(convo_key, messages, {"role": "user", "content": user_text})
 
+        finished = False  # set before the final "done" so a close after it isn't logged
         try:
             for _hop in range(MAX_TOOL_HOPS):
                 async with client.messages.stream(
@@ -497,6 +498,7 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
 
                 tool_uses = [b for b in final.content if b.type == "tool_use"]
                 if final.stop_reason != "tool_use" or not tool_uses:
+                    finished = True
                     yield {"type": "done"}
                     return
 
@@ -524,11 +526,33 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
 
             _append(convo_key, messages, {"content": "stopped after MAX_TOOL_HOPS"},
                     log_role="error")
+            finished = True
             yield {"type": "text", "text": "\n\n_(stopped after too many tool steps.)_"}
             yield {"type": "done"}
         except Exception as e:
             _append(convo_key, messages, {"content": str(e)}, log_role="error")
             yield {"type": "error", "message": str(e)}
+        except (asyncio.CancelledError, GeneratorExit):
+            # The browser went away mid-turn (phone locked, app backgrounded, tab
+            # closed): the server cancels the turn and the user sees nothing. Log
+            # where it stopped so a review can see it, then let the cancel proceed.
+            if not finished:
+                _append(convo_key, messages, {"content": _interrupted_at(messages)},
+                        log_role="error")
+            raise
+
+
+def _interrupted_at(messages: list) -> str:
+    """Where a dropped turn stopped, read off the transcript's last message."""
+    last = messages[-1] if messages else {}
+    content = last.get("content")
+    if last.get("role") == "assistant":
+        stage = "while its tool calls ran"
+    elif isinstance(content, list) and content and _bget(content[0], "type") == "tool_result":
+        stage = "after its tool results, before the model replied"
+    else:
+        stage = "before the model's first reply"
+    return f"interrupted — the client disconnected {stage}"
 
 
 def reset(agent: str, session_id: str, context: dict | None = None) -> None:
