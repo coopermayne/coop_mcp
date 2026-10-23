@@ -229,7 +229,9 @@ There is no exercise-selection or progression logic in the server either.
 - `scripts/` — `seed_dev.py` (load throwaway dev data), `gen_icons.py` (regenerate
   the PWA icon set), `chat_review.py` (pull the unreviewed chat log, mark it reviewed), `swiftbar/` (the menu-bar water/protein plugin), `backup/`.
 - `requirements.txt` — `fastmcp>=3.3`, `jellyfish>=1.1`, `tzdata` (for Pacific zoneinfo).
-- `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck.
+- `Dockerfile` — HTTP mode, DB on `/data` volume, healthcheck. Bakes Coolify's
+  `SOURCE_COMMIT` build arg into `GIT_COMMIT`, which `/health` reports as `commit`
+  (a local run asks git; neither → `"unknown"`), so "is it deployed?" is one curl.
 - `README.md` — setup, Coolify deploy, auth steps, first-deploy checklist, tool table.
 
 ## Stack

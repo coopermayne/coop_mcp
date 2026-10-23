@@ -7,6 +7,13 @@ COPY requirements.txt ./requirements-base.txt
 COPY webapp/requirements.txt ./requirements-web.txt
 RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-web.txt
 
+# The commit being built, for /health. Coolify passes SOURCE_COMMIT as a build arg only
+# with "Include Source Commit in Build" on (Configuration → Advanced); without it the
+# arg is empty and /health reports "unknown". Declared after pip install so a new
+# commit doesn't invalidate the dependency layer.
+ARG SOURCE_COMMIT=""
+ENV GIT_COMMIT=$SOURCE_COMMIT
+
 COPY server.py ./
 COPY webapp ./webapp
 # Maintenance/seed scripts — run inside the container against the mounted DB.

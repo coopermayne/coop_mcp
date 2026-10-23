@@ -494,14 +494,34 @@ above (the active set stays theirs to curate; a mentioned weight isn't a weigh-i
 if _trainer_auth is not None:
     trainer_mcp.add_middleware(AllowlistMiddleware())
 
+def _build_commit() -> str:
+    """The commit this process is running, short form. The image carries no .git, so
+    in Docker it's baked in at build time (GIT_COMMIT, from Coolify's SOURCE_COMMIT —
+    see the Dockerfile); a local checkout asks git. "unknown" when neither can say."""
+    sha = (os.environ.get("GIT_COMMIT") or "").strip()
+    if not sha:
+        try:
+            import subprocess
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                                 text=True, timeout=2,
+                                 cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip()
+        except Exception:
+            sha = ""
+    return sha[:7] or "unknown"
+
+
+BUILD_COMMIT = _build_commit()
+
+
 @trainer_mcp.custom_route("/health", methods=["GET"])
 async def health(request):
-    """Unauthenticated liveness probe for Coolify. Confirms the process and DB are up."""
+    """Unauthenticated liveness probe for Coolify. Confirms the process and DB are up,
+    and says which commit is running, so "is it deployed?" is one curl."""
     from starlette.responses import JSONResponse
     try:
         with db() as conn:
             conn.execute("SELECT 1")
-        return JSONResponse({"status": "ok"})
+        return JSONResponse({"status": "ok", "commit": BUILD_COMMIT})
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=503)
 

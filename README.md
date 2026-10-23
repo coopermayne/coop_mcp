@@ -207,7 +207,13 @@ you don't rotate that secret.
 If the connector shows "disconnected" after adding Google: usually the redirect URI in
 Google doesn't exactly match `https://TRAINER-DOMAIN/auth/callback`, or
 `TRAINER_PUBLIC_URL` has a trailing slash or includes `/mcp`. `https://YOUR-DOMAIN/health`
-should return `{"status":"ok"}` regardless of auth.
+should return `{"status":"ok","commit":"<short sha>"}` regardless of auth.
+
+**Which commit is live?** `/health` reports the running commit, so after a push compare
+it with `git rev-parse --short HEAD`. The image has no `.git`, so the hash comes from
+Coolify at build time: turn on **Include Source Commit in Build** for the service once
+(the Dockerfile turns its `SOURCE_COMMIT` build arg into `GIT_COMMIT`). With it off,
+`commit` reads `"unknown"`.
 
 ## Backup & restore
 
