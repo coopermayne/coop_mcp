@@ -1524,7 +1524,10 @@ async def chat_send(request: Request, agent: str):
     context = _chat_context(body)
 
     async def event_stream():
-        async for ev in chat.run_turn(agent, cid, text, context=context):
+        # start_turn runs the turn in its own task: if the phone locks and this
+        # stream drops, the turn still finishes and the panel recovers it via
+        # /history (see chat.start_turn).
+        async for ev in chat.start_turn(agent, cid, text, context=context):
             if ev.get("href"):  # prefix tool-chip links with the mount path
                 ev["href"] = base + ev["href"]
             yield f"data: {json.dumps(ev)}\n\n"
@@ -1556,13 +1559,17 @@ async def chat_history(request: Request, agent: str):
         body = await request.json()
     except Exception:
         body = {}
-    turns = chat.history(agent, _chat_id(request), context=_chat_context(body))
+    context = _chat_context(body)
+    turns = chat.history(agent, _chat_id(request), context=context)
     base = base_path(request)
     for t in turns:  # prefix tool-chip links with the mount path, like /send does
         for c in t.get("chips", []):
             if c.get("href"):
                 c["href"] = base + c["href"]
-    return JSONResponse({"turns": turns})
+    # `running`: a turn is still in flight (its reply may be partial) — the panel
+    # keeps polling until it's false, e.g. after the phone locked mid-turn.
+    return JSONResponse({"turns": turns,
+                         "running": chat.is_running(agent, _chat_id(request), context=context)})
 
 
 def _chat_context(body: dict):

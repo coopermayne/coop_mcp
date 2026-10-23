@@ -187,7 +187,9 @@ There is no exercise-selection or progression logic in the server either.
   library's add panel is deleted with the library.) Off unless `ANTHROPIC_API_KEY` is
   set; model via `CHAT_MODEL`. Every message it appends also goes to the chat log
   (`_append` → `chat_threads`/`chat_messages`), best-effort — a failed log write never
-  breaks a turn.
+  breaks a turn. A turn runs in its OWN task (`start_turn`), not inside the HTTP
+  response: a phone that locks mid-turn drops the stream but not the turn, and
+  `chat.js` recovers the finished reply from `/history` (whose `running` flag it polls).
 - `webapp/templates/`, `webapp/static/` — Jinja templates and PWA assets (icons,
   `chat.js`, manifest); the app is an installable PWA. `static/confetti.js` is the
   app's one celebratory flourish (`window.Confetti.burst(el)`, thrown at a lifting PR
@@ -681,9 +683,9 @@ working.
   no model ever sees its own log). A thread is one live conversation (first turn →
   reset/rollover); a message's `content` is the API content verbatim as JSON
   (tool_use inputs, tool_result outputs), `meta` holds stop_reason + usage, and
-  `role='error'` rows record failed turns — and DROPPED ones: a client that goes away
-  mid-turn (phone locked) cancels it silently, so the cancel is logged with the stage
-  it stopped at (`_interrupted_at`). **Reviewed is a watermark, not a flag**:
+  `role='error'` rows record failed turns and CANCELLED ones (a server restart
+  mid-turn; a dropped browser no longer cancels anything — see `start_turn`), logged
+  with the stage it stopped at (`_interrupted_at`). **Reviewed is a watermark, not a flag**:
   `reviewed_through` is the last `chat_messages.id` a review saw, so a thread that
   continues after review re-enters the queue carrying only its new messages, and a
   message that lands mid-review isn't swallowed (the reviewer passes the id it saw;

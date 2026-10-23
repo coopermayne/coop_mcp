@@ -338,7 +338,8 @@ web app exactly like Claude Desktop does. The system prompt and tool schemas are
 live from each server's `instructions` + `list_tools()`, so editing a docstring in
 `server.py` updates the chat with no duplication. Conversations are in-memory per
 `(agent, session)` (lost on restart — fine for a single user). Tool calls surface as
-chips linking to the affected page.
+chips linking to the affected page. A turn runs to completion on the server even if
+the browser drops mid-reply (phone locked); the panel then fetches the finished reply.
 
 Each surface is bound to **one** toolset (smaller tool surface = less latency, the same
 reason the MCP servers are split):

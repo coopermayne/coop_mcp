@@ -30,6 +30,7 @@
     var seed = root.querySelector('[data-chat-seed]');
     var extra = opts.extra || {}; // merged into /send and /reset bodies (e.g. person_id)
     var busy = false;
+    var inflight = null; // { ctrl: AbortController, finished: bool } while a /send streams
 
     if (root.dataset.chatReady) return; // idempotent
     root.dataset.chatReady = '1';
@@ -140,6 +141,7 @@
       scrollDown();
       var container = bubble('assistant');
       setBusy(true);
+      var turn = inflight = { ctrl: new AbortController(), finished: false };
 
       var res;
       try {
@@ -147,10 +149,13 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(Object.assign({ text: text }, extra)),
+          signal: turn.ctrl.signal,
         });
       } catch (e) {
-        assistantText(container).textContent = 'Network error: ' + e.message;
-        setBusy(false); return;
+        // The request may or may not have reached the server before it failed —
+        // recover() tells which from /history and restores the text if it didn't.
+        inflight = null;
+        await recover(container, text); return;
       }
       // If the session timed out while composing (the journal idle-relock, or the
       // Google login expiring), the guarded /send is bounced to /lock or /login —
@@ -181,7 +186,9 @@
       var buf = '';
       var wrote = false; // did any write tool fire this turn?
       while (true) {
-        var chunk = await reader.read();
+        var chunk;
+        try { chunk = await reader.read(); }
+        catch (e) { break; } // stream dropped (phone locked, network) — recovered below
         if (chunk.done) break;
         buf += decoder.decode(chunk.value, { stream: true });
         var frames = buf.split('\n\n');
@@ -193,6 +200,7 @@
           if (!payload) continue;
           var ev;
           try { ev = JSON.parse(payload); } catch (e) { continue; }
+          if (ev.type === 'done' || ev.type === 'error') turn.finished = true;
           if (ev.type === 'text') {
             var t = assistantText(container);
             t._raw += ev.text;
@@ -215,6 +223,8 @@
           scrollDown();
         }
       }
+      inflight = null;
+      if (!turn.finished) { await recover(container, text); return; }
       setBusy(false);
       input.focus();
       // A write landed in the DB — let the host page refresh its live regions
@@ -264,17 +274,75 @@
       }
     }
 
-    async function loadHistory() {
-      var data;
+    async function fetchHistory() {
       try {
         var res = await fetch(endpoint + '/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(extra),
         });
-        if (!res.ok) return;
-        data = await res.json();
-      } catch (e) { return; }
+        return res.ok ? await res.json() : null;
+      } catch (e) { return null; }
+    }
+
+    function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+    // The stream for a turn ended without its "done" — the phone locked, the app was
+    // backgrounded, the network blinked. The SERVER keeps running the turn (it lives in
+    // its own task), so wait for it to finish and redraw the thread from /history
+    // rather than leaving a half-written bubble.
+    async function recover(container, sentText) {
+      var t = assistantText(container);
+      t._raw += (t._raw ? '\n\n' : '') + '_Connection dropped — getting your reply…_';
+      renderMd(t);
+      scrollDown();
+      var data = null;
+      for (var i = 0; i < 150; i++) { // ~5 minutes, far longer than any turn
+        data = await fetchHistory();
+        if (data && !data.running) break;
+        await sleep(2000);
+      }
+      if (data && data.turns) {
+        log.innerHTML = '';
+        data.turns.forEach(renderTurn);
+        scrollDown();
+        // The server never got the message (it isn't the thread's last user turn):
+        // put it back in the box so nothing typed is lost.
+        var users = data.turns.filter(function (u) { return u.role === 'user'; });
+        if (!users.length || users[users.length - 1].text !== sentText) {
+          input.value = sentText;
+          autosize();
+        }
+        var last = data.turns[data.turns.length - 1];
+        var wrote = last && last.role === 'assistant' &&
+          (last.chips || []).some(function (c) { return c.kind === 'write'; });
+        if (wrote && typeof opts.onWrite === 'function') opts.onWrite();
+      } else {
+        t._raw += '\n\nCouldn\u2019t reach the server — reopen the chat to see the reply.';
+        renderMd(t);
+      }
+      setBusy(false);
+    }
+
+    // Coming back to the page mid-turn: a phone that slept may leave the stream
+    // hanging rather than failing. If the server says the turn is over while this
+    // tab still waits on it, the stream is dead — abort it, which routes into recover().
+    document.addEventListener('visibilitychange', async function () {
+      if (document.visibilityState !== 'visible' || !inflight) return;
+      var turn = inflight;
+      while (inflight === turn) {
+        var data = await fetchHistory();
+        if (data && !data.running) {
+          await sleep(1500); // let a live stream deliver its own "done" first
+          if (inflight === turn && !turn.finished) turn.ctrl.abort();
+          return;
+        }
+        await sleep(2000);
+      }
+    });
+
+    async function loadHistory() {
+      var data = await fetchHistory();
       var turns = (data && data.turns) || [];
       if (!turns.length) return;
       if (seed) { seed.remove(); seed = null; }

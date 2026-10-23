@@ -533,8 +533,9 @@ async def run_turn(agent: str, session_id: str, user_text, context: dict | None 
             _append(convo_key, messages, {"content": str(e)}, log_role="error")
             yield {"type": "error", "message": str(e)}
         except (asyncio.CancelledError, GeneratorExit):
-            # The browser went away mid-turn (phone locked, app backgrounded, tab
-            # closed): the server cancels the turn and the user sees nothing. Log
+            # The turn was cancelled before it finished. A dropped browser no longer
+            # does this (turns run in their own task — see `start_turn`), but a
+            # server restart or a caller driving run_turn directly still can. Log
             # where it stopped so a review can see it, then let the cancel proceed.
             if not finished:
                 _append(convo_key, messages, {"content": _interrupted_at(messages)},
@@ -553,6 +554,45 @@ def _interrupted_at(messages: list) -> str:
     else:
         stage = "before the model's first reply"
     return f"interrupted — the client disconnected {stage}"
+
+
+# Turns in flight, per conversation. A turn runs as its OWN task, not inside the HTTP
+# request: a phone that locks mid-turn drops the connection, and if the turn lived
+# in the response generator the server cancelled it — the reply was lost and the
+# user had to ask again. Now the request only LISTENS (`start_turn`), the turn runs
+# to completion either way, and the panel picks the reply up from /history
+# (`running` tells it to keep polling). The set also holds the strong references
+# asyncio needs so a running task isn't garbage-collected.
+_RUNNING: dict[tuple, set] = {}
+
+
+def start_turn(agent: str, session_id: str, user_text, context: dict | None = None):
+    """Start `run_turn` as a background task and return an async iterator over its
+    events for the HTTP response. Stopping the iteration (client gone) leaves the
+    turn running; its events just go unread."""
+    key = _convo_key(agent, session_id, context)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def work():
+        try:
+            async for ev in run_turn(agent, session_id, user_text, context=context):
+                queue.put_nowait(ev)
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(work())
+    running = _RUNNING.setdefault(key, set())
+    running.add(task)
+    task.add_done_callback(running.discard)
+
+    async def events():
+        while (ev := await queue.get()) is not None:
+            yield ev
+    return events()
+
+
+def is_running(agent: str, session_id: str, context: dict | None = None) -> bool:
+    return bool(_RUNNING.get(_convo_key(agent, session_id, context)))
 
 
 def reset(agent: str, session_id: str, context: dict | None = None) -> None:
