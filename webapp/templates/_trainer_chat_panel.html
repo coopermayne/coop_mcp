@@ -41,11 +41,21 @@
 
   {# Transcript. #}
   <div data-chat-log class="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-5">
-    <p data-chat-seed class="text-sm text-gray-400 leading-relaxed">
-      Ask me to build today’s routine (“give me a push day”), log sets as you go
-      (“did 10 at 100, felt like an 8”), swap an exercise if a machine’s taken, or ask
-      how to do a movement. Your plan stays on this page as we go.
-    </p>
+    {# Empty state. The button is the one-tap version of the request made at the
+       start of nearly every session; chat.js sends its data-chat-prompt and brings
+       this block back on "New". #}
+    <div data-chat-seed class="space-y-3">
+      <button type="button" data-chat-prompt="Make me a workout for today."
+              class="inline-flex items-center gap-2 border border-gray-300 rounded-[4px] px-3.5 py-2 text-sm text-gray-800 hover:border-black hover:text-black transition-colors">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5h11M6.5 17.5h11M3 9v6M21 9v6M6.5 5v14M17.5 5v14"/></svg>
+        Plan today’s workout
+      </button>
+      <p class="text-sm text-gray-400 leading-relaxed">
+        Or ask for something specific (“give me a push day”), log sets as you go
+        (“did 10 at 100, felt like an 8”), swap an exercise if a machine’s taken, or ask
+        how to do a movement. Your plan stays on this page as we go.
+      </p>
+    </div>
   </div>
 
   {# Composer. #}

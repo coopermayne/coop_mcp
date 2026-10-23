@@ -16,7 +16,9 @@
  *   [data-chat-input]  the <textarea>
  *   [data-chat-send]   the submit <button>
  *   [data-chat-reset]  optional "new chat" trigger
- *   [data-chat-seed]   optional first-prompt hint, removed on first send
+ *   [data-chat-seed]   optional first-prompt hint, removed on first send and
+ *                      restored on "new chat"; any [data-chat-prompt] button inside
+ *                      it sends that attribute's text as a message
  */
 (function () {
   function init(opts) {
@@ -34,6 +36,15 @@
 
     if (root.dataset.chatReady) return; // idempotent
     root.dataset.chatReady = '1';
+    // A pristine copy of the empty state, put back by "new chat".
+    var seedTemplate = seed ? seed.cloneNode(true) : null;
+
+    function wireSeed(el) {
+      el.querySelectorAll('[data-chat-prompt]').forEach(function (btn) {
+        btn.addEventListener('click', function () { send(btn.getAttribute('data-chat-prompt')); });
+      });
+    }
+    if (seed) wireSeed(seed);
 
     function autosize() {
       input.style.height = 'auto';
@@ -253,6 +264,11 @@
           });
         } catch (e) {}
         log.innerHTML = '';
+        if (seedTemplate) {
+          seed = seedTemplate.cloneNode(true);
+          log.appendChild(seed);
+          wireSeed(seed);
+        }
       });
     }
 

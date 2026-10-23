@@ -356,7 +356,10 @@ saving.
 
 Start a training conversation with get_fitness_briefing to load the profile (see THE
 USER'S PROFILE below), per-muscle recency, recent sessions (with their notes), the
-week's already-planned sessions, and the latest bodyweight before recommending work.
+week's already-planned sessions, the latest bodyweight, and each active exercise's last
+two sessions (`exercises[].recent`) before recommending work. That one call is enough
+to plan a day: go from it straight to start_workout_plan, without a history lookup per
+lift — the user is usually waiting at the gym.
 Recent-session notes are durable context — read them so a "left shoulder twinge" last
 time shapes what you program next. When the user tells you something like that during
 or after a session, put it in the session's notes (finish_workout / update_workout) so
@@ -3075,6 +3078,45 @@ def _exercise_rows(conn: sqlite3.Connection, archived: Optional[bool]) -> list[d
     return out
 
 
+def _fmt_set(r) -> str:
+    """One done set, compact: "35x7@9", "0x10" (bodyweight), "30min 2.1mi" (cardio)."""
+    if r["duration_seconds"] is not None or r["distance_miles"] is not None:
+        parts = []
+        if r["duration_seconds"] is not None:
+            parts.append(f"{r['duration_seconds'] / 60:g}min")
+        if r["distance_miles"] is not None:
+            parts.append(f"{r['distance_miles']:g}mi")
+        out = " ".join(parts)
+    else:
+        w = "" if r["weight_lbs"] is None else f"{r['weight_lbs']:g}x"
+        out = f"{w}{r['reps'] if r['reps'] is not None else '?'}"
+    return out + (f"@{r['rpe']:g}" if r["rpe"] is not None else "")
+
+
+def _recent_sessions(conn: sqlite3.Connection, n: int = 2) -> dict[int, list[str]]:
+    """Each exercise's last `n` completed sessions as compact lines, newest first:
+    {exercise_id: ["2026-10-16: 40x5@10, 35x7@10", ...]}. What the briefing carries
+    so a plan's weights can be set without a get_exercise_history call per lift."""
+    rows = conn.execute(
+        """SELECT s.exercise_id, w.id AS wid, w.workout_date, s.weight_lbs, s.reps,
+                  s.rpe, s.duration_seconds, s.distance_miles
+           FROM sets s JOIN workouts w ON w.id = s.workout_id
+           WHERE s.status='done' AND w.status='done'
+           ORDER BY s.exercise_id, w.workout_date DESC, w.id DESC, s.set_index""").fetchall()
+    out: dict[int, list[str]] = {}
+    sess: dict[int, list] = {}  # exercise_id -> [(wid, date, [sets])]
+    for r in rows:
+        lst = sess.setdefault(r["exercise_id"], [])
+        if not lst or lst[-1][0] != r["wid"]:
+            if len(lst) >= n:
+                continue
+            lst.append((r["wid"], r["workout_date"], []))
+        lst[-1][2].append(_fmt_set(r))
+    for eid, lst in sess.items():
+        out[eid] = [f"{d}: {', '.join(sets)}" for _, d, sets in lst]
+    return out
+
+
 @trainer_mcp.tool(annotations=READ_ONLY)
 def list_exercises(include_archived: bool = True) -> dict:
     """The user's exercises: `active` (what they're currently training — the pool you
@@ -3878,8 +3920,8 @@ def start_workout_plan(exercises: list[PlannedExercise], focus: Optional[str] = 
                        planned_date: Optional[str] = None,
                        workout_id: Optional[int] = None) -> dict:
     """Lay out a routine the user works through — today's session, or any day ahead.
-    Call this once you've decided the session from a get_fitness_briefing (+
-    get_exercise_history for the lifts you're choosing weights for). Each exercise
+    Call this once you've decided the session from a get_fitness_briefing (its
+    `exercises[].recent` carries each lift's last two sessions — set weights from that). Each exercise
     becomes a row of PENDING sets with targets; the user completes them with complete_set
     as they go.
 
@@ -4488,7 +4530,10 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
     and 30-day change; negative = down), `intake_today` (water/protein so far),
     `upcoming` (sessions already PLANNED and not yet
     done — workout_id, planned_date, focus, exercise names, set count — next-due first),
-    `exercises` — the user's ACTIVE exercises (muscles, last_done, sessions, note) — and
+    `exercises` — the user's ACTIVE exercises (muscles, last_done, sessions, note, and
+    `recent`: its last two sessions' sets as "date: weight x reps @ rpe, …" — enough to
+    set today's weights without a get_exercise_history call per lift; call that only
+    for a longer trend) — and
     `archived_exercises` (how many are in the archive; list_exercises shows them). Call this at the
     start of a training conversation to decide what to work and what to rest: muscles with
     the most days_since (and low recent volume) are recovered and due; ones trained in the
@@ -4564,6 +4609,10 @@ def get_fitness_briefing(recent_workouts: int = 5, as_of: Optional[str] = None) 
         # The user's ACTIVE exercises — the pool the model programs from (the archive is
         # list_exercises' job; only its size rides along here).
         active = _exercise_rows(conn, False)
+        recent_by_ex = _recent_sessions(conn)
+        for ex in active:
+            if ex["exercise_id"] in recent_by_ex:
+                ex["recent"] = recent_by_ex[ex["exercise_id"]]
         archived_count = conn.execute(
             "SELECT COUNT(*) AS n FROM exercises WHERE archived=1").fetchone()["n"]
         # Recent history is COMPLETED sessions only; an in-progress plan (status

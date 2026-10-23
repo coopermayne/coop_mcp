@@ -504,6 +504,14 @@ working.
   The other thing that shifts per day is `get_fitness_briefing(as_of=…)`, which
   re-anchors `days_since` to the day you're planning FOR, so what's "due" reflects the
   extra rest; planning a week is that, one day at a time.
+  **Planning a day is ONE call.** Each of the briefing's `exercises` carries `recent` —
+  its last two completed sessions as compact lines ("2026-10-16: 40x5@10, 35x7@10",
+  `_recent_sessions` + `_fmt_set`) — because the logs showed every plan starting with a
+  get_exercise_history call per lift (eight of them, then a long silence while the user
+  waited at the gym). It costs ~2 KB on the briefing; get_exercise_history stays for a
+  longer trend. The trainer chat panel's empty state has a **Plan today's workout**
+  button (`data-chat-prompt` in `_trainer_chat_panel.html`, wired by `chat.js`) that
+  just sends that request — no special path, since the one call is what made it fast.
   **The UI is a hub and per-session pages.** `/workouts` ("Training") is the hub: the
   upcoming plans (`data.upcoming_plans`) listed ABOVE the completed history
   (`data.workouts_full`), and each row links into `/trainer/{workout_id}` — the

@@ -108,8 +108,11 @@ OAuth). Over stdio a bare `server.py` launch runs it. With `TRAINER_PUBLIC_URL` 
   target → hold or deload.
 - **What to work, what to rest.** `get_fitness_briefing` returns the profile (injury,
   split, goals), per-muscle recency (days since trained + last-7-day set volume), and
-  recent sessions *with their notes* — enough to program the day and respect recovery,
-  and to carry a "left shoulder twinge" logged last time into this session's plan.
+  recent sessions *with their notes*, plus each active exercise's last two sessions
+  (weight × reps @ RPE) — enough to program the day and set its weights in ONE call, and
+  to carry a "left shoulder twinge" logged last time into this session's plan. The
+  trainer chat on the web app opens with a **Plan today's workout** button that asks
+  for exactly that.
 - **Plan a day or a week.** `start_workout_plan` lays out a session as pending sets with
   targets, which you then tap done on the web app. Pass a `planned_date` and call it once
   per day to lay out a whole week (or just the rest of one) — several plans sit waiting at
